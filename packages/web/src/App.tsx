@@ -463,7 +463,7 @@ export const App = () => {
     <div className="relative min-h-screen pb-12">
       <div className="pointer-events-none absolute -top-32 left-1/2 h-80 w-[72rem] -translate-x-1/2 rounded-full bg-[radial-gradient(ellipse_at_center,_hsl(196_90%_52%_/_0.16),_transparent_68%)]" />
 
-      <main className="container relative space-y-6 pt-8">
+      <main className="relative mx-auto w-full max-w-[1360px] space-y-6 px-5 pt-8">
         <Card className="border-primary/20 bg-card/80 backdrop-blur">
           <CardHeader className="gap-5 md:flex-row md:items-end md:justify-between md:space-y-0">
             <div className="space-y-2">

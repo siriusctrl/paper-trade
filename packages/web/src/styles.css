@@ -1,33 +1,82 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap");
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: 205 61% 97%;
+  --foreground: 214 36% 15%;
+  --card: 0 0% 100%;
+  --card-foreground: 214 36% 15%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 214 36% 15%;
+  --primary: 198 93% 36%;
+  --primary-foreground: 200 100% 97%;
+  --secondary: 188 52% 92%;
+  --secondary-foreground: 198 64% 20%;
+  --muted: 201 40% 93%;
+  --muted-foreground: 210 20% 39%;
+  --accent: 36 92% 89%;
+  --accent-foreground: 22 70% 24%;
+  --destructive: 0 82% 58%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 200 32% 82%;
+  --input: 200 32% 82%;
+  --ring: 198 93% 36%;
+  --radius: 0.9rem;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --font-sans: "Sora", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --shadow-panel: 0 18px 50px -24px hsl(199 90% 15% / 0.28);
+  --animate-accordion-down: accordion-down 0.18s ease-out;
+  --animate-accordion-up: accordion-up 0.18s ease-out;
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
 
 @layer base {
-  :root {
-    --background: 205 61% 97%;
-    --foreground: 214 36% 15%;
-    --card: 0 0% 100%;
-    --card-foreground: 214 36% 15%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 214 36% 15%;
-    --primary: 198 93% 36%;
-    --primary-foreground: 200 100% 97%;
-    --secondary: 188 52% 92%;
-    --secondary-foreground: 198 64% 20%;
-    --muted: 201 40% 93%;
-    --muted-foreground: 210 20% 39%;
-    --accent: 36 92% 89%;
-    --accent-foreground: 22 70% 24%;
-    --destructive: 0 82% 58%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 200 32% 82%;
-    --input: 200 32% 82%;
-    --ring: 198 93% 36%;
-    --radius: 0.9rem;
-  }
-
   * {
     @apply border-border;
   }
