@@ -40,6 +40,11 @@ export const cancelOrderSchema = z.object({
   reasoning: reasoningSchema,
 });
 
+export const reconcileOrdersSchema = z.object({
+  reasoning: reasoningSchema,
+  accountId: idSchema.optional(),
+});
+
 export const registerSchema = z.object({
   name: z.string().trim().min(1),
 });
@@ -82,6 +87,7 @@ export const adminAmountSchema = z.object({
 export type CreateAccountInput = z.infer<typeof createAccountSchema>;
 export type PlaceOrderInput = z.infer<typeof placeOrderSchema>;
 export type CancelOrderInput = z.infer<typeof cancelOrderSchema>;
+export type ReconcileOrdersInput = z.infer<typeof reconcileOrdersSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type CreateJournalInput = z.infer<typeof createJournalSchema>;
 export type ListOrdersQuery = z.infer<typeof listOrdersQuerySchema>;

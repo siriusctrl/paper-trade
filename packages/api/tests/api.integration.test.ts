@@ -15,6 +15,10 @@ process.env.DB_URL = `file:${dbFilePath}`;
 process.env.ADMIN_API_KEY = "admin_test_key";
 
 let app: AppLike;
+const quoteBySymbol: Record<string, { price: number; bid: number; ask: number }> = {
+  "0x-cross-symbol": { price: 0.35, bid: 0.34, ask: 0.35 },
+  "0x-test-symbol": { price: 0.6, bid: 0.59, ask: 0.6 },
+};
 
 beforeAll(async () => {
   const [{ createApp }, { migrate }] = await Promise.all([import("../src/app.js"), import("../src/db/client.js")]);
@@ -29,11 +33,8 @@ beforeAll(async () => {
     capabilities: ["search", "quote", "orderbook", "resolve"],
     search: async () => [],
     getQuote: async (symbol) => {
-      if (symbol === "0x-cross-symbol") {
-        return { symbol, price: 0.35, bid: 0.34, ask: 0.35, timestamp: new Date().toISOString() };
-      }
-
-      return { symbol, price: 0.6, bid: 0.59, ask: 0.6, timestamp: new Date().toISOString() };
+      const quote = quoteBySymbol[symbol] ?? { price: 0.6, bid: 0.59, ask: 0.6 };
+      return { symbol, ...quote, timestamp: new Date().toISOString() };
     },
     getOrderbook: async (symbol) => ({
       symbol,
@@ -248,5 +249,87 @@ describe("api integration", () => {
     expect(Array.isArray(positionsPayload.positions)).toBe(true);
     expect(positionsPayload.positions).toHaveLength(1);
     expect(positionsPayload.positions[0].quantity).toBe(10);
+  });
+
+  it("reconciles pending limit orders when market price crosses", async () => {
+    const registerResponse = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "reconcile-agent" }),
+    });
+
+    expect(registerResponse.status).toBe(201);
+    const registerPayload = await registerResponse.json();
+    const apiKey = registerPayload.apiKey as string;
+    const accountId = registerPayload.account.id as string;
+
+    quoteBySymbol["0x-reconcile-symbol"] = { price: 0.6, bid: 0.59, ask: 0.6 };
+
+    const pendingOrderResponse = await app.request("/api/orders", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        accountId,
+        market: "polymarket",
+        symbol: "0x-reconcile-symbol",
+        side: "buy",
+        type: "limit",
+        quantity: 8,
+        limitPrice: 0.4,
+        reasoning: "Place pending order first",
+      }),
+    });
+    expect(pendingOrderResponse.status).toBe(201);
+    const pendingOrder = await pendingOrderResponse.json();
+    expect(pendingOrder.status).toBe("pending");
+
+    const missingReasoningResponse = await app.request("/api/orders/reconcile", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    expect(missingReasoningResponse.status).toBe(400);
+    const missingReasoningPayload = await missingReasoningResponse.json();
+    expect(missingReasoningPayload.error.code).toBe("REASONING_REQUIRED");
+
+    quoteBySymbol["0x-reconcile-symbol"] = { price: 0.35, bid: 0.34, ask: 0.35 };
+
+    const reconcileResponse = await app.request("/api/orders/reconcile", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        accountId,
+        reasoning: "Check and fill marketable pending orders",
+      }),
+    });
+    expect(reconcileResponse.status).toBe(200);
+    const reconcilePayload = await reconcileResponse.json();
+    expect(reconcilePayload.filled).toBe(1);
+    expect(reconcilePayload.filledOrderIds).toContain(pendingOrder.id);
+
+    const filledOrdersResponse = await app.request(`/api/orders?accountId=${accountId}&status=filled`, {
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+      },
+    });
+    expect(filledOrdersResponse.status).toBe(200);
+    const filledOrdersPayload = await filledOrdersResponse.json();
+    expect(Array.isArray(filledOrdersPayload.orders)).toBe(true);
+    expect(filledOrdersPayload.orders.some((order: unknown) => {
+      if (typeof order !== "object" || order === null) {
+        return false;
+      }
+      const typed = order as { id?: string };
+      return typed.id === pendingOrder.id;
+    })).toBe(true);
   });
 });

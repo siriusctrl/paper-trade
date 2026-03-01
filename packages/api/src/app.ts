@@ -13,6 +13,7 @@ import {
   paginationQuerySchema,
   placeOrderSchema,
   quoteQuerySchema,
+  reconcileOrdersSchema,
   registerSchema,
   searchMarketQuerySchema,
 } from "@paper-trade/core";
@@ -229,6 +230,11 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
         },
         get: {
           summary: "List orders",
+        },
+      },
+      "/api/orders/reconcile": {
+        post: {
+          summary: "Reconcile and fill marketable pending limit orders (reasoning required)",
         },
       },
       "/api/orders/{id}": {
@@ -807,6 +813,185 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         .all();
 
       return c.json({ orders: rows });
+    }),
+  );
+
+  app.post(
+    "/api/orders/reconcile",
+    withErrorHandling(async (c) => {
+      const parsed = await parseJson(c, reconcileOrdersSchema);
+      if (!parsed.success) {
+        return parsed.response;
+      }
+
+      const userId = c.get("userId");
+      const requestedAccountId = parsed.data.accountId;
+
+      const targetAccountIds: string[] = [];
+      if (userId === "admin") {
+        if (requestedAccountId) {
+          targetAccountIds.push(requestedAccountId);
+        } else {
+          const allAccounts = await db.select({ id: accounts.id }).from(accounts).all();
+          targetAccountIds.push(...allAccounts.map((item) => item.id));
+        }
+      } else {
+        if (requestedAccountId) {
+          const owned = await getOwnedAccount(userId, requestedAccountId);
+          if (!owned) {
+            return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+          }
+          targetAccountIds.push(owned.id);
+        } else {
+          const owned = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.userId, userId)).all();
+          targetAccountIds.push(...owned.map((item) => item.id));
+        }
+      }
+
+      if (targetAccountIds.length === 0) {
+        return c.json({ processed: 0, filled: 0, skipped: 0, filledOrderIds: [] });
+      }
+
+      const pendingOrders = await db
+        .select()
+        .from(orders)
+        .where(and(inArray(orders.accountId, targetAccountIds), eq(orders.status, "pending")))
+        .orderBy(asc(orders.createdAt))
+        .all();
+
+      let filled = 0;
+      let skipped = 0;
+      const filledOrderIds: string[] = [];
+
+      for (const pendingOrder of pendingOrders) {
+        if (pendingOrder.type !== "limit" || pendingOrder.limitPrice === null) {
+          skipped += 1;
+          continue;
+        }
+
+        const adapter = registry.get(pendingOrder.market);
+        if (!adapter) {
+          skipped += 1;
+          continue;
+        }
+
+        let quotePrice: number;
+        try {
+          const quote = await adapter.getQuote(pendingOrder.symbol);
+          quotePrice = pendingOrder.side === "buy" ? (quote.ask ?? quote.price) : (quote.bid ?? quote.price);
+        } catch {
+          skipped += 1;
+          continue;
+        }
+
+        const shouldFill =
+          pendingOrder.side === "buy" ? quotePrice <= pendingOrder.limitPrice : quotePrice >= pendingOrder.limitPrice;
+
+        if (!shouldFill) {
+          skipped += 1;
+          continue;
+        }
+
+        const account = await getFirst(db.select().from(accounts).where(eq(accounts.id, pendingOrder.accountId)).limit(1).all());
+        if (!account) {
+          skipped += 1;
+          continue;
+        }
+
+        const existingPosition = await getFirst(
+          db
+            .select()
+            .from(positions)
+            .where(
+              and(
+                eq(positions.accountId, account.id),
+                eq(positions.market, pendingOrder.market),
+                eq(positions.symbol, pendingOrder.symbol),
+              ),
+            )
+            .limit(1)
+            .all(),
+        );
+
+        try {
+          const fillResult = executeFill({
+            balance: account.balance,
+            position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
+            side: pendingOrder.side as "buy" | "sell",
+            quantity: pendingOrder.quantity,
+            price: quotePrice,
+            allowShort: false,
+          });
+
+          await db
+            .update(accounts)
+            .set({ balance: fillResult.nextBalance })
+            .where(eq(accounts.id, account.id))
+            .run();
+
+          if (!fillResult.nextPosition) {
+            if (existingPosition) {
+              await db.delete(positions).where(eq(positions.id, existingPosition.id)).run();
+            }
+          } else if (existingPosition) {
+            await db
+              .update(positions)
+              .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
+              .where(eq(positions.id, existingPosition.id))
+              .run();
+          } else {
+            await db
+              .insert(positions)
+              .values({
+                id: makeId("pos"),
+                accountId: account.id,
+                market: pendingOrder.market,
+                symbol: pendingOrder.symbol,
+                quantity: fillResult.nextPosition.quantity,
+                avgCost: fillResult.nextPosition.avgCost,
+              })
+              .run();
+          }
+
+          const filledAt = nowIso();
+          await db
+            .insert(trades)
+            .values({
+              id: makeId("trd"),
+              orderId: pendingOrder.id,
+              accountId: account.id,
+              market: pendingOrder.market,
+              symbol: pendingOrder.symbol,
+              side: pendingOrder.side,
+              quantity: pendingOrder.quantity,
+              price: quotePrice,
+              createdAt: filledAt,
+            })
+            .run();
+
+          await db
+            .update(orders)
+            .set({
+              status: "filled",
+              filledPrice: quotePrice,
+              filledAt,
+            })
+            .where(eq(orders.id, pendingOrder.id))
+            .run();
+
+          filled += 1;
+          filledOrderIds.push(pendingOrder.id);
+        } catch {
+          skipped += 1;
+        }
+      }
+
+      return c.json({
+        processed: pendingOrders.length,
+        filled,
+        skipped,
+        filledOrderIds,
+      });
     }),
   );
 
