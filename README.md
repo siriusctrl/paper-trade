@@ -6,9 +6,9 @@ Open paper trading platform for US stocks and prediction markets. Built for huma
 
 A self-hosted paper trading engine with a clean REST API. Simulated trading across multiple markets — no real money, no risk. Any AI agent (or human) that can call an HTTP endpoint can trade.
 
-- **US Stocks** — real-time quotes, market/limit orders, portfolio tracking
 - **Polymarket** — prediction market trading with live odds from the CLOB API
 - **Extensible** — add new markets by implementing a simple adapter interface
+- **US Stocks** — coming soon
 
 Ships with a web dashboard and an auto-generated OpenAPI spec so any agent framework can integrate without custom glue code.
 
@@ -70,7 +70,6 @@ paper-trade/
 │   │   └── schemas.ts    # Zod schemas (shared front + back)
 │   ├── markets/          # Market adapters (unified interface)
 │   │   ├── types.ts      # MarketAdapter interface
-│   │   ├── us-stock/     # Yahoo Finance / Alpaca quotes
 │   │   └── polymarket/   # Polymarket CLOB API
 │   ├── api/              # Hono server (API + static file serving)
 │   │   ├── routes/       # Route handlers by domain
@@ -155,14 +154,14 @@ pnpm test      # run tests
 
 - [x] Project setup + architecture
 - [ ] Core trading engine (accounts, orders, positions, P&L)
-- [ ] US stock market adapter (Yahoo Finance)
 - [ ] Polymarket adapter
 - [ ] REST API with OpenAPI spec
 - [ ] Web dashboard
 - [ ] Agent integration skill
+- [ ] US stock market adapter
+- [ ] More markets (Kalshi, crypto)
 - [ ] Historical trade replay / backtesting
 - [ ] WebSocket for real-time updates
-- [ ] More markets (Kalshi, crypto)
 
 ## Contributing
 

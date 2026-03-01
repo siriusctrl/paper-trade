@@ -19,6 +19,7 @@ packages/
 - **core/ must stay pure.** No database calls, no HTTP requests, no side effects. Only types, Zod schemas, and functions that take data in and return data out.
 - **Zod schemas are the single source of truth** for request/response types. Define once in core/, infer types with `z.infer<>`, use everywhere.
 - **Market adapters implement `MarketAdapter` interface** from `packages/markets/types.ts`. Adding a market = adding an adapter. No changes to core/ or api/ routes needed.
+- **Polymarket first.** The initial implementation focuses on Polymarket. US stocks and other markets come later as additional adapters.
 - **Admin vs public API separation.** Deposit/withdraw are admin-only (`/api/admin/*`). Agents can only create accounts and trade.
 - **SQLite via Drizzle.** Single file DB. Migrations in `packages/api/db/`. No Postgres unless explicitly decided later.
 

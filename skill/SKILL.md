@@ -1,7 +1,7 @@
 ---
 name: paper-trade
 description: >
-  Paper trading platform API for simulated trading across US stocks and prediction markets (Polymarket).
+  Paper trading platform API for simulated trading on prediction markets (Polymarket). More markets (US stocks, Kalshi) coming soon.
   Use when an agent needs to: place simulated trades, check portfolio positions and P&L,
   look up stock quotes or prediction market odds, manage a virtual trading account,
   or test any trading strategy without real money.
@@ -27,7 +27,7 @@ OpenAPI spec: http://<host>:3100/openapi.json
 
 2. GET  /api/markets               → list available markets (us-stock, polymarket)
 
-3. GET  /api/markets/us-stock/quote/AAPL  → get current price
+3. GET  /api/markets/polymarket/search?q=election  → find a market
 
 4. POST /api/orders                → place a trade
    { "accountId", "market", "symbol", "side": "buy"|"sell", "type": "market"|"limit", "quantity", "limitPrice?" }
@@ -48,8 +48,9 @@ Two markets are available. See [references/markets.md](references/markets.md) fo
 
 | Market ID | Assets | Order Types |
 |-----------|--------|-------------|
-| `us-stock` | US equities (AAPL, TSLA, etc.) | market, limit |
 | `polymarket` | Prediction market contracts | market, limit |
+
+More markets (US stocks, Kalshi) planned — see roadmap.
 
 ### Polymarket Specifics
 
