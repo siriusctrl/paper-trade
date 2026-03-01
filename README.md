@@ -60,7 +60,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 | Runtime | Node.js | Single process serves everything |
 | API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Type-safe routes, auto OpenAPI, serves static files |
 | Database | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero ops, single-file, perfect for paper trading |
-| Frontend | [Vite](https://vite.dev) + [React](https://react.dev) | Pure SPA, no SSR complexity |
+| Frontend | [Vite](https://vite.dev) + [React](https://react.dev) + [shadcn/ui](https://ui.shadcn.com) + [Tailwind](https://tailwindcss.com) + [Recharts](https://recharts.org) + [TanStack Table](https://tanstack.com/table) | Polished dashboard UI with fast iteration and strong data visualization/table primitives |
 | Monorepo | pnpm workspaces | Simple, fast |
 | Testing | [Vitest](https://vitest.dev) | Fast, native TS |
 
@@ -114,6 +114,7 @@ paper-trade/
 |--------|----------|------|-------------|
 | `POST` | `/api/orders` | key | Place an order (requires `reasoning`) |
 | `GET` | `/api/orders` | key | List orders |
+| `POST` | `/api/orders/reconcile` | key/admin | Reconcile pending limit orders (requires `reasoning`) |
 | `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`) |
 
 ### Positions
@@ -141,6 +142,7 @@ paper-trade/
 |--------|----------|------|-------------|
 | `POST` | `/api/admin/accounts/:id/deposit` | admin | Add funds |
 | `POST` | `/api/admin/accounts/:id/withdraw` | admin | Remove funds |
+| `GET` | `/api/admin/overview` | admin | Portfolio overview (totals, market summaries, user/agent holdings) |
 
 ### Meta
 | Method | Endpoint | Auth | Description |
@@ -193,7 +195,9 @@ interface MarketAdapter {
 git clone https://github.com/siriusctrl/unimarket.git
 cd unimarket
 pnpm install
-pnpm dev       # starts on :3100
+pnpm dev       # starts API (:3100) + web dashboard (:5173)
+pnpm dev:api   # API only
+pnpm dev:web   # dashboard only
 pnpm test
 ```
 
@@ -207,12 +211,12 @@ pnpm test
 - [x] REST API with OpenAPI spec
 - [x] Limit order improvements (immediate fill when marketable)
 - [x] Pending order reconcile endpoint
-- [ ] Web dashboard
+- [x] Web dashboard (admin overview, market totals, user/agent holdings)
 - [x] Agent integration skill
 - [ ] US stock market adapter
 - [ ] More markets (Kalshi, crypto)
 - [ ] Historical trade replay / backtesting
-- [ ] WebSocket for real-time updates
+- [ ] WebSocket push updates (defer until scale/performance demands it)
 
 ## Contributing
 

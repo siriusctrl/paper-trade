@@ -1,0 +1,47 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 205 61% 97%;
+    --foreground: 214 36% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 214 36% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 214 36% 15%;
+    --primary: 198 93% 36%;
+    --primary-foreground: 200 100% 97%;
+    --secondary: 188 52% 92%;
+    --secondary-foreground: 198 64% 20%;
+    --muted: 201 40% 93%;
+    --muted-foreground: 210 20% 39%;
+    --accent: 36 92% 89%;
+    --accent-foreground: 22 70% 24%;
+    --destructive: 0 82% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 200 32% 82%;
+    --input: 200 32% 82%;
+    --ring: 198 93% 36%;
+    --radius: 0.9rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 8% 3%, hsl(193 90% 59% / 0.15), transparent 34%),
+      radial-gradient(circle at 88% 7%, hsl(37 95% 65% / 0.18), transparent 32%),
+      linear-gradient(155deg, hsl(204 55% 97%) 0%, hsl(199 60% 95%) 52%, hsl(204 50% 96%) 100%);
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+}

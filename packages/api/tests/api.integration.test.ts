@@ -77,6 +77,61 @@ describe("api integration", () => {
     expect(openApi.paths["/api/orders"]).toBeDefined();
   });
 
+  it("provides admin overview for markets and agents", async () => {
+    quoteBySymbol["0x-overview-symbol"] = { price: 0.52, bid: 0.51, ask: 0.52 };
+
+    const registerResponse = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "overview-agent" }),
+    });
+    expect(registerResponse.status).toBe(201);
+
+    const registerPayload = await registerResponse.json();
+    const apiKey = registerPayload.apiKey as string;
+    const accountId = registerPayload.account.id as string;
+    const userId = registerPayload.userId as string;
+
+    const placeOrderResponse = await app.request("/api/orders", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        accountId,
+        market: "polymarket",
+        symbol: "0x-overview-symbol",
+        side: "buy",
+        type: "market",
+        quantity: 20,
+        reasoning: "Create position for overview snapshot",
+      }),
+    });
+    expect(placeOrderResponse.status).toBe(201);
+
+    const overviewResponse = await app.request("/api/admin/overview", {
+      headers: {
+        authorization: "Bearer admin_test_key",
+      },
+    });
+    expect(overviewResponse.status).toBe(200);
+
+    const overview = await overviewResponse.json();
+    expect(overview.totals.users).toBeGreaterThan(0);
+    expect(Array.isArray(overview.markets)).toBe(true);
+    expect(Array.isArray(overview.agents)).toBe(true);
+    expect(
+      overview.agents.some((agent: unknown) => {
+        if (typeof agent !== "object" || agent === null) {
+          return false;
+        }
+        const typed = agent as { userId?: string };
+        return typed.userId === userId;
+      }),
+    ).toBe(true);
+  });
+
   it("enforces reasoning on account/order cancel flows and exposes timeline", async () => {
     const registerResponse = await app.request("/api/auth/register", {
       method: "POST",

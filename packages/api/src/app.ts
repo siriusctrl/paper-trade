@@ -309,6 +309,11 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         },
       },
+      "/api/admin/overview": {
+        get: {
+          summary: "Admin portfolio overview across markets and users",
+        },
+      },
     },
   };
 };
@@ -1228,6 +1233,237 @@ export const createApp = (options: CreateAppOptions = {}): App => {
   );
 
   app.use("/api/admin/*", adminOnlyMiddleware);
+
+  app.get(
+    "/api/admin/overview",
+    withErrorHandling(async (c) => {
+      const userRows = await db.select().from(users).all();
+      const accountRows = await db.select().from(accounts).all();
+      const positionRows = await db.select().from(positions).all();
+
+      const accountById = new Map(accountRows.map((account) => [account.id, account]));
+      const userById = new Map(userRows.map((user) => [user.id, user]));
+
+      const quotePriceByKey = new Map<string, number | null>();
+      const quoteTimestampByKey = new Map<string, string | null>();
+
+      for (const row of positionRows) {
+        const key = `${row.market}::${row.symbol}`;
+        if (quotePriceByKey.has(key)) {
+          continue;
+        }
+
+        const adapter = registry.get(row.market);
+        if (!adapter) {
+          quotePriceByKey.set(key, null);
+          quoteTimestampByKey.set(key, null);
+          continue;
+        }
+
+        try {
+          const quote = await adapter.getQuote(row.symbol);
+          quotePriceByKey.set(key, quote.price);
+          quoteTimestampByKey.set(key, quote.timestamp);
+        } catch {
+          quotePriceByKey.set(key, null);
+          quoteTimestampByKey.set(key, null);
+        }
+      }
+
+      const positionsByAccount = new Map<
+        string,
+        Array<{
+          market: string;
+          symbol: string;
+          quantity: number;
+          avgCost: number;
+          currentPrice: number | null;
+          marketValue: number | null;
+          unrealizedPnl: number | null;
+          quoteTimestamp: string | null;
+        }>
+      >();
+
+      const marketSummaryById = new Map<
+        string,
+        {
+          marketId: string;
+          marketName: string;
+          accounts: Set<string>;
+          users: Set<string>;
+          positions: number;
+          totalQuantity: number;
+          totalMarketValue: number;
+          totalUnrealizedPnl: number;
+          quotedPositions: number;
+          unpricedPositions: number;
+        }
+      >();
+
+      for (const row of positionRows) {
+        const account = accountById.get(row.accountId);
+        if (!account) {
+          continue;
+        }
+
+        const user = userById.get(account.userId);
+        const adapter = registry.get(row.market);
+        const key = `${row.market}::${row.symbol}`;
+        const currentPrice = quotePriceByKey.get(key) ?? null;
+        const quoteTimestamp = quoteTimestampByKey.get(key) ?? null;
+
+        const marketValue =
+          currentPrice === null ? null : calculateMarketValue({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
+        const unrealizedPnl =
+          currentPrice === null ? null : calculateUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
+
+        if (!positionsByAccount.has(row.accountId)) {
+          positionsByAccount.set(row.accountId, []);
+        }
+
+        positionsByAccount.get(row.accountId)?.push({
+          market: row.market,
+          symbol: row.symbol,
+          quantity: row.quantity,
+          avgCost: row.avgCost,
+          currentPrice,
+          marketValue,
+          unrealizedPnl,
+          quoteTimestamp,
+        });
+
+        if (!marketSummaryById.has(row.market)) {
+          marketSummaryById.set(row.market, {
+            marketId: row.market,
+            marketName: adapter?.displayName ?? row.market,
+            accounts: new Set<string>(),
+            users: new Set<string>(),
+            positions: 0,
+            totalQuantity: 0,
+            totalMarketValue: 0,
+            totalUnrealizedPnl: 0,
+            quotedPositions: 0,
+            unpricedPositions: 0,
+          });
+        }
+
+        const marketSummary = marketSummaryById.get(row.market);
+        if (!marketSummary) {
+          continue;
+        }
+
+        marketSummary.positions += 1;
+        marketSummary.totalQuantity += row.quantity;
+        marketSummary.accounts.add(row.accountId);
+        marketSummary.users.add(account.userId);
+
+        if (user) {
+          marketSummary.users.add(user.id);
+        }
+
+        if (marketValue === null || unrealizedPnl === null) {
+          marketSummary.unpricedPositions += 1;
+        } else {
+          marketSummary.quotedPositions += 1;
+          marketSummary.totalMarketValue += marketValue;
+          marketSummary.totalUnrealizedPnl += unrealizedPnl;
+        }
+      }
+
+      const agents = userRows
+        .map((user) => {
+          const ownedAccounts = accountRows.filter((account) => account.userId === user.id);
+
+          const accountSnapshots = ownedAccounts.map((account) => {
+            const accountPositions = [...(positionsByAccount.get(account.id) ?? [])].sort((a, b) =>
+              `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`),
+            );
+
+            const accountMarketValue = Number(
+              accountPositions.reduce((sum, position) => sum + (position.marketValue ?? 0), 0).toFixed(6),
+            );
+            const accountUnrealizedPnl = Number(
+              accountPositions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0).toFixed(6),
+            );
+            const totalValue = Number((account.balance + accountMarketValue).toFixed(6));
+
+            return {
+              accountId: account.id,
+              accountName: account.name,
+              balance: account.balance,
+              positions: accountPositions,
+              totals: {
+                positions: accountPositions.length,
+                marketValue: accountMarketValue,
+                unrealizedPnl: accountUnrealizedPnl,
+                equity: totalValue,
+              },
+            };
+          });
+
+          const totalBalance = Number(accountSnapshots.reduce((sum, snapshot) => sum + snapshot.balance, 0).toFixed(6));
+          const totalMarketValue = Number(
+            accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.marketValue, 0).toFixed(6),
+          );
+          const totalUnrealizedPnl = Number(
+            accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.unrealizedPnl, 0).toFixed(6),
+          );
+          const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
+          const totalPositions = accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.positions, 0);
+
+          return {
+            userId: user.id,
+            userName: user.name,
+            createdAt: user.createdAt,
+            accounts: accountSnapshots,
+            totals: {
+              accounts: accountSnapshots.length,
+              positions: totalPositions,
+              balance: totalBalance,
+              marketValue: totalMarketValue,
+              unrealizedPnl: totalUnrealizedPnl,
+              equity: totalEquity,
+            },
+          };
+        })
+        .sort((a, b) => b.totals.equity - a.totals.equity);
+
+      const markets = Array.from(marketSummaryById.values())
+        .map((item) => ({
+          marketId: item.marketId,
+          marketName: item.marketName,
+          accounts: item.accounts.size,
+          users: item.users.size,
+          positions: item.positions,
+          totalQuantity: item.totalQuantity,
+          totalMarketValue: Number(item.totalMarketValue.toFixed(6)),
+          totalUnrealizedPnl: Number(item.totalUnrealizedPnl.toFixed(6)),
+          quotedPositions: item.quotedPositions,
+          unpricedPositions: item.unpricedPositions,
+        }))
+        .sort((a, b) => b.totalMarketValue - a.totalMarketValue);
+
+      const totalBalance = Number(accountRows.reduce((sum, account) => sum + account.balance, 0).toFixed(6));
+      const totalMarketValue = Number(markets.reduce((sum, market) => sum + market.totalMarketValue, 0).toFixed(6));
+      const totalUnrealizedPnl = Number(markets.reduce((sum, market) => sum + market.totalUnrealizedPnl, 0).toFixed(6));
+      const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
+
+      return c.json({
+        generatedAt: nowIso(),
+        totals: {
+          users: userRows.length,
+          accounts: accountRows.length,
+          positions: positionRows.length,
+          balance: totalBalance,
+          marketValue: totalMarketValue,
+          unrealizedPnl: totalUnrealizedPnl,
+          equity: totalEquity,
+        },
+        markets,
+        agents,
+      });
+    }),
+  );
 
   app.post(
     "/api/admin/accounts/:id/deposit",
