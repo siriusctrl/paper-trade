@@ -10,14 +10,8 @@ export const sideSchema = z.enum(["buy", "sell"]);
 export const orderTypeSchema = z.enum(["market", "limit"]);
 export const orderStatusSchema = z.enum(["pending", "filled", "cancelled", "rejected"]);
 
-export const createAccountSchema = z.object({
-  name: z.string().trim().min(1),
-  reasoning: reasoningSchema,
-});
-
 export const placeOrderSchema = z
   .object({
-    accountId: idSchema,
     market: marketIdSchema,
     symbol: symbolSchema,
     side: sideSchema,
@@ -42,12 +36,23 @@ export const cancelOrderSchema = z.object({
 
 export const reconcileOrdersSchema = z.object({
   reasoning: reasoningSchema,
-  accountId: idSchema.optional(),
 });
 
-export const registerSchema = z.object({
-  name: z.string().trim().min(1),
-});
+export const registerSchema = z
+  .object({
+    userName: z.string().trim().min(1).optional(),
+    // Backward compatibility for existing clients.
+    name: z.string().trim().min(1).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.userName && !value.name) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["userName"],
+        message: "userName is required",
+      });
+    }
+  });
 
 export const createJournalSchema = z.object({
   content: z.string().trim().min(1),
@@ -60,7 +65,6 @@ export const paginationQuerySchema = z.object({
 });
 
 export const listOrdersQuerySchema = z.object({
-  accountId: idSchema.optional(),
   status: orderStatusSchema.optional(),
   market: marketIdSchema.optional(),
   symbol: symbolSchema.optional(),
@@ -69,7 +73,7 @@ export const listOrdersQuerySchema = z.object({
 });
 
 export const listPositionsQuerySchema = z.object({
-  accountId: idSchema,
+  userId: idSchema.optional(),
 });
 
 export const searchMarketQuerySchema = z.object({
@@ -84,7 +88,6 @@ export const adminAmountSchema = z.object({
   amount: z.number().positive(),
 });
 
-export type CreateAccountInput = z.infer<typeof createAccountSchema>;
 export type PlaceOrderInput = z.infer<typeof placeOrderSchema>;
 export type CancelOrderInput = z.infer<typeof cancelOrderSchema>;
 export type ReconcileOrdersInput = z.infer<typeof reconcileOrdersSchema>;

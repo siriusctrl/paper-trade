@@ -103,11 +103,11 @@ const resetDatabase = async (): Promise<void> => {
   await sqlite.execute("DELETE FROM users");
 };
 
-const registerUser = async (name: string): Promise<RegisterPayload> => {
+const registerUser = async (userName: string): Promise<RegisterPayload> => {
   const response = await app.request("/api/auth/register", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ userName }),
   });
 
   expect(response.status).toBe(201);
@@ -182,6 +182,30 @@ describe("api integration", () => {
     expect(unauthorizedPayload.error.code).toBe("UNAUTHORIZED");
   });
 
+  it("register accepts userName and keeps backward compatibility for legacy name", async () => {
+    const preferredResponse = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userName: "alias-user" }),
+    });
+    expect(preferredResponse.status).toBe(201);
+    const preferredPayload = (await preferredResponse.json()) as RegisterPayload;
+
+    const preferredUser = await db.select().from(tables.users).where(eq(tables.users.id, preferredPayload.userId)).get();
+    expect(preferredUser?.name).toBe("alias-user");
+
+    const legacyResponse = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "legacy-user" }),
+    });
+    expect(legacyResponse.status).toBe(201);
+    const legacyPayload = (await legacyResponse.json()) as RegisterPayload;
+
+    const legacyUser = await db.select().from(tables.users).where(eq(tables.users.id, legacyPayload.userId)).get();
+    expect(legacyUser?.name).toBe("legacy-user");
+  });
+
   it("initializes with default registry when createApp is called without options", async () => {
     const { createApp } = await import("../src/app.js");
     const defaultApp = createApp();
@@ -210,11 +234,11 @@ describe("api integration", () => {
     expect(invalidOrdersQuery.status).toBe(400);
     expect((await invalidOrdersQuery.json()).error.code).toBe("INVALID_INPUT");
 
-    const invalidPositionsQuery = await authedJson("/api/positions", user.apiKey);
+    const invalidPositionsQuery = await authedJson("/api/positions?userId=", user.apiKey);
     expect(invalidPositionsQuery.status).toBe(400);
     expect((await invalidPositionsQuery.json()).error.code).toBe("INVALID_INPUT");
 
-    const invalidTimelineQuery = await authedJson(`/api/accounts/${user.account.id}/timeline?limit=0`, user.apiKey);
+    const invalidTimelineQuery = await authedJson(`/api/account/timeline?limit=0`, user.apiKey);
     expect(invalidTimelineQuery.status).toBe(400);
     expect((await invalidTimelineQuery.json()).error.code).toBe("INVALID_INPUT");
 
@@ -274,46 +298,41 @@ describe("api integration", () => {
     expect((await adminRevokeKey.json()).error.code).toBe("INVALID_USER");
   });
 
-  it("covers account creation, retrieval, ownership checks, and invalid JSON handling", async () => {
+  it("enforces single-account mode and keeps account ownership boundaries", async () => {
     const owner = await registerUser("owner-account-user");
     const other = await registerUser("other-account-user");
-
-    const invalidJsonResponse = await authedJson("/api/accounts", owner.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{not valid json",
-    });
-    expect(invalidJsonResponse.status).toBe(400);
-    expect((await invalidJsonResponse.json()).error.code).toBe("INVALID_JSON");
-
-    const missingReasoningResponse = await authedJson("/api/accounts", owner.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "strategy-a" }),
-    });
-    expect(missingReasoningResponse.status).toBe(400);
-    expect((await missingReasoningResponse.json()).error.code).toBe("REASONING_REQUIRED");
 
     const createAccountResponse = await authedJson("/api/accounts", owner.apiKey, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name: "strategy-a",
-        reasoning: "Segregate event-driven strategy from baseline account",
+        reasoning: "Try creating an extra account",
       }),
     });
-    expect(createAccountResponse.status).toBe(201);
-    const createAccountPayload = await createAccountResponse.json();
+    expect(createAccountResponse.status).toBe(404);
 
-    const ownerGetAccount = await authedJson(`/api/accounts/${createAccountPayload.id as string}`, owner.apiKey);
+    const invalidJsonResponse = await authedJson("/api/accounts", owner.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not valid json",
+    });
+    expect(invalidJsonResponse.status).toBe(404);
+
+    const ownerAccounts = await db.select().from(tables.accounts).where(eq(tables.accounts.userId, owner.userId)).all();
+    expect(ownerAccounts).toHaveLength(1);
+
+    const ownerGetAccount = await authedJson(`/api/account`, owner.apiKey);
     expect(ownerGetAccount.status).toBe(200);
+    expect((await ownerGetAccount.json()).id).toBe(owner.account.id);
 
-    const otherGetAccount = await authedJson(`/api/accounts/${createAccountPayload.id as string}`, other.apiKey);
-    expect(otherGetAccount.status).toBe(404);
-    expect((await otherGetAccount.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+    const otherGetAccount = await authedJson(`/api/account`, other.apiKey);
+    expect(otherGetAccount.status).toBe(200);
+    expect((await otherGetAccount.json()).id).toBe(other.account.id);
 
-    const adminGetAccount = await authedJson(`/api/accounts/${createAccountPayload.id as string}`, "admin_test_key");
-    expect(adminGetAccount.status).toBe(200);
+    const adminGetAccount = await authedJson(`/api/account`, "admin_test_key");
+    expect(adminGetAccount.status).toBe(400);
+    expect((await adminGetAccount.json()).error.code).toBe("INVALID_USER");
   });
 
   it("covers order placement validation and trading error branches", async () => {
@@ -323,7 +342,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "buy",
@@ -339,7 +357,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "buy",
@@ -355,7 +372,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "missing-market",
         symbol: "0x-market-fill",
         side: "buy",
@@ -371,7 +387,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "buy",
@@ -387,7 +402,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "sell",
@@ -524,7 +538,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-pending",
         side: "buy",
@@ -539,7 +552,7 @@ describe("api integration", () => {
     expect(pendingOrder.status).toBe("pending");
 
     const listOrdersResponse = await authedJson(
-      `/api/orders?accountId=${user.account.id}&status=pending&market=polymarket&symbol=0x-pending`,
+      `/api/orders?status=pending&market=polymarket&symbol=0x-pending`,
       user.apiKey,
     );
     expect(listOrdersResponse.status).toBe(200);
@@ -588,7 +601,7 @@ describe("api integration", () => {
     const journalFilteredPayload = await journalFilteredResponse.json();
     expect(journalFilteredPayload.entries).toHaveLength(1);
 
-    const timelineResponse = await authedJson(`/api/accounts/${user.account.id}/timeline?limit=20&offset=0`, user.apiKey);
+    const timelineResponse = await authedJson(`/api/account/timeline?limit=20&offset=0`, user.apiKey);
     expect(timelineResponse.status).toBe(200);
     const timelinePayload = await timelineResponse.json();
     expect(Array.isArray(timelinePayload.events)).toBe(true);
@@ -609,7 +622,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: owner.account.id,
         market: "polymarket",
         symbol: "0x-pending",
         side: "buy",
@@ -658,7 +670,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: owner.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "buy",
@@ -672,17 +683,17 @@ describe("api integration", () => {
     expect(orderPayload.status).toBe("filled");
     expect(orderPayload.filledPrice).toBe(0.52);
 
-    const positionsResponse = await authedJson(`/api/positions?accountId=${owner.account.id}`, owner.apiKey);
+    const positionsResponse = await authedJson(`/api/positions`, owner.apiKey);
     expect(positionsResponse.status).toBe(200);
     const positionsPayload = await positionsResponse.json();
     expect(positionsPayload.positions).toHaveLength(1);
     expect(positionsPayload.positions[0].quantity).toBe(20);
 
-    const outsiderPositions = await authedJson(`/api/positions?accountId=${owner.account.id}`, outsider.apiKey);
-    expect(outsiderPositions.status).toBe(404);
-    expect((await outsiderPositions.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+    const outsiderPositions = await authedJson(`/api/positions`, outsider.apiKey);
+    expect(outsiderPositions.status).toBe(200);
+    expect((await outsiderPositions.json()).positions).toEqual([]);
 
-    const portfolioResponse = await authedJson(`/api/accounts/${owner.account.id}/portfolio`, owner.apiKey);
+    const portfolioResponse = await authedJson(`/api/account/portfolio`, owner.apiKey);
     expect(portfolioResponse.status).toBe(200);
     const portfolioPayload = await portfolioResponse.json();
     expect(portfolioPayload.positions).toHaveLength(1);
@@ -719,7 +730,7 @@ describe("api integration", () => {
       })
       .run();
 
-    const portfolioResponse = await authedJson(`/api/accounts/${user.account.id}/portfolio`, user.apiKey);
+    const portfolioResponse = await authedJson(`/api/account/portfolio`, user.apiKey);
     expect(portfolioResponse.status).toBe(200);
     const portfolioPayload = await portfolioResponse.json();
     expect(portfolioPayload.positions).toEqual([]);
@@ -753,7 +764,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: userA.account.id,
         market: "polymarket",
         symbol: "0x-reconcile-a",
         side: "buy",
@@ -771,7 +781,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: userB.account.id,
         market: "polymarket",
         symbol: "0x-reconcile-b",
         side: "buy",
@@ -786,19 +795,11 @@ describe("api integration", () => {
     const userScopeReconcile = await authedJson("/api/orders/reconcile", userA.apiKey, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ accountId: userA.account.id, reasoning: "Check marketability for my account" }),
+      body: JSON.stringify({ reasoning: "Check marketability for my account" }),
     });
     expect(userScopeReconcile.status).toBe(200);
     const userScopePayload = await userScopeReconcile.json();
     expect(userScopePayload.filled).toBe(0);
-
-    const forbiddenAccountReconcile = await authedJson("/api/orders/reconcile", userA.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ accountId: userB.account.id, reasoning: "Try unauthorized account" }),
-    });
-    expect(forbiddenAccountReconcile.status).toBe(404);
-    expect((await forbiddenAccountReconcile.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
 
     quoteBySymbol["0x-reconcile-a"] = { price: 0.45, bid: 0.44, ask: 0.45 };
     quoteBySymbol["0x-reconcile-b"] = { price: 0.46, bid: 0.45, ask: 0.46 };
@@ -816,11 +817,11 @@ describe("api integration", () => {
       expect.arrayContaining([pendingAPayload.id as string]),
     );
 
-    const filledOrdersA = await authedJson(`/api/orders?accountId=${userA.account.id}&status=filled`, userA.apiKey);
+    const filledOrdersA = await authedJson(`/api/orders?status=filled`, userA.apiKey);
     expect(filledOrdersA.status).toBe(200);
     expect((await filledOrdersA.json()).orders).toHaveLength(1);
 
-    const filledOrdersB = await authedJson(`/api/orders?accountId=${userB.account.id}&status=filled`, userB.apiKey);
+    const filledOrdersB = await authedJson(`/api/orders?status=filled`, userB.apiKey);
     expect(filledOrdersB.status).toBe(200);
     expect((await filledOrdersB.json()).orders).toHaveLength(1);
   });
@@ -968,7 +969,7 @@ describe("api integration", () => {
   it("covers admin-only fund management and overview aggregation", async () => {
     const user = await registerUser("admin-overview-user");
 
-    const userAccessAdminEndpoint = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, user.apiKey, {
+    const userAccessAdminEndpoint = await authedJson(`/api/admin/users/${user.userId}/deposit`, user.apiKey, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: 100 }),
@@ -976,7 +977,7 @@ describe("api integration", () => {
     expect(userAccessAdminEndpoint.status).toBe(403);
     expect((await userAccessAdminEndpoint.json()).error.code).toBe("FORBIDDEN");
 
-    const depositResponse = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+    const depositResponse = await authedJson(`/api/admin/users/${user.userId}/deposit`, "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: 250 }),
@@ -984,7 +985,7 @@ describe("api integration", () => {
     expect(depositResponse.status).toBe(200);
     expect((await depositResponse.json()).balance).toBeCloseTo(INITIAL_BALANCE + 250, 6);
 
-    const withdrawResponse = await authedJson(`/api/admin/accounts/${user.account.id}/withdraw`, "admin_test_key", {
+    const withdrawResponse = await authedJson(`/api/admin/users/${user.userId}/withdraw`, "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: 100 }),
@@ -992,7 +993,7 @@ describe("api integration", () => {
     expect(withdrawResponse.status).toBe(200);
     expect((await withdrawResponse.json()).balance).toBeCloseTo(INITIAL_BALANCE + 150, 6);
 
-    const overdrawResponse = await authedJson(`/api/admin/accounts/${user.account.id}/withdraw`, "admin_test_key", {
+    const overdrawResponse = await authedJson(`/api/admin/users/${user.userId}/withdraw`, "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: INITIAL_BALANCE * 10 }),
@@ -1004,7 +1005,6 @@ describe("api integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        accountId: user.account.id,
         market: "polymarket",
         symbol: "0x-market-fill",
         side: "buy",
@@ -1036,7 +1036,7 @@ describe("api integration", () => {
   it("covers admin fund endpoint invalid-json and account-not-found branches", async () => {
     const user = await registerUser("admin-fund-edge");
 
-    const invalidJsonDeposit = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+    const invalidJsonDeposit = await authedJson(`/api/admin/users/${user.userId}/deposit`, "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{not valid",
@@ -1044,7 +1044,7 @@ describe("api integration", () => {
     expect(invalidJsonDeposit.status).toBe(400);
     expect((await invalidJsonDeposit.json()).error.code).toBe("INVALID_JSON");
 
-    const invalidAmountDeposit = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+    const invalidAmountDeposit = await authedJson(`/api/admin/users/${user.userId}/deposit`, "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: -1 }),
@@ -1052,7 +1052,7 @@ describe("api integration", () => {
     expect(invalidAmountDeposit.status).toBe(400);
     expect((await invalidAmountDeposit.json()).error.code).toBe("INVALID_INPUT");
 
-    const missingAccountDeposit = await authedJson("/api/admin/accounts/acc_missing/deposit", "admin_test_key", {
+    const missingAccountDeposit = await authedJson("/api/admin/users/usr_missing/deposit", "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: 10 }),
@@ -1060,7 +1060,7 @@ describe("api integration", () => {
     expect(missingAccountDeposit.status).toBe(404);
     expect((await missingAccountDeposit.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
 
-    const missingAccountWithdraw = await authedJson("/api/admin/accounts/acc_missing/withdraw", "admin_test_key", {
+    const missingAccountWithdraw = await authedJson("/api/admin/users/usr_missing/withdraw", "admin_test_key", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ amount: 10 }),
@@ -1146,7 +1146,7 @@ describe("api integration", () => {
     const overviewResponse = await authedJson("/api/admin/overview", "admin_test_key");
     expect(overviewResponse.status).toBe(200);
     const overviewPayload = await overviewResponse.json();
-    expect(overviewPayload.totals.accounts).toBeGreaterThanOrEqual(3);
+    expect(overviewPayload.totals.users).toBeGreaterThanOrEqual(2);
     expect(
       overviewPayload.markets.some((market: { marketId: string; unpricedPositions: number }) => {
         return market.marketId === "missing-market" && market.unpricedPositions >= 1;

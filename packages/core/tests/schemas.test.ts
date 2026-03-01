@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   adminAmountSchema,
-  createAccountSchema,
   createJournalSchema,
   listOrdersQuerySchema,
+  listPositionsQuerySchema,
   paginationQuerySchema,
   placeOrderSchema,
+  registerSchema,
   reconcileOrdersSchema,
   reasoningSchema,
 } from "../src/schemas.js";
@@ -17,21 +18,14 @@ describe("schemas", () => {
     expect(reasoningSchema.safeParse("because macro regime changed").success).toBe(true);
   });
 
-  it("validates account creation payload", () => {
-    expect(
-      createAccountSchema.safeParse({
-        name: "strategy-main",
-        reasoning: "Need dedicated account for high-volatility setup",
-      }).success,
-    ).toBe(true);
-
-    const invalid = createAccountSchema.safeParse({ name: "strategy-main", reasoning: "" });
-    expect(invalid.success).toBe(false);
+  it("accepts userName for register while keeping legacy name compatibility", () => {
+    expect(registerSchema.safeParse({ userName: "agent-alpha" }).success).toBe(true);
+    expect(registerSchema.safeParse({ name: "legacy-agent" }).success).toBe(true);
+    expect(registerSchema.safeParse({}).success).toBe(false);
   });
 
   it("requires limitPrice for limit orders", () => {
     const missingLimit = placeOrderSchema.safeParse({
-      accountId: "acc_1",
       market: "polymarket",
       symbol: "0x-abc",
       side: "buy",
@@ -42,7 +36,6 @@ describe("schemas", () => {
     expect(missingLimit.success).toBe(false);
 
     const validLimit = placeOrderSchema.safeParse({
-      accountId: "acc_1",
       market: "polymarket",
       symbol: "0x-abc",
       side: "buy",
@@ -59,18 +52,19 @@ describe("schemas", () => {
     expect(pagination).toEqual({ limit: 20, offset: 0 });
 
     const listOrders = listOrdersQuerySchema.parse({
-      accountId: "acc_1",
       status: "pending",
       limit: "10",
       offset: "2",
     });
 
     expect(listOrders).toMatchObject({
-      accountId: "acc_1",
       status: "pending",
       limit: 10,
       offset: 2,
     });
+
+    expect(listPositionsQuerySchema.parse({})).toEqual({});
+    expect(listPositionsQuerySchema.parse({ userId: "usr_1" })).toEqual({ userId: "usr_1" });
   });
 
   it("validates reconcile, journal, and admin amount payloads", () => {

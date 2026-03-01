@@ -29,9 +29,12 @@ type PositionView = {
   quoteTimestamp?: string | null;
 };
 
-type AccountView = {
-  accountId: string;
-  accountName: string;
+type AgentView = {
+  userId: string;
+  userName: string;
+  createdAt: string;
+  accountId: string | null;
+  accountName: string | null;
   balance: number;
   positions: PositionView[];
   totals: {
@@ -42,24 +45,9 @@ type AccountView = {
   };
 };
 
-type AgentView = {
-  userId: string;
-  userName: string;
-  accounts: AccountView[];
-  totals: {
-    accounts: number;
-    positions: number;
-    balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
-  };
-};
-
 type MarketView = {
   marketId: string;
   marketName: string;
-  accounts: number;
   users: number;
   positions: number;
   totalQuantity: number;
@@ -73,7 +61,6 @@ type OverviewResponse = {
   generatedAt: string;
   totals: {
     users: number;
-    accounts: number;
     positions: number;
     balance: number;
     marketValue: number;
@@ -88,8 +75,7 @@ type PositionTableRow = {
   id: string;
   userId: string;
   userName: string;
-  accountId: string;
-  accountName: string;
+  accountName: string | null;
   market: string;
   symbol: string;
   quantity: number;
@@ -163,22 +149,19 @@ const flattenPositions = (overview: OverviewResponse | null): PositionTableRow[]
   }
 
   return overview.agents.flatMap((agent) =>
-    agent.accounts.flatMap((account) =>
-      account.positions.map((position) => ({
-        id: `${agent.userId}:${account.accountId}:${position.market}:${position.symbol}`,
-        userId: agent.userId,
-        userName: agent.userName,
-        accountId: account.accountId,
-        accountName: account.accountName,
-        market: position.market,
-        symbol: position.symbol,
-        quantity: position.quantity,
-        avgCost: position.avgCost,
-        currentPrice: position.currentPrice,
-        marketValue: position.marketValue,
-        unrealizedPnl: position.unrealizedPnl,
-      })),
-    ),
+    agent.positions.map((position) => ({
+      id: `${agent.userId}:${agent.accountId}:${position.market}:${position.symbol}`,
+      userId: agent.userId,
+      userName: agent.userName,
+      accountName: agent.accountName,
+      market: position.market,
+      symbol: position.symbol,
+      quantity: position.quantity,
+      avgCost: position.avgCost,
+      currentPrice: position.currentPrice,
+      marketValue: position.marketValue,
+      unrealizedPnl: position.unrealizedPnl,
+    })),
   );
 };
 
@@ -323,7 +306,7 @@ export const App = () => {
         return true;
       }
 
-      const searchable = [row.userName, row.userId, row.accountName, row.accountId, row.market, row.symbol]
+      const searchable = [row.userName, row.userId, row.accountName ?? "", row.market, row.symbol]
         .join(" ")
         .toLowerCase();
 
@@ -366,7 +349,7 @@ export const App = () => {
         cell: ({ row }) => (
           <div className="space-y-0.5">
             <p className="font-medium">{row.original.userName}</p>
-            <p className="font-mono text-xs text-muted-foreground">{row.original.accountName}</p>
+            <p className="font-mono text-xs text-muted-foreground">{row.original.accountName ?? "default-account"}</p>
           </div>
         ),
       },
@@ -517,7 +500,7 @@ export const App = () => {
               <KpiCard
                 title="Cash Balance"
                 value={formatCurrency(overview.totals.balance)}
-                detail={`${compactFormatter.format(overview.totals.accounts)} active accounts`}
+                detail="Single account per user"
               />
               <KpiCard
                 title="Marked Value"
@@ -647,14 +630,14 @@ export const App = () => {
                   <CardHeader className="space-y-4">
                     <div>
                       <CardTitle>Position Explorer</CardTitle>
-                      <CardDescription>Filter and sort holdings by user, account, market, and symbol.</CardDescription>
+                      <CardDescription>Filter and sort holdings by user, market, and symbol.</CardDescription>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-[1fr_auto]">
                       <Input
                         value={search}
                         onChange={(event) => setSearch(event.target.value)}
-                        placeholder="Search user, account, market, symbol"
+                        placeholder="Search user, market, symbol"
                       />
                       <div className="flex flex-wrap items-center gap-2">
                         {marketOptions.map((option) => (
@@ -722,7 +705,7 @@ export const App = () => {
                                 <p className="font-mono text-xs text-muted-foreground">{agent.userId}</p>
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                <Badge variant="outline">{agent.totals.accounts} accounts</Badge>
+                                <Badge variant="outline">single account</Badge>
                                 <Badge variant="secondary">{agent.totals.positions} positions</Badge>
                                 <Badge variant={agent.totals.unrealizedPnl >= 0 ? "success" : "danger"}>
                                   {formatSignedCurrency(agent.totals.unrealizedPnl)}
@@ -733,69 +716,67 @@ export const App = () => {
                           </AccordionTrigger>
 
                           <AccordionContent className="space-y-3">
-                            {agent.accounts.map((account) => (
-                              <Card key={account.accountId} className="shadow-none">
-                                <CardHeader className="pb-2">
-                                  <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div>
-                                      <CardTitle className="text-base">{account.accountName}</CardTitle>
-                                      <CardDescription className="font-mono text-xs">{account.accountId}</CardDescription>
-                                    </div>
-                                    <div className="grid gap-1 text-right text-sm">
-                                      <span>
-                                        Balance: <strong>{formatCurrency(account.balance)}</strong>
-                                      </span>
-                                      <span>
-                                        Equity: <strong>{formatCurrency(account.totals.equity)}</strong>
-                                      </span>
-                                    </div>
+                            <Card className="shadow-none">
+                              <CardHeader className="pb-2">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <CardTitle className="text-base">{agent.accountName ?? "default-account"}</CardTitle>
+                                    <CardDescription className="font-mono text-xs">{agent.accountId ?? "n/a"}</CardDescription>
                                   </div>
-                                </CardHeader>
+                                  <div className="grid gap-1 text-right text-sm">
+                                    <span>
+                                      Balance: <strong>{formatCurrency(agent.balance)}</strong>
+                                    </span>
+                                    <span>
+                                      Equity: <strong>{formatCurrency(agent.totals.equity)}</strong>
+                                    </span>
+                                  </div>
+                                </div>
+                              </CardHeader>
 
-                                <CardContent>
-                                  {account.positions.length > 0 ? (
-                                    <Table>
-                                      <TableHeader>
-                                        <TableRow>
-                                          <TableHead>Market</TableHead>
-                                          <TableHead>Symbol</TableHead>
-                                          <TableHead>Qty</TableHead>
-                                          <TableHead>Avg Cost</TableHead>
-                                          <TableHead>Mark</TableHead>
-                                          <TableHead>Value</TableHead>
-                                          <TableHead>PnL</TableHead>
+                              <CardContent>
+                                {agent.positions.length > 0 ? (
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>Market</TableHead>
+                                        <TableHead>Symbol</TableHead>
+                                        <TableHead>Qty</TableHead>
+                                        <TableHead>Avg Cost</TableHead>
+                                        <TableHead>Mark</TableHead>
+                                        <TableHead>Value</TableHead>
+                                        <TableHead>PnL</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {agent.positions.map((position) => (
+                                        <TableRow key={`${agent.accountId ?? "none"}:${position.market}:${position.symbol}`}>
+                                          <TableCell>{position.market}</TableCell>
+                                          <TableCell className="font-mono text-xs">{position.symbol}</TableCell>
+                                          <TableCell>{formatNumber(position.quantity)}</TableCell>
+                                          <TableCell>{formatCurrency(position.avgCost)}</TableCell>
+                                          <TableCell>{formatCurrency(position.currentPrice)}</TableCell>
+                                          <TableCell>{formatCurrency(position.marketValue)}</TableCell>
+                                          <TableCell
+                                            className={
+                                              position.unrealizedPnl === null
+                                                ? "text-muted-foreground"
+                                                : position.unrealizedPnl >= 0
+                                                  ? "text-emerald-600"
+                                                  : "text-rose-600"
+                                            }
+                                          >
+                                            {formatSignedCurrency(position.unrealizedPnl)}
+                                          </TableCell>
                                         </TableRow>
-                                      </TableHeader>
-                                      <TableBody>
-                                        {account.positions.map((position) => (
-                                          <TableRow key={`${account.accountId}:${position.market}:${position.symbol}`}>
-                                            <TableCell>{position.market}</TableCell>
-                                            <TableCell className="font-mono text-xs">{position.symbol}</TableCell>
-                                            <TableCell>{formatNumber(position.quantity)}</TableCell>
-                                            <TableCell>{formatCurrency(position.avgCost)}</TableCell>
-                                            <TableCell>{formatCurrency(position.currentPrice)}</TableCell>
-                                            <TableCell>{formatCurrency(position.marketValue)}</TableCell>
-                                            <TableCell
-                                              className={
-                                                position.unrealizedPnl === null
-                                                  ? "text-muted-foreground"
-                                                  : position.unrealizedPnl >= 0
-                                                    ? "text-emerald-600"
-                                                    : "text-rose-600"
-                                              }
-                                            >
-                                              {formatSignedCurrency(position.unrealizedPnl)}
-                                            </TableCell>
-                                          </TableRow>
-                                        ))}
-                                      </TableBody>
-                                    </Table>
-                                  ) : (
-                                    <p className="text-sm text-muted-foreground">No open positions in this account.</p>
-                                  )}
-                                </CardContent>
-                              </Card>
-                            ))}
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                ) : (
+                                  <p className="text-sm text-muted-foreground">No open positions in this account.</p>
+                                )}
+                              </CardContent>
+                            </Card>
                           </AccordionContent>
                         </AccordionItem>
                       ))}

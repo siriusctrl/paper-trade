@@ -5,7 +5,6 @@ import {
   calculateMarketValue,
   calculateUnrealizedPnl,
   cancelOrderSchema,
-  createAccountSchema,
   createJournalSchema,
   executeFill,
   listOrdersQuerySchema,
@@ -130,12 +129,13 @@ const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> => {
   return rows[0];
 };
 
-const getOwnedAccount = async (userId: string, accountId: string) => {
+const getUserAccount = async (userId: string) => {
   return getFirst(
     db
       .select()
       .from(accounts)
-      .where(and(eq(accounts.id, accountId), eq(accounts.userId, userId)))
+      .where(eq(accounts.userId, userId))
+      .orderBy(asc(accounts.createdAt))
       .limit(1)
       .all(),
   );
@@ -186,7 +186,7 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
       },
       "/api/auth/register": {
         post: {
-          summary: "Register user and issue first API key",
+          summary: "Register user (userName) and issue first API key + default account",
           security: [],
         },
       },
@@ -201,27 +201,19 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         },
       },
-      "/api/accounts": {
-        post: {
-          summary: "Create account (reasoning required)",
+      "/api/account": {
+        get: {
+          summary: "Get current user's default account details",
         },
       },
-      "/api/accounts/{id}": {
+      "/api/account/portfolio": {
         get: {
-          summary: "Get account details",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          summary: "Get current user's portfolio",
         },
       },
-      "/api/accounts/{id}/portfolio": {
+      "/api/account/timeline": {
         get: {
-          summary: "Get account portfolio",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-        },
-      },
-      "/api/accounts/{id}/timeline": {
-        get: {
-          summary: "Get account timeline (orders + journal)",
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          summary: "Get current user's timeline (orders + journal)",
         },
       },
       "/api/orders": {
@@ -245,7 +237,7 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
       },
       "/api/positions": {
         get: {
-          summary: "List positions for account",
+          summary: "List positions for current user",
         },
       },
       "/api/journal": {
@@ -297,15 +289,15 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
           ],
         },
       },
-      "/api/admin/accounts/{id}/deposit": {
+      "/api/admin/users/{id}/deposit": {
         post: {
-          summary: "Admin deposit",
+          summary: "Admin deposit to user's default account",
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         },
       },
-      "/api/admin/accounts/{id}/withdraw": {
+      "/api/admin/users/{id}/withdraw": {
         post: {
-          summary: "Admin withdraw",
+          summary: "Admin withdraw from user's default account",
           parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         },
       },
@@ -345,8 +337,12 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       const accountId = makeId("acc");
       const keyId = makeId("key");
       const apiKey = createApiKey();
+      const userName = parsed.data.userName ?? parsed.data.name;
+      if (!userName) {
+        return jsonError(c, 400, "INVALID_INPUT", "userName is required");
+      }
 
-      await db.insert(users).values({ id: userId, name: parsed.data.name, createdAt }).run();
+      await db.insert(users).values({ id: userId, name: userName, createdAt }).run();
 
       await db
         .insert(apiKeys)
@@ -366,7 +362,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
           id: accountId,
           userId,
           balance: INITIAL_BALANCE,
-          name: `${parsed.data.name}-main`,
+          name: `${userName}-main`,
           reasoning: "Initial account created at registration",
           createdAt,
         })
@@ -446,43 +442,15 @@ export const createApp = (options: CreateAppOptions = {}): App => {
     }),
   );
 
-  app.post(
-    "/api/accounts",
+  app.get(
+    "/api/account",
     withErrorHandling(async (c) => {
-      const parsed = await parseJson(c, createAccountSchema);
-      if (!parsed.success) {
-        return parsed.response;
-      }
-
       const userId = c.get("userId");
       if (!userId || userId === "admin") {
-        return jsonError(c, 400, "INVALID_USER", "Invalid user for account creation");
+        return jsonError(c, 400, "INVALID_USER", "Invalid user for account retrieval");
       }
 
-      const account = {
-        id: makeId("acc"),
-        userId,
-        balance: INITIAL_BALANCE,
-        name: parsed.data.name,
-        reasoning: parsed.data.reasoning,
-        createdAt: nowIso(),
-      };
-
-      await db.insert(accounts).values(account).run();
-      return c.json({ id: account.id, name: account.name, balance: account.balance, createdAt: account.createdAt }, 201);
-    }),
-  );
-
-  app.get(
-    "/api/accounts/:id",
-    withErrorHandling(async (c) => {
-      const accountId = c.req.param("id");
-      const userId = c.get("userId");
-      const account =
-        userId === "admin"
-          ? await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all())
-          : await getOwnedAccount(userId, accountId);
-
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
@@ -492,15 +460,14 @@ export const createApp = (options: CreateAppOptions = {}): App => {
   );
 
   app.get(
-    "/api/accounts/:id/portfolio",
+    "/api/account/portfolio",
     withErrorHandling(async (c) => {
-      const accountId = c.req.param("id");
       const userId = c.get("userId");
-      const account =
-        userId === "admin"
-          ? await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all())
-          : await getOwnedAccount(userId, accountId);
+      if (!userId || userId === "admin") {
+        return jsonError(c, 400, "INVALID_USER", "Invalid user for portfolio");
+      }
 
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
@@ -555,15 +522,14 @@ export const createApp = (options: CreateAppOptions = {}): App => {
   );
 
   app.get(
-    "/api/accounts/:id/timeline",
+    "/api/account/timeline",
     withErrorHandling(async (c) => {
-      const accountId = c.req.param("id");
       const userId = c.get("userId");
-      const account =
-        userId === "admin"
-          ? await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all())
-          : await getOwnedAccount(userId, accountId);
+      if (!userId || userId === "admin") {
+        return jsonError(c, 400, "INVALID_USER", "Invalid user for timeline");
+      }
 
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
@@ -623,7 +589,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         return jsonError(c, 400, "INVALID_USER", "Invalid user for order placement");
       }
 
-      const account = await getOwnedAccount(userId, parsed.data.accountId);
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
@@ -780,21 +746,14 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       }
 
       const userId = c.get("userId");
-      const ownedAccounts =
-        userId === "admin"
-          ? []
-          : (await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.userId, userId)).all()).map((item) => item.id);
 
       const predicates: SQL[] = [];
       if (userId !== "admin") {
-        if (ownedAccounts.length === 0) {
+        const account = await getUserAccount(userId);
+        if (!account) {
           return c.json({ orders: [] });
         }
-        predicates.push(inArray(orders.accountId, ownedAccounts));
-      }
-
-      if (parsed.data.accountId) {
-        predicates.push(eq(orders.accountId, parsed.data.accountId));
+        predicates.push(eq(orders.accountId, account.id));
       }
       if (parsed.data.status) {
         predicates.push(eq(orders.status, parsed.data.status));
@@ -830,27 +789,17 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       }
 
       const userId = c.get("userId");
-      const requestedAccountId = parsed.data.accountId;
 
       const targetAccountIds: string[] = [];
       if (userId === "admin") {
-        if (requestedAccountId) {
-          targetAccountIds.push(requestedAccountId);
-        } else {
-          const allAccounts = await db.select({ id: accounts.id }).from(accounts).all();
-          targetAccountIds.push(...allAccounts.map((item) => item.id));
-        }
+        const allAccounts = await db.select({ id: accounts.id }).from(accounts).all();
+        targetAccountIds.push(...allAccounts.map((item) => item.id));
       } else {
-        if (requestedAccountId) {
-          const owned = await getOwnedAccount(userId, requestedAccountId);
-          if (!owned) {
-            return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-          }
-          targetAccountIds.push(owned.id);
-        } else {
-          const owned = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.userId, userId)).all();
-          targetAccountIds.push(...owned.map((item) => item.id));
+        const account = await getUserAccount(userId);
+        if (!account) {
+          return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
         }
+        targetAccountIds.push(account.id);
       }
 
       if (targetAccountIds.length === 0) {
@@ -1017,8 +966,11 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       }
 
       if (userId !== "admin") {
-        const account = await getOwnedAccount(userId, order.accountId);
+        const account = await getUserAccount(userId);
         if (!account) {
+          return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
+        }
+        if (account.id !== order.accountId) {
           return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
         }
       }
@@ -1046,19 +998,33 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       }
 
       const userId = c.get("userId");
-      if (userId !== "admin") {
-        const account = await getOwnedAccount(userId, parsed.data.accountId);
+      let rows;
+      if (userId === "admin") {
+        let whereClause: SQL | undefined;
+        if (parsed.data.userId) {
+          const accountIds = (
+            await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.userId, parsed.data.userId)).all()
+          ).map((item) => item.id);
+          if (accountIds.length === 0) {
+            return c.json({ positions: [] });
+          }
+          whereClause = inArray(positions.accountId, accountIds);
+        }
+
+        rows = await db.select().from(positions).where(whereClause).orderBy(asc(positions.market), asc(positions.symbol)).all();
+      } else {
+        const account = await getUserAccount(userId);
         if (!account) {
           return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
         }
-      }
 
-      const rows = await db
-        .select()
-        .from(positions)
-        .where(eq(positions.accountId, parsed.data.accountId))
-        .orderBy(asc(positions.market), asc(positions.symbol))
-        .all();
+        rows = await db
+          .select()
+          .from(positions)
+          .where(eq(positions.accountId, account.id))
+          .orderBy(asc(positions.market), asc(positions.symbol))
+          .all();
+      }
 
       return c.json({ positions: rows });
     }),
@@ -1242,7 +1208,12 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       const positionRows = await db.select().from(positions).all();
 
       const accountById = new Map(accountRows.map((account) => [account.id, account]));
-      const userById = new Map(userRows.map((user) => [user.id, user]));
+      const primaryAccountByUserId = new Map<string, (typeof accountRows)[number]>();
+      for (const account of [...accountRows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+        if (!primaryAccountByUserId.has(account.userId)) {
+          primaryAccountByUserId.set(account.userId, account);
+        }
+      }
 
       const quotePriceByKey = new Map<string, number | null>();
       const quoteTimestampByKey = new Map<string, string | null>();
@@ -1289,7 +1260,6 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         {
           marketId: string;
           marketName: string;
-          accounts: Set<string>;
           users: Set<string>;
           positions: number;
           totalQuantity: number;
@@ -1306,7 +1276,6 @@ export const createApp = (options: CreateAppOptions = {}): App => {
           continue;
         }
 
-        const user = userById.get(account.userId);
         const adapter = registry.get(row.market);
         const key = `${row.market}::${row.symbol}`;
         const currentPrice = quotePriceByKey.get(key) ?? null;
@@ -1336,7 +1305,6 @@ export const createApp = (options: CreateAppOptions = {}): App => {
           marketSummaryById.set(row.market, {
             marketId: row.market,
             marketName: adapter?.displayName ?? row.market,
-            accounts: new Set<string>(),
             users: new Set<string>(),
             positions: 0,
             totalQuantity: 0,
@@ -1354,12 +1322,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
 
         marketSummary.positions += 1;
         marketSummary.totalQuantity += row.quantity;
-        marketSummary.accounts.add(row.accountId);
         marketSummary.users.add(account.userId);
-
-        if (user) {
-          marketSummary.users.add(user.id);
-        }
 
         if (marketValue === null || unrealizedPnl === null) {
           marketSummary.unpricedPositions += 1;
@@ -1372,52 +1335,28 @@ export const createApp = (options: CreateAppOptions = {}): App => {
 
       const agents = userRows
         .map((user) => {
-          const ownedAccounts = accountRows.filter((account) => account.userId === user.id);
-
-          const accountSnapshots = ownedAccounts.map((account) => {
-            const accountPositions = [...(positionsByAccount.get(account.id) ?? [])].sort((a, b) =>
-              `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`),
-            );
-
-            const accountMarketValue = Number(
-              accountPositions.reduce((sum, position) => sum + (position.marketValue ?? 0), 0).toFixed(6),
-            );
-            const accountUnrealizedPnl = Number(
-              accountPositions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0).toFixed(6),
-            );
-            const totalValue = Number((account.balance + accountMarketValue).toFixed(6));
-
-            return {
-              accountId: account.id,
-              accountName: account.name,
-              balance: account.balance,
-              positions: accountPositions,
-              totals: {
-                positions: accountPositions.length,
-                marketValue: accountMarketValue,
-                unrealizedPnl: accountUnrealizedPnl,
-                equity: totalValue,
-              },
-            };
-          });
-
-          const totalBalance = Number(accountSnapshots.reduce((sum, snapshot) => sum + snapshot.balance, 0).toFixed(6));
-          const totalMarketValue = Number(
-            accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.marketValue, 0).toFixed(6),
+          const primaryAccount = primaryAccountByUserId.get(user.id) ?? null;
+          const agentPositions = [...(primaryAccount ? positionsByAccount.get(primaryAccount.id) ?? [] : [])].sort((a, b) =>
+            `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`),
           );
+
+          const totalBalance = Number((primaryAccount?.balance ?? 0).toFixed(6));
+          const totalMarketValue = Number(agentPositions.reduce((sum, position) => sum + (position.marketValue ?? 0), 0).toFixed(6));
           const totalUnrealizedPnl = Number(
-            accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.unrealizedPnl, 0).toFixed(6),
+            agentPositions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0).toFixed(6),
           );
           const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
-          const totalPositions = accountSnapshots.reduce((sum, snapshot) => sum + snapshot.totals.positions, 0);
+          const totalPositions = agentPositions.length;
 
           return {
             userId: user.id,
             userName: user.name,
             createdAt: user.createdAt,
-            accounts: accountSnapshots,
+            accountId: primaryAccount?.id ?? null,
+            accountName: primaryAccount?.name ?? null,
+            balance: totalBalance,
+            positions: agentPositions,
             totals: {
-              accounts: accountSnapshots.length,
               positions: totalPositions,
               balance: totalBalance,
               marketValue: totalMarketValue,
@@ -1432,7 +1371,6 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         .map((item) => ({
           marketId: item.marketId,
           marketName: item.marketName,
-          accounts: item.accounts.size,
           users: item.users.size,
           positions: item.positions,
           totalQuantity: item.totalQuantity,
@@ -1443,7 +1381,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         }))
         .sort((a, b) => b.totalMarketValue - a.totalMarketValue);
 
-      const totalBalance = Number(accountRows.reduce((sum, account) => sum + account.balance, 0).toFixed(6));
+      const totalBalance = Number(agents.reduce((sum, agent) => sum + agent.totals.balance, 0).toFixed(6));
       const totalMarketValue = Number(markets.reduce((sum, market) => sum + market.totalMarketValue, 0).toFixed(6));
       const totalUnrealizedPnl = Number(markets.reduce((sum, market) => sum + market.totalUnrealizedPnl, 0).toFixed(6));
       const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
@@ -1452,7 +1390,6 @@ export const createApp = (options: CreateAppOptions = {}): App => {
         generatedAt: nowIso(),
         totals: {
           users: userRows.length,
-          accounts: accountRows.length,
           positions: positionRows.length,
           balance: totalBalance,
           marketValue: totalMarketValue,
@@ -1466,36 +1403,36 @@ export const createApp = (options: CreateAppOptions = {}): App => {
   );
 
   app.post(
-    "/api/admin/accounts/:id/deposit",
+    "/api/admin/users/:id/deposit",
     withErrorHandling(async (c) => {
       const parsed = await parseJson(c, adminAmountSchema);
       if (!parsed.success) {
         return parsed.response;
       }
 
-      const accountId = c.req.param("id");
-      const account = await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all());
+      const userId = c.req.param("id");
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
 
       const nextBalance = Number((account.balance + parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, accountId)).run();
+      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
 
       return c.json({ balance: nextBalance });
     }),
   );
 
   app.post(
-    "/api/admin/accounts/:id/withdraw",
+    "/api/admin/users/:id/withdraw",
     withErrorHandling(async (c) => {
       const parsed = await parseJson(c, adminAmountSchema);
       if (!parsed.success) {
         return parsed.response;
       }
 
-      const accountId = c.req.param("id");
-      const account = await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all());
+      const userId = c.req.param("id");
+      const account = await getUserAccount(userId);
       if (!account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
@@ -1505,7 +1442,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       }
 
       const nextBalance = Number((account.balance - parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, accountId)).run();
+      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
 
       return c.json({ balance: nextBalance });
     }),

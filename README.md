@@ -29,7 +29,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 │                     │                            │
 │  ┌──────────────────▼─────────────────────────┐  │
 │  │          Trading Engine (core)             │  │
-│  │   accounts · orders · positions · P&L      │  │
+│  │   account · orders · positions · P&L       │  │
 │  │   pure logic, market agnostic              │  │
 │  └──────────────────┬─────────────────────────┘  │
 │                     │                            │
@@ -97,17 +97,16 @@ paper-trade/
 ### Auth
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/auth/register` | — | Register, get first API key |
+| `POST` | `/api/auth/register` | — | Register (`userName`), get first API key + default account |
 | `POST` | `/api/auth/keys` | key | Generate additional API key |
 | `DELETE` | `/api/auth/keys/:id` | key | Revoke a key |
 
 ### Accounts
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/accounts` | key | Create account (requires `reasoning`) |
-| `GET` | `/api/accounts/:id` | key | Get account details + balance |
-| `GET` | `/api/accounts/:id/portfolio` | key | Full portfolio summary with P&L |
-| `GET` | `/api/accounts/:id/timeline` | key | Aggregated timeline (orders + journal) |
+| `GET` | `/api/account` | key | Get current user's default account details |
+| `GET` | `/api/account/portfolio` | key | Current user's portfolio summary with P&L |
+| `GET` | `/api/account/timeline` | key | Current user's timeline (orders + journal) |
 
 ### Trading
 | Method | Endpoint | Auth | Description |
@@ -140,8 +139,8 @@ paper-trade/
 ### Admin
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/admin/accounts/:id/deposit` | admin | Add funds |
-| `POST` | `/api/admin/accounts/:id/withdraw` | admin | Remove funds |
+| `POST` | `/api/admin/users/:id/deposit` | admin | Add funds to user's default account |
+| `POST` | `/api/admin/users/:id/withdraw` | admin | Remove funds from user's default account |
 | `GET` | `/api/admin/overview` | admin | Portfolio overview (totals, market summaries, user/agent holdings) |
 
 ### Meta
