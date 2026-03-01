@@ -10,6 +10,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 - **Polymarket** — prediction market trading with live odds from the CLOB API
 - **Extensible** — add new markets by implementing a simple adapter interface
 - **Agent-friendly** — auto-generated OpenAPI spec, self-describing market capabilities
+- **Decision transparency** — every action requires reasoning; journal + timeline for full audit trail
 - **US Stocks** — coming soon
 
 ## Architecture
@@ -46,7 +47,8 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 - `core` is pure logic with no I/O — Zod schemas shared across the entire stack
 - Market adapters implement a unified interface, registered at startup
 - Runtime discovery: `GET /api/markets` returns available markets + capabilities
-- OpenAPI spec + self-describing markets = any agent can integrate without prior knowledge
+- Every write operation requires a `reasoning` field — full decision audit trail
+- Journal endpoint for freeform notes; timeline endpoint aggregates everything
 - Accounts get initial funds on creation; only admins can deposit/withdraw
 - API key auth: register → get key → trade
 
@@ -102,21 +104,28 @@ paper-trade/
 ### Accounts
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/accounts` | key | Create account (starts with initial balance) |
+| `POST` | `/api/accounts` | key | Create account (requires `reasoning`) |
 | `GET` | `/api/accounts/:id` | key | Get account details + balance |
 | `GET` | `/api/accounts/:id/portfolio` | key | Full portfolio summary with P&L |
+| `GET` | `/api/accounts/:id/timeline` | key | Aggregated timeline (orders + journal) |
 
 ### Trading
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/orders` | key | Place an order (market/limit) |
-| `GET` | `/api/orders` | key | List orders (filter by account, status, market) |
-| `DELETE` | `/api/orders/:id` | key | Cancel a pending order |
+| `POST` | `/api/orders` | key | Place an order (requires `reasoning`) |
+| `GET` | `/api/orders` | key | List orders |
+| `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`) |
 
 ### Positions
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/positions` | key | List open positions |
+
+### Journal
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/journal` | key | Write a journal entry |
+| `GET` | `/api/journal` | key | List entries (`?limit=5&offset=0&q=&tags=`) |
 
 ### Market Data (runtime discovery)
 | Method | Endpoint | Auth | Description |
@@ -158,8 +167,6 @@ paper-trade/
 }
 ```
 
-Capabilities map to available endpoints under `/api/markets/:market/`. Agents discover what's available at runtime — no hardcoded market knowledge needed.
-
 ## Market Adapters
 
 Adding a new market means implementing this interface:
@@ -180,8 +187,6 @@ interface MarketAdapter {
 }
 ```
 
-Register it: `registry.set('my-market', new MyMarketAdapter())`. All routes work automatically.
-
 ## Getting Started
 
 ```bash
@@ -198,6 +203,7 @@ pnpm test
 - [ ] Core trading engine (accounts, orders, positions, P&L)
 - [ ] Auth (register, API keys)
 - [ ] Polymarket adapter
+- [ ] Journal + timeline
 - [ ] REST API with OpenAPI spec
 - [ ] Web dashboard
 - [ ] Agent integration skill

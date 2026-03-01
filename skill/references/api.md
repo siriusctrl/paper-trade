@@ -9,6 +9,8 @@ All endpoints except `/api/auth/register` and `/health` require:
 Authorization: Bearer <api_key>
 ```
 
+All write operations require a `reasoning` field (string, non-empty).
+
 ## Auth
 
 ### Register
@@ -59,7 +61,10 @@ DELETE /api/auth/keys/:id
 POST /api/accounts
 Content-Type: application/json
 
-{ "name": "strategy-alpha" }
+{
+  "name": "strategy-alpha",
+  "reasoning": "Dedicated account for mean-reversion strategy on election markets"
+}
 
 → 201
 {
@@ -110,6 +115,49 @@ GET /api/accounts/:id/portfolio
 }
 ```
 
+### Get Timeline
+```
+GET /api/accounts/:id/timeline?limit=20&offset=0
+
+→ 200
+{
+  "events": [
+    {
+      "type": "order",
+      "data": {
+        "id": "ord_xxxx",
+        "side": "buy",
+        "symbol": "0x1234...abcd",
+        "quantity": 100,
+        "filledPrice": 0.42,
+        "status": "filled"
+      },
+      "reasoning": "Market overpricing NO at 0.58, polling suggests YES ~55%",
+      "createdAt": "2026-03-01T12:00:01Z"
+    },
+    {
+      "type": "journal",
+      "data": {
+        "id": "jrn_xxxx",
+        "content": "Debate tonight — expecting volatility, will hold current positions",
+        "tags": ["election", "risk-management"]
+      },
+      "createdAt": "2026-03-01T11:30:00Z"
+    },
+    {
+      "type": "order_cancelled",
+      "data": {
+        "id": "ord_yyyy",
+        "symbol": "0x5678...efgh",
+        "side": "buy"
+      },
+      "reasoning": "New information invalidated the thesis — withdrawing limit order",
+      "createdAt": "2026-03-01T10:00:00Z"
+    }
+  ]
+}
+```
+
 ## Orders
 
 ### Place Order
@@ -123,7 +171,8 @@ Content-Type: application/json
   "symbol": "0x1234...abcd",
   "side": "buy",
   "type": "market",
-  "quantity": 100
+  "quantity": 100,
+  "reasoning": "Market overpricing NO at 0.58, recent polling data suggests YES probability ~55%"
 }
 
 → 201
@@ -137,6 +186,7 @@ Content-Type: application/json
   "quantity": 100,
   "status": "filled",
   "filledPrice": 0.42,
+  "reasoning": "Market overpricing NO at 0.58, recent polling data suggests YES probability ~55%",
   "filledAt": "2026-03-01T00:00:01Z"
 }
 ```
@@ -156,6 +206,9 @@ Query params (all optional): `accountId`, `status` (pending|filled|cancelled), `
 ### Cancel Order
 ```
 DELETE /api/orders/:id
+Content-Type: application/json
+
+{ "reasoning": "New information invalidated the thesis" }
 
 → 200
 { "id": "ord_xxxx", "status": "cancelled" }
@@ -172,6 +225,42 @@ GET /api/positions?accountId=acc_xxxx
 → 200
 { "positions": [...] }
 ```
+
+## Journal
+
+### Write Entry
+```
+POST /api/journal
+Content-Type: application/json
+
+{
+  "content": "Noticed correlation between polling shifts and election market price movement. Will monitor for entry opportunity below 0.40.",
+  "tags": ["analysis", "election"]
+}
+
+→ 201
+{
+  "id": "jrn_xxxx",
+  "userId": "usr_xxxx",
+  "content": "...",
+  "tags": ["analysis", "election"],
+  "createdAt": "2026-03-01T12:00:00Z"
+}
+```
+
+`content` is required. `tags` is optional.
+
+### List Entries
+```
+GET /api/journal?limit=5&offset=0
+GET /api/journal?q=election
+GET /api/journal?tags=risk-management
+
+→ 200
+{ "entries": [...] }
+```
+
+Default `limit=5`. Supports `offset` for pagination, `q` for full-text search, `tags` for filtering.
 
 ## Market Data
 

@@ -26,16 +26,20 @@ packages/
 - **Auth: API key → userId mapping.** We store keyHash + userId. We don't manage key rotation strategy — that's the caller's problem.
 - **SQLite via Drizzle.** Single file DB. Migrations in `packages/api/db/`.
 - **Quote caching.** Market adapters should cache upstream API responses (TTL ~10s for quotes, ~5min for market lists) to avoid rate limits.
+- **Reasoning is required on all write operations.** Every POST (orders, accounts, journal) and DELETE (cancel order) must include a `reasoning` field. Reject requests without it (`REASONING_REQUIRED` error).
+- **Journal for freeform notes.** `POST /api/journal` with `content` (required) and `tags` (optional string array).
+- **Timeline aggregation.** `GET /api/accounts/:id/timeline` merges orders + journal entries by time. This is a read-only aggregation endpoint, not a separate table.
 
 ## Data Model
 
 ```
 users       → id, name, createdAt
 api_keys    → id, userId, keyHash, prefix, createdAt, revokedAt
-accounts    → id, userId, balance, name, createdAt
-orders      → id, accountId, market, symbol, side, type, quantity, limitPrice, status, filledPrice, filledAt, createdAt
+accounts    → id, userId, balance, name, reasoning, createdAt
+orders      → id, accountId, market, symbol, side, type, quantity, limitPrice, status, filledPrice, reasoning, filledAt, createdAt
 positions   → id, accountId, market, symbol, quantity, avgCost
 trades      → id, orderId, accountId, market, symbol, side, quantity, price, createdAt
+journal     → id, userId, content, tags (json), createdAt
 ```
 
 ## Code Style
