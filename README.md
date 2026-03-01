@@ -4,54 +4,58 @@ Open paper trading platform for US stocks and prediction markets. Built for huma
 
 ## What is this?
 
-A self-hosted paper trading engine with a clean REST API. You get simulated trading across multiple markets — no real money, no risk. Any AI agent (or human) that can call an HTTP endpoint can trade.
+A self-hosted paper trading engine with a clean REST API. Simulated trading across multiple markets — no real money, no risk. Any AI agent (or human) that can call an HTTP endpoint can trade.
 
 - **US Stocks** — real-time quotes, market/limit orders, portfolio tracking
 - **Polymarket** — prediction market trading with live odds from the CLOB API
 - **Extensible** — add new markets by implementing a simple adapter interface
 
-The platform ships with a web dashboard for visual monitoring and an auto-generated OpenAPI spec so any agent framework can integrate without custom glue code.
+Ships with a web dashboard and an auto-generated OpenAPI spec so any agent framework can integrate without custom glue code.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   Web UI (Next.js)               │
-└──────────────────────┬──────────────────────────┘
-                       │ REST
-┌──────────────────────▼──────────────────────────┐
-│                 API Server (Hono)                │
-│         auto-generated OpenAPI 3.1 spec          │
-└──────────────────────┬──────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────┐
-│              Trading Engine (core)               │
-│   accounts · orders · positions · P&L · risk     │
-└──────┬───────────────────────────────┬──────────┘
-       │                               │
-┌──────▼──────┐                 ┌──────▼──────┐
-│  US Stocks  │                 │ Polymarket  │
-│  (adapter)  │                 │  (adapter)  │
-└─────────────┘                 └─────────────┘
+│            Single Node.js Process                │
+│                                                  │
+│  ┌────────────────────────────────────────────┐  │
+│  │           Hono Server (:3100)              │  │
+│  │                                            │  │
+│  │  /api/*  → REST API (trading, accounts)    │  │
+│  │  /*      → Static files (Vite build)       │  │
+│  │  /openapi.json → Auto-generated spec       │  │
+│  └──────────────────┬─────────────────────────┘  │
+│                     │                            │
+│  ┌──────────────────▼─────────────────────────┐  │
+│  │          Trading Engine (core)             │  │
+│  │   accounts · orders · positions · P&L      │  │
+│  └──────┬─────────────────────────┬───────────┘  │
+│         │                         │              │
+│  ┌──────▼──────┐          ┌──────▼──────┐       │
+│  │  US Stocks  │          │ Polymarket  │       │
+│  │  (adapter)  │          │  (adapter)  │       │
+│  └─────────────┘          └─────────────┘       │
+└─────────────────────────────────────────────────┘
 ```
 
 **Key design decisions:**
-- `core` is pure logic with no I/O — easy to test, easy to embed
-- Market adapters implement a unified interface (`getQuote`, `getOrderbook`, `subscribe`)
-- Database operations live in the `api` layer, not in core
-- OpenAPI spec is the universal "skill" — any agent that reads JSON can trade
+- Single process: Hono serves both API and frontend static files
+- `core` is pure logic with no I/O — Zod schemas shared across the entire stack
+- Market adapters implement a unified interface
+- OpenAPI spec is the universal integration point — any agent that reads JSON can trade
+- Accounts get initial funds on creation; only admins can deposit more
 
 ## Tech Stack
 
 | Layer | Choice | Why |
 |-------|--------|-----|
-| Language | TypeScript (end-to-end) | Type safety across the entire stack |
-| Runtime | Node.js | Shared ecosystem front-to-back |
-| API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Lightweight, type-safe, auto OpenAPI generation |
-| Database | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero ops, single-file, perfect for paper trading scale |
-| Frontend | [Next.js](https://nextjs.org) (App Router) | SSR dashboard with real-time updates |
-| Monorepo | pnpm workspaces | Simple, fast, no extra tooling |
-| Testing | [Vitest](https://vitest.dev) | Fast, native TS support |
+| Language | TypeScript (end-to-end) | Type safety, shared types front-to-back |
+| Runtime | Node.js | Single process serves everything |
+| API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Type-safe routes, auto OpenAPI, serves static files |
+| Database | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero ops, single-file, perfect for paper trading |
+| Frontend | [Vite](https://vite.dev) + [React](https://react.dev) | Pure SPA, no SSR complexity |
+| Monorepo | pnpm workspaces | Simple, fast |
+| Testing | [Vitest](https://vitest.dev) | Fast, native TS |
 
 ## Project Structure
 
@@ -59,84 +63,71 @@ The platform ships with a web dashboard for visual monitoring and an auto-genera
 paper-trade/
 ├── packages/
 │   ├── core/             # Trading engine — pure logic, no I/O
-│   │   ├── account.ts    # Account management (create, balance, deposit, withdraw)
+│   │   ├── account.ts    # Account management, initial balance
 │   │   ├── order.ts      # Order types, validation, matching
 │   │   ├── position.ts   # Position tracking, average cost
 │   │   ├── pnl.ts        # P&L calculation (realized + unrealized)
-│   │   └── types.ts      # Shared domain types
+│   │   └── schemas.ts    # Zod schemas (shared front + back)
 │   ├── markets/          # Market adapters (unified interface)
 │   │   ├── types.ts      # MarketAdapter interface
 │   │   ├── us-stock/     # Yahoo Finance / Alpaca quotes
 │   │   └── polymarket/   # Polymarket CLOB API
-│   ├── api/              # Hono REST API server
+│   ├── api/              # Hono server (API + static file serving)
 │   │   ├── routes/       # Route handlers by domain
 │   │   ├── db/           # Drizzle schema + migrations
-│   │   └── openapi.ts    # Auto-generated OpenAPI spec
-│   └── web/              # Next.js dashboard
-├── docs/
-│   └── agent-guide.md    # How to connect your agent
-├── examples/
-│   ├── curl.sh           # Quick start with curl
-│   ├── python-client.py  # Python example
-│   └── skill.md          # OpenClaw skill reference
-└── package.json          # pnpm workspace root
+│   │   └── index.ts      # Entry point (API + serves web build)
+│   └── web/              # Vite + React dashboard
+├── skill/                # Agent integration skill
+│   ├── SKILL.md          # How agents should use this platform
+│   └── references/
+│       ├── api.md        # Endpoint details + examples
+│       └── markets.md    # Market-specific notes
+└── README.md
 ```
 
-## Core API
+## API Overview
 
 ### Accounts
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/accounts` | Create a new trading account |
-| `GET` | `/accounts/:id` | Get account details + balance |
-| `POST` | `/accounts/:id/deposit` | Add virtual funds |
+| `POST` | `/api/accounts` | Create account (starts with initial balance) |
+| `GET` | `/api/accounts/:id` | Get account details + balance |
+
+### Admin
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/admin/accounts/:id/deposit` | Add funds (admin only) |
+| `POST` | `/api/admin/accounts/:id/withdraw` | Remove funds (admin only) |
 
 ### Trading
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/orders` | Place an order (market/limit) |
-| `GET` | `/orders` | List orders (filter by account, status, market) |
-| `DELETE` | `/orders/:id` | Cancel a pending order |
+| `POST` | `/api/orders` | Place an order (market/limit) |
+| `GET` | `/api/orders` | List orders (filter by account, status, market) |
+| `DELETE` | `/api/orders/:id` | Cancel a pending order |
 
 ### Portfolio
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/positions` | List open positions |
-| `GET` | `/positions/:id/pnl` | Get P&L for a position |
-| `GET` | `/accounts/:id/portfolio` | Full portfolio summary with P&L |
+| `GET` | `/api/positions` | List open positions |
+| `GET` | `/api/accounts/:id/portfolio` | Full portfolio summary with P&L |
 
 ### Market Data
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/markets` | List available markets |
-| `GET` | `/markets/:market/quote/:symbol` | Get current quote |
-| `GET` | `/markets/:market/search` | Search for tradeable assets |
+| `GET` | `/api/markets` | List available markets |
+| `GET` | `/api/markets/:market/quote/:symbol` | Get current quote |
+| `GET` | `/api/markets/:market/search` | Search for tradeable assets |
 
 ### Meta
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/openapi.json` | OpenAPI 3.1 spec (your agent reads this) |
+| `GET` | `/openapi.json` | OpenAPI 3.1 spec |
 | `GET` | `/health` | Health check |
-
-## Agent Integration
-
-Any agent that can make HTTP calls can trade. The flow is:
-
-```
-1. GET  /openapi.json                 → understand available endpoints
-2. POST /accounts                     → create a trading account
-3. GET  /markets/us-stock/quote/AAPL  → check price
-4. POST /orders                       → place a trade
-5. GET  /accounts/:id/portfolio       → check how you're doing
-```
-
-No SDK needed. No special protocol. Just REST.
-
-For agent frameworks that support OpenAPI tool discovery (most do), point them at `/openapi.json` and they'll figure out the rest.
 
 ## Market Adapters
 
-Adding a new market (e.g., Kalshi, crypto exchanges) means implementing this interface:
+Adding a new market means implementing this interface:
 
 ```typescript
 interface MarketAdapter {
@@ -153,21 +144,12 @@ interface MarketAdapter {
 ## Getting Started
 
 ```bash
-# clone
 git clone https://github.com/siriusctrl/paper-trade.git
 cd paper-trade
-
-# install
 pnpm install
-
-# start dev (api + web)
-pnpm dev
-
-# run tests
-pnpm test
+pnpm dev       # starts API + web on :3100
+pnpm test      # run tests
 ```
-
-API runs on `http://localhost:3100`, web dashboard on `http://localhost:3000`.
 
 ## Roadmap
 
@@ -177,14 +159,14 @@ API runs on `http://localhost:3100`, web dashboard on `http://localhost:3000`.
 - [ ] Polymarket adapter
 - [ ] REST API with OpenAPI spec
 - [ ] Web dashboard
-- [ ] Agent integration guide + examples
+- [ ] Agent integration skill
 - [ ] Historical trade replay / backtesting
 - [ ] WebSocket for real-time updates
 - [ ] More markets (Kalshi, crypto)
 
 ## Contributing
 
-PRs welcome. The codebase is designed to be AI-friendly — strong types, pure functions in core, clear separation of concerns.
+PRs welcome. Strong types, pure functions in core, clear separation of concerns.
 
 ## License
 
