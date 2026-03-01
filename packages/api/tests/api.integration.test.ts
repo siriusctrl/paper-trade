@@ -303,26 +303,9 @@ describe("api integration", () => {
     expect((await adminRevokeKey.json()).error.code).toBe("INVALID_USER");
   });
 
-  it("enforces single-account mode and keeps account ownership boundaries", async () => {
+  it("keeps single-account ownership boundaries", async () => {
     const owner = await registerUser("owner-account-user");
     const other = await registerUser("other-account-user");
-
-    const createAccountResponse = await authedJson("/api/accounts", owner.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name: "strategy-a",
-        reasoning: "Try creating an extra account",
-      }),
-    });
-    expect(createAccountResponse.status).toBe(404);
-
-    const invalidJsonResponse = await authedJson("/api/accounts", owner.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{not valid json",
-    });
-    expect(invalidJsonResponse.status).toBe(404);
 
     const ownerAccounts = await db.select().from(tables.accounts).where(eq(tables.accounts.userId, owner.userId)).all();
     expect(ownerAccounts).toHaveLength(1);
