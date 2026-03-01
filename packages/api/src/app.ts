@@ -392,7 +392,7 @@ export const createApp = (options: CreateAppOptions = {}): App => {
       return next();
     }
 
-    await authMiddleware(c, next);
+    return authMiddleware(c, next);
   });
 
   app.post(
