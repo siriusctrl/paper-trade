@@ -199,6 +199,7 @@ pnpm dev       # starts API (:3100) + web dashboard (:5173)
 pnpm dev:api   # API only
 pnpm dev:web   # dashboard only
 pnpm test
+pnpm coverage  # API/core/markets coverage with CI-enforced thresholds
 ```
 
 ## Roadmap

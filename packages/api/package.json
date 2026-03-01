@@ -8,7 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@paper-trade/core": "workspace:*",

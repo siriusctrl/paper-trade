@@ -23,4 +23,11 @@ describe("MarketRegistry", () => {
     expect(markets).toHaveLength(1);
     expect(markets[0]?.id).toBe("mock");
   });
+
+  it("rejects duplicate adapter registration", () => {
+    const registry = new MarketRegistry();
+    registry.register(adapter);
+
+    expect(() => registry.register(adapter)).toThrow("Market adapter already registered");
+  });
 });

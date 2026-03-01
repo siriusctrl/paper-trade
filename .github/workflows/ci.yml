@@ -38,5 +38,18 @@ jobs:
       - name: Test
         run: corepack pnpm test
 
+      - name: Coverage
+        run: corepack pnpm coverage
+
       - name: Build Web
         run: corepack pnpm --filter @paper-trade/web build
+
+      - name: Upload Coverage Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            packages/core/coverage
+            packages/markets/coverage
+            packages/api/coverage
