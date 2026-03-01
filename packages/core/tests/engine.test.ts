@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { executeFill, TradingError } from "../src/engine.js";
+import {
+  calculateMarketValue,
+  calculateUnrealizedPnl,
+  executeFill,
+  TradingError,
+} from "../src/engine.js";
 
 describe("executeFill", () => {
   it("buys and updates weighted average cost", () => {
@@ -39,5 +44,43 @@ describe("executeFill", () => {
     expect(result.nextBalance).toBe(3);
     expect(result.nextPosition).toEqual({ quantity: 5, avgCost: 0.4 });
     expect(result.realizedPnl).toBe(1);
+  });
+
+  it("clears position when selling all units", () => {
+    const result = executeFill({
+      balance: 10,
+      position: { quantity: 5, avgCost: 2 },
+      side: "sell",
+      quantity: 5,
+      price: 3,
+    });
+
+    expect(result.nextBalance).toBe(25);
+    expect(result.nextPosition).toBeNull();
+    expect(result.realizedPnl).toBe(5);
+  });
+
+  it("throws when selling more than current position", () => {
+    expect(() =>
+      executeFill({
+        balance: 0,
+        position: { quantity: 2, avgCost: 1 },
+        side: "sell",
+        quantity: 3,
+        price: 1,
+      }),
+    ).toThrowError(TradingError);
+  });
+});
+
+describe("position helpers", () => {
+  it("calculates unrealized pnl", () => {
+    const unrealized = calculateUnrealizedPnl({ quantity: 3, avgCost: 1.234567 }, 1.5);
+    expect(unrealized).toBe(0.796299);
+  });
+
+  it("calculates market value", () => {
+    const value = calculateMarketValue({ quantity: 2.5, avgCost: 0 }, 1.111111);
+    expect(value).toBe(2.777778);
   });
 });

@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { INITIAL_BALANCE } from "@paper-trade/core";
-import { MarketRegistry, type MarketAdapter } from "@paper-trade/markets";
+import { MarketAdapterError, MarketRegistry, type MarketAdapter } from "@paper-trade/markets";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 type AppLike = {
   request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -150,6 +150,10 @@ beforeEach(async () => {
   await resetDatabase();
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 afterAll(async () => {
   await rm(dbFilePath, { force: true });
   await rm(`${dbFilePath}-wal`, { force: true });
@@ -176,6 +180,63 @@ describe("api integration", () => {
     expect(unauthorizedOrders.status).toBe(401);
     const unauthorizedPayload = await unauthorizedOrders.json();
     expect(unauthorizedPayload.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("initializes with default registry when createApp is called without options", async () => {
+    const { createApp } = await import("../src/app.js");
+    const defaultApp = createApp();
+
+    const healthResponse = await defaultApp.request("/health");
+    expect(healthResponse.status).toBe(200);
+    const healthPayload = await healthResponse.json();
+    expect(healthPayload.markets.polymarket).toBe("available");
+
+    const openApiResponse = await defaultApp.request("/openapi.json");
+    expect(openApiResponse.status).toBe(200);
+    const openApiPayload = await openApiResponse.json();
+    expect(openApiPayload.paths["/api/markets/{market}/quote"]).toBeDefined();
+  });
+
+  it("rejects malformed auth headers and invalid query payloads", async () => {
+    const user = await registerUser("query-guard-user");
+
+    const malformedAuth = await app.request("/api/orders", {
+      headers: { authorization: "Token malformed" },
+    });
+    expect(malformedAuth.status).toBe(401);
+    expect((await malformedAuth.json()).error.code).toBe("UNAUTHORIZED");
+
+    const invalidOrdersQuery = await authedJson("/api/orders?limit=999", user.apiKey);
+    expect(invalidOrdersQuery.status).toBe(400);
+    expect((await invalidOrdersQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidPositionsQuery = await authedJson("/api/positions", user.apiKey);
+    expect(invalidPositionsQuery.status).toBe(400);
+    expect((await invalidPositionsQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidTimelineQuery = await authedJson(`/api/accounts/${user.account.id}/timeline?limit=0`, user.apiKey);
+    expect(invalidTimelineQuery.status).toBe(400);
+    expect((await invalidTimelineQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidJournalQuery = await authedJson("/api/journal?limit=9999", user.apiKey);
+    expect(invalidJournalQuery.status).toBe(400);
+    expect((await invalidJournalQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidSearchQuery = await authedJson("/api/markets/polymarket/search", user.apiKey);
+    expect(invalidSearchQuery.status).toBe(400);
+    expect((await invalidSearchQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidQuoteQuery = await authedJson("/api/markets/polymarket/quote", user.apiKey);
+    expect(invalidQuoteQuery.status).toBe(400);
+    expect((await invalidQuoteQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidOrderbookQuery = await authedJson("/api/markets/polymarket/orderbook", user.apiKey);
+    expect(invalidOrderbookQuery.status).toBe(400);
+    expect((await invalidOrderbookQuery.json()).error.code).toBe("INVALID_INPUT");
+
+    const invalidResolveQuery = await authedJson("/api/markets/polymarket/resolve", user.apiKey);
+    expect(invalidResolveQuery.status).toBe(400);
+    expect((await invalidResolveQuery.json()).error.code).toBe("INVALID_INPUT");
   });
 
   it("covers auth key lifecycle and admin constraints", async () => {
@@ -255,6 +316,90 @@ describe("api integration", () => {
     expect(adminGetAccount.status).toBe(200);
   });
 
+  it("covers order placement validation and trading error branches", async () => {
+    const user = await registerUser("order-error-user");
+
+    const adminPlaceOrder = await authedJson("/api/orders", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-market-fill",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "admin should not place orders here",
+      }),
+    });
+    expect(adminPlaceOrder.status).toBe(400);
+    expect((await adminPlaceOrder.json()).error.code).toBe("INVALID_USER");
+
+    const invalidLimitOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-market-fill",
+        side: "buy",
+        type: "limit",
+        quantity: 2,
+        reasoning: "missing limit price should fail schema",
+      }),
+    });
+    expect(invalidLimitOrder.status).toBe(400);
+    expect((await invalidLimitOrder.json()).error.code).toBe("INVALID_INPUT");
+
+    const marketNotFoundOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: user.account.id,
+        market: "missing-market",
+        symbol: "0x-market-fill",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "market should be rejected",
+      }),
+    });
+    expect(marketNotFoundOrder.status).toBe(404);
+    expect((await marketNotFoundOrder.json()).error.code).toBe("MARKET_NOT_FOUND");
+
+    const insufficientBalanceOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-market-fill",
+        side: "buy",
+        type: "market",
+        quantity: 1_000_000,
+        reasoning: "force insufficient balance branch",
+      }),
+    });
+    expect(insufficientBalanceOrder.status).toBe(400);
+    expect((await insufficientBalanceOrder.json()).error.code).toBe("INSUFFICIENT_BALANCE");
+
+    const insufficientPositionOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-market-fill",
+        side: "sell",
+        type: "market",
+        quantity: 1,
+        reasoning: "cannot sell without inventory",
+      }),
+    });
+    expect(insufficientPositionOrder.status).toBe(400);
+    expect((await insufficientPositionOrder.json()).error.code).toBe("INSUFFICIENT_POSITION");
+  });
+
   it("covers market discovery and capability-guarded market data endpoints", async () => {
     const user = await registerUser("market-user");
 
@@ -300,6 +445,75 @@ describe("api integration", () => {
     const unsupportedResolve = await authedJson("/api/markets/quote-only/resolve?symbol=abc", user.apiKey);
     expect(unsupportedResolve.status).toBe(400);
     expect((await unsupportedResolve.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
+  });
+
+  it("covers market endpoint exception handling branches and resolve null fallback", async () => {
+    const user = await registerUser("market-error-user");
+    const originalGetQuote = polymarketAdapter.getQuote;
+    const originalResolve = polymarketAdapter.resolve;
+
+    const quoteSpy = vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => {
+      if (symbol === "0x-madapter-error") {
+        throw new MarketAdapterError("UPSTREAM_ERROR", "upstream unavailable");
+      }
+      if (symbol === "0x-generic-error") {
+        throw new Error("generic quote failure");
+      }
+      if (symbol === "0x-unknown-error") {
+        throw "unexpected-primitive-throw";
+      }
+      return originalGetQuote(symbol);
+    });
+
+    const resolveSpy = vi.spyOn(polymarketAdapter, "resolve").mockImplementation(async (symbol) => {
+      if (symbol === "0x-null-resolution") {
+        return null;
+      }
+      if (!originalResolve) {
+        return null;
+      }
+      return originalResolve(symbol);
+    });
+
+    const adapterErrorResponse = await authedJson(
+      "/api/markets/polymarket/quote?symbol=0x-madapter-error",
+      user.apiKey,
+    );
+    expect(adapterErrorResponse.status).toBe(502);
+    expect((await adapterErrorResponse.json()).error.code).toBe("UPSTREAM_ERROR");
+
+    const genericErrorResponse = await authedJson(
+      "/api/markets/polymarket/quote?symbol=0x-generic-error",
+      user.apiKey,
+    );
+    expect(genericErrorResponse.status).toBe(500);
+    const genericErrorPayload = await genericErrorResponse.json();
+    expect(genericErrorPayload.error.code).toBe("INTERNAL_ERROR");
+    expect(genericErrorPayload.error.message).toContain("generic quote failure");
+
+    const unknownErrorResponse = await authedJson(
+      "/api/markets/polymarket/quote?symbol=0x-unknown-error",
+      user.apiKey,
+    );
+    expect(unknownErrorResponse.status).toBe(500);
+    const unknownErrorPayload = await unknownErrorResponse.json();
+    expect(unknownErrorPayload.error.code).toBe("INTERNAL_ERROR");
+    expect(unknownErrorPayload.error.message).toBe("Unknown server error");
+
+    const nullResolutionResponse = await authedJson(
+      "/api/markets/polymarket/resolve?symbol=0x-null-resolution",
+      user.apiKey,
+    );
+    expect(nullResolutionResponse.status).toBe(200);
+    expect(await nullResolutionResponse.json()).toMatchObject({
+      symbol: "0x-null-resolution",
+      resolved: false,
+      outcome: null,
+      settlementPrice: null,
+    });
+
+    expect(quoteSpy).toHaveBeenCalled();
+    expect(resolveSpy).toHaveBeenCalled();
   });
 
   it("covers order lifecycle, journal filtering, and timeline aggregation", async () => {
@@ -386,6 +600,54 @@ describe("api integration", () => {
     expect((await adminJournalAccess.json()).error.code).toBe("INVALID_USER");
   });
 
+  it("covers order cancellation not-found/ownership branches and empty account listing", async () => {
+    const owner = await registerUser("cancel-owner");
+    const outsider = await registerUser("cancel-outsider");
+
+    quoteBySymbol["0x-pending"] = { price: 0.66, bid: 0.65, ask: 0.66 };
+    const pendingResponse = await authedJson("/api/orders", owner.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: owner.account.id,
+        market: "polymarket",
+        symbol: "0x-pending",
+        side: "buy",
+        type: "limit",
+        quantity: 4,
+        limitPrice: 0.3,
+        reasoning: "create pending order for cancel tests",
+      }),
+    });
+    expect(pendingResponse.status).toBe(201);
+    const pendingPayload = await pendingResponse.json();
+
+    const outsiderCancelResponse = await authedJson(`/api/orders/${pendingPayload.id as string}`, outsider.apiKey, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "attempt to cancel foreign order" }),
+    });
+    expect(outsiderCancelResponse.status).toBe(404);
+    expect((await outsiderCancelResponse.json()).error.code).toBe("ORDER_NOT_FOUND");
+
+    const missingOrderCancel = await authedJson("/api/orders/ord_missing", owner.apiKey, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "order does not exist" }),
+    });
+    expect(missingOrderCancel.status).toBe(404);
+    expect((await missingOrderCancel.json()).error.code).toBe("ORDER_NOT_FOUND");
+
+    await db.delete(tables.accounts).where(eq(tables.accounts.userId, outsider.userId)).run();
+    const outsiderOrders = await authedJson("/api/orders", outsider.apiKey);
+    expect(outsiderOrders.status).toBe(200);
+    expect((await outsiderOrders.json()).orders).toEqual([]);
+
+    const adminOrders = await authedJson("/api/orders", "admin_test_key");
+    expect(adminOrders.status).toBe(200);
+    expect(Array.isArray((await adminOrders.json()).orders)).toBe(true);
+  });
+
   it("covers market order fills, portfolio values, positions visibility, and sqlite persistence", async () => {
     const owner = await registerUser("portfolio-owner");
     const outsider = await registerUser("portfolio-outsider");
@@ -440,6 +702,44 @@ describe("api integration", () => {
     expect(tradeRows).toHaveLength(1);
     expect(positionRows).toHaveLength(1);
     expect(accountRows[0]?.balance).toBeCloseTo(expectedBalance, 6);
+  });
+
+  it("covers portfolio adapter-missing branch and journal tag deserialization fallback", async () => {
+    const user = await registerUser("portfolio-fallback-user");
+
+    await db
+      .insert(tables.positions)
+      .values({
+        id: "pos_missing_adapter",
+        accountId: user.account.id,
+        market: "missing-market",
+        symbol: "0x-ghost",
+        quantity: 3,
+        avgCost: 0.2,
+      })
+      .run();
+
+    const portfolioResponse = await authedJson(`/api/accounts/${user.account.id}/portfolio`, user.apiKey);
+    expect(portfolioResponse.status).toBe(200);
+    const portfolioPayload = await portfolioResponse.json();
+    expect(portfolioPayload.positions).toEqual([]);
+    expect(portfolioPayload.totalValue).toBe(INITIAL_BALANCE);
+
+    await db
+      .insert(tables.journal)
+      .values({
+        id: "jrn_invalid_tags",
+        userId: user.userId,
+        content: "manual row with malformed tags payload",
+        tags: "not-a-json-array",
+        createdAt: new Date().toISOString(),
+      })
+      .run();
+
+    const journalResponse = await authedJson("/api/journal", user.apiKey);
+    expect(journalResponse.status).toBe(200);
+    const journalPayload = await journalResponse.json();
+    expect(journalPayload.entries[0]?.tags).toEqual([]);
   });
 
   it("covers reconcile endpoint for user scope and admin-wide scope", async () => {
@@ -525,6 +825,146 @@ describe("api integration", () => {
     expect((await filledOrdersB.json()).orders).toHaveLength(1);
   });
 
+  it("covers reconcile edge branches for skipped paths and empty targets", async () => {
+    const emptyAdminReconcile = await authedJson("/api/orders/reconcile", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "nothing to reconcile yet" }),
+    });
+    expect(emptyAdminReconcile.status).toBe(200);
+    expect(await emptyAdminReconcile.json()).toMatchObject({
+      processed: 0,
+      filled: 0,
+      skipped: 0,
+    });
+
+    const user = await registerUser("reconcile-skips");
+    const createdAt = new Date().toISOString();
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_type",
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-skip-type",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        limitPrice: null,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "manually inserted pending market order",
+        cancelReasoning: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_adapter",
+        accountId: user.account.id,
+        market: "missing-market",
+        symbol: "0x-skip-adapter",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.5,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "missing adapter should be skipped",
+        cancelReasoning: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_quote",
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-skip-quote",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.5,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "quote throw should be skipped",
+        cancelReasoning: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_missing_account",
+        accountId: "acc_missing",
+        market: "polymarket",
+        symbol: "0x-skip-missing-account",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.5,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "missing account should be skipped",
+        cancelReasoning: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_fill_error",
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-skip-fill-error",
+        side: "buy",
+        type: "limit",
+        quantity: 10_000_000,
+        limitPrice: 0.99,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "fill execution should fail with insufficient balance",
+        cancelReasoning: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
+    quoteBySymbol["0x-skip-fill-error"] = { price: 0.6, bid: 0.59, ask: 0.6 };
+    quoteBySymbol["0x-skip-missing-account"] = { price: 0.4, bid: 0.39, ask: 0.4 };
+    quoteBySymbol["0x-skip-quote"] = { price: 0.4, bid: 0.39, ask: 0.4 };
+
+    const originalGetQuote = polymarketAdapter.getQuote;
+    vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => {
+      if (symbol === "0x-skip-quote") {
+        throw new Error("quote retrieval failed");
+      }
+      return originalGetQuote(symbol);
+    });
+
+    const reconcileResponse = await authedJson("/api/orders/reconcile", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "exercise reconcile skip branches" }),
+    });
+    expect(reconcileResponse.status).toBe(200);
+    const reconcilePayload = await reconcileResponse.json();
+    expect(reconcilePayload.processed).toBeGreaterThanOrEqual(4);
+    expect(reconcilePayload.filled).toBe(0);
+    expect(reconcilePayload.skipped).toBeGreaterThanOrEqual(4);
+  });
+
   it("covers admin-only fund management and overview aggregation", async () => {
     const user = await registerUser("admin-overview-user");
 
@@ -591,6 +1031,132 @@ describe("api integration", () => {
       return typed.name === "positions_unique_idx";
     });
     expect(hasUniqueIndex).toBe(true);
+  });
+
+  it("covers admin fund endpoint invalid-json and account-not-found branches", async () => {
+    const user = await registerUser("admin-fund-edge");
+
+    const invalidJsonDeposit = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not valid",
+    });
+    expect(invalidJsonDeposit.status).toBe(400);
+    expect((await invalidJsonDeposit.json()).error.code).toBe("INVALID_JSON");
+
+    const invalidAmountDeposit = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: -1 }),
+    });
+    expect(invalidAmountDeposit.status).toBe(400);
+    expect((await invalidAmountDeposit.json()).error.code).toBe("INVALID_INPUT");
+
+    const missingAccountDeposit = await authedJson("/api/admin/accounts/acc_missing/deposit", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: 10 }),
+    });
+    expect(missingAccountDeposit.status).toBe(404);
+    expect((await missingAccountDeposit.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+
+    const missingAccountWithdraw = await authedJson("/api/admin/accounts/acc_missing/withdraw", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: 10 }),
+    });
+    expect(missingAccountWithdraw.status).toBe(404);
+    expect((await missingAccountWithdraw.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+  });
+
+  it("covers admin overview branches for missing user, missing adapter, quote failure, and shared quote keys", async () => {
+    const userA = await registerUser("overview-user-a");
+    const userB = await registerUser("overview-user-b");
+
+    const createdAt = new Date().toISOString();
+    await db
+      .insert(tables.positions)
+      .values({
+        id: "pos_shared_a",
+        accountId: userA.account.id,
+        market: "polymarket",
+        symbol: "0x-shared",
+        quantity: 3,
+        avgCost: 0.4,
+      })
+      .run();
+
+    await db
+      .insert(tables.positions)
+      .values({
+        id: "pos_shared_b",
+        accountId: userB.account.id,
+        market: "polymarket",
+        symbol: "0x-shared",
+        quantity: 4,
+        avgCost: 0.45,
+      })
+      .run();
+
+    await db
+      .insert(tables.positions)
+      .values({
+        id: "pos_quote_fail",
+        accountId: userA.account.id,
+        market: "polymarket",
+        symbol: "0x-overview-quote-fail",
+        quantity: 2,
+        avgCost: 0.5,
+      })
+      .run();
+
+    await db
+      .insert(tables.accounts)
+      .values({
+        id: "acc_orphan",
+        userId: "usr_orphan",
+        balance: 123,
+        name: "orphan-account",
+        reasoning: "manual orphan account row",
+        createdAt,
+      })
+      .run();
+
+    await db
+      .insert(tables.positions)
+      .values({
+        id: "pos_orphan_missing_adapter",
+        accountId: "acc_orphan",
+        market: "missing-market",
+        symbol: "0x-orphan",
+        quantity: 1,
+        avgCost: 0.1,
+      })
+      .run();
+
+    quoteBySymbol["0x-shared"] = { price: 0.56, bid: 0.55, ask: 0.56 };
+    const originalGetQuote = polymarketAdapter.getQuote;
+    vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => {
+      if (symbol === "0x-overview-quote-fail") {
+        throw new Error("overview quote failure");
+      }
+      return originalGetQuote(symbol);
+    });
+
+    const overviewResponse = await authedJson("/api/admin/overview", "admin_test_key");
+    expect(overviewResponse.status).toBe(200);
+    const overviewPayload = await overviewResponse.json();
+    expect(overviewPayload.totals.accounts).toBeGreaterThanOrEqual(3);
+    expect(
+      overviewPayload.markets.some((market: { marketId: string; unpricedPositions: number }) => {
+        return market.marketId === "missing-market" && market.unpricedPositions >= 1;
+      }),
+    ).toBe(true);
+    expect(
+      overviewPayload.markets.some((market: { marketId: string; quotedPositions: number }) => {
+        return market.marketId === "polymarket" && market.quotedPositions >= 1;
+      }),
+    ).toBe(true);
   });
 
   it("persists register-created user/account/api-key rows in sqlite", async () => {

@@ -52,6 +52,27 @@ describe("PolymarketAdapter", () => {
     expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("search=cpi");
   });
 
+  it("skips malformed search rows and accepts slug/title fallback fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([
+        "invalid-row",
+        { conditionId: "0x-missing-name" },
+        { slug: "slug-only", title: "Fallback Title", outcomePrice: "0.44", volume: "321" },
+      ]),
+    );
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("fallback");
+    expect(results).toEqual([
+      {
+        symbol: "slug-only",
+        name: "Fallback Title",
+        price: 0.44,
+        volume: 321,
+      },
+    ]);
+  });
+
   it("parses orderbook levels from tuple/object formats and sorts them", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({
@@ -91,6 +112,26 @@ describe("PolymarketAdapter", () => {
     expect(first.ask).toBe(0.51);
     expect(second).toEqual(first);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds quote when only one side exists and serves cached orderbook", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      return jsonResponse({
+        bids: [[0.48, 4]],
+        asks: [],
+      });
+    });
+
+    const adapter = makeAdapter();
+    const quote = await adapter.getQuote("0x-single-side");
+    expect(quote.price).toBe(0.48);
+    expect(quote.bid).toBe(0.48);
+    expect(quote.ask).toBeUndefined();
+
+    const firstBook = await adapter.getOrderbook("0x-book-cache");
+    const secondBook = await adapter.getOrderbook("0x-book-cache");
+    expect(secondBook).toEqual(firstBook);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("throws SYMBOL_NOT_FOUND when no bid and ask exist", async () => {
