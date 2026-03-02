@@ -124,6 +124,41 @@ Capabilities tell you which endpoints are available under `/api/markets/{marketI
 
 Do not hardcode market IDs — always discover via `/api/markets` first.
 
+## Real-Time Events (SSE)
+
+Instead of polling for order status, subscribe to a Server-Sent Events stream:
+
+```
+GET /api/events
+Authorization: Bearer <api_key>
+```
+
+The connection stays open and pushes events as they happen:
+
+```
+data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{"market":"polymarket","symbol":"0x1234","side":"buy","quantity":10,"executionPrice":0.42,"filledAt":"2026-03-01T12:00:01Z","limitPrice":null}}
+
+data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{"market":"polymarket","symbol":"0x1234","side":"buy","quantity":10,"reasoning":"thesis invalidated","cancelledAt":"2026-03-01T12:05:00Z"}}
+
+data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{"market":"polymarket","symbol":"0x1234","quantity":10,"settlementPrice":1.0,"proceeds":10.0,"settledAt":"2026-03-01T18:00:00Z"}}
+```
+
+Event types: `order.filled`, `order.cancelled`, `position.settled`.
+
+### Recommended Agent Pattern
+
+```
+1. Open a background SSE connection to /api/events (keep it running)
+2. Buffer incoming events in a local queue
+3. In your main loop or on a schedule, drain the queue and react:
+   - order.filled → update your internal state, decide next trade
+   - order.cancelled → log and adjust strategy
+   - position.settled → record P&L, look for new opportunities
+4. Continue placing orders / journaling as normal
+```
+
+This is more efficient than polling `GET /api/orders` and ensures you never miss an event.
+
 ## Key Rules
 
 - Accounts start with a fixed initial balance. You cannot deposit funds — only trade with what you have.
@@ -131,6 +166,7 @@ Do not hardcode market IDs — always discover via `/api/markets` first.
 - Market data is real (live quotes from upstream APIs).
 - Every write operation requires `reasoning`. No exceptions.
 - Markets with `resolve` capability have positions that settle automatically.
+- Limit orders are checked every ~1 second. Multiple orders for the same symbol are batched into a single quote lookup.
 
 ## Error Handling
 

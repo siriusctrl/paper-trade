@@ -75,7 +75,7 @@ Content-Type: application/json
 }
 ```
 
-One user can have multiple accounts (e.g. one per strategy).
+Each user has exactly one account (enforced by unique constraint).
 
 ### Get Account
 ```
@@ -372,3 +372,26 @@ GET /health
 → 200
 { "status": "ok", "markets": { "polymarket": "open" } }
 ```
+
+## Events (SSE)
+
+### Subscribe to Events
+```
+GET /api/events
+Authorization: Bearer <api_key>
+
+→ 200 (text/event-stream)
+
+data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
+
+data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
+
+data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
+```
+
+Connection stays open. Events are pushed as they happen. User tokens receive only their own events. Admin tokens receive all events.
+
+Event types:
+- `order.filled` — order was executed (market order or limit order hit)
+- `order.cancelled` — order was cancelled by user
+- `position.settled` — position was settled after market resolution
