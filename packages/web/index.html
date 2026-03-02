@@ -1,9 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unimarket Control Panel</title>
+    <script>
+      (() => {
+        try {
+          const storageKey = "unimarket_theme";
+          const stored = localStorage.getItem(storageKey);
+          const theme = stored === "light" ? "light" : "dark";
+          localStorage.setItem(storageKey, theme);
+          document.documentElement.classList.toggle("dark", theme === "dark");
+        } catch {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

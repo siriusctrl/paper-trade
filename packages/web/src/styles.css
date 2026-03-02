@@ -6,26 +6,68 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: 205 61% 97%;
-  --foreground: 214 36% 15%;
+  --background: 205 50% 97%;
+  --foreground: 220 33% 15%;
   --card: 0 0% 100%;
-  --card-foreground: 214 36% 15%;
+  --card-foreground: 220 33% 14%;
   --popover: 0 0% 100%;
-  --popover-foreground: 214 36% 15%;
-  --primary: 198 93% 36%;
-  --primary-foreground: 200 100% 97%;
-  --secondary: 188 52% 92%;
-  --secondary-foreground: 198 64% 20%;
-  --muted: 201 40% 93%;
-  --muted-foreground: 210 20% 39%;
-  --accent: 36 92% 89%;
-  --accent-foreground: 22 70% 24%;
+  --popover-foreground: 220 33% 14%;
+  --primary: 199 90% 45%;
+  --primary-foreground: 210 100% 98%;
+  --secondary: 200 42% 92%;
+  --secondary-foreground: 211 40% 22%;
+  --muted: 205 34% 92%;
+  --muted-foreground: 217 16% 39%;
+  --accent: 191 60% 88%;
+  --accent-foreground: 205 57% 20%;
   --destructive: 0 82% 58%;
   --destructive-foreground: 0 0% 100%;
-  --border: 200 32% 82%;
-  --input: 200 32% 82%;
-  --ring: 198 93% 36%;
+  --border: 208 24% 84%;
+  --input: 208 24% 84%;
+  --ring: 199 90% 45%;
+  --chart-1: 196 86% 49%;
+  --chart-2: 163 72% 44%;
+  --chart-3: 39 89% 56%;
+  --chart-4: 347 82% 61%;
+  --chart-5: 257 83% 67%;
+  --chart-6: 31 92% 60%;
+  --chart-7: 190 80% 56%;
+  --chart-8: 216 86% 62%;
+  --panel-shadow: 0 22px 48px -30px hsl(212 55% 26% / 0.32);
+  --panel-shadow-strong: 0 26px 60px -30px hsl(212 55% 18% / 0.45);
   --radius: 0.9rem;
+}
+
+.dark {
+  --background: 222 42% 9%;
+  --foreground: 210 32% 94%;
+  --card: 222 31% 14%;
+  --card-foreground: 210 35% 95%;
+  --popover: 223 30% 13%;
+  --popover-foreground: 210 35% 95%;
+  --primary: 197 95% 64%;
+  --primary-foreground: 219 45% 10%;
+  --secondary: 221 24% 20%;
+  --secondary-foreground: 210 30% 91%;
+  --muted: 223 22% 18%;
+  --muted-foreground: 214 16% 69%;
+  --accent: 213 28% 24%;
+  --accent-foreground: 205 33% 92%;
+  --destructive: 0 72% 56%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 24% 28%;
+  --input: 220 24% 28%;
+  --ring: 198 100% 66%;
+  --chart-1: 196 88% 60%;
+  --chart-2: 160 75% 50%;
+  --chart-3: 40 95% 62%;
+  --chart-4: 344 89% 67%;
+  --chart-5: 258 88% 74%;
+  --chart-6: 23 95% 63%;
+  --chart-7: 185 88% 60%;
+  --chart-8: 214 92% 70%;
+  --panel-shadow: 0 24px 60px -34px hsl(220 90% 2% / 0.9);
+  --panel-shadow-strong: 0 28px 70px -30px hsl(220 95% 2% / 0.95);
 }
 
 @theme inline {
@@ -48,12 +90,21 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+  --color-chart-6: hsl(var(--chart-6));
+  --color-chart-7: hsl(var(--chart-7));
+  --color-chart-8: hsl(var(--chart-8));
   --font-sans: "Sora", sans-serif;
   --font-mono: "IBM Plex Mono", monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --shadow-panel: 0 18px 50px -24px hsl(199 90% 15% / 0.28);
+  --shadow-panel: var(--panel-shadow);
+  --shadow-panel-strong: var(--panel-shadow-strong);
   --animate-accordion-down: accordion-down 0.18s ease-out;
   --animate-accordion-up: accordion-up 0.18s ease-out;
 }
@@ -82,15 +133,28 @@
   }
 
   body {
-    @apply bg-background font-sans text-foreground antialiased;
+    @apply bg-background font-sans text-foreground antialiased transition-colors duration-300;
     min-height: 100vh;
     background-image:
-      radial-gradient(circle at 8% 3%, hsl(193 90% 59% / 0.15), transparent 34%),
-      radial-gradient(circle at 88% 7%, hsl(37 95% 65% / 0.18), transparent 32%),
-      linear-gradient(155deg, hsl(204 55% 97%) 0%, hsl(199 60% 95%) 52%, hsl(204 50% 96%) 100%);
+      radial-gradient(circle at 8% 3%, hsl(193 90% 59% / 0.15), transparent 35%),
+      radial-gradient(circle at 88% 7%, hsl(37 95% 65% / 0.16), transparent 34%),
+      linear-gradient(160deg, hsl(205 55% 97%) 0%, hsl(200 53% 95%) 52%, hsl(206 51% 97%) 100%);
+    background-attachment: fixed;
   }
 
   #root {
     min-height: 100vh;
+  }
+
+  .dark body {
+    background-image:
+      radial-gradient(circle at 6% 0%, hsl(196 86% 56% / 0.18), transparent 36%),
+      radial-gradient(circle at 88% 4%, hsl(223 70% 56% / 0.18), transparent 34%),
+      linear-gradient(160deg, hsl(224 45% 10%) 0%, hsl(220 40% 9%) 52%, hsl(222 46% 12%) 100%);
+  }
+
+  ::selection {
+    background-color: hsl(var(--primary) / 0.32);
+    color: hsl(var(--foreground));
   }
 }

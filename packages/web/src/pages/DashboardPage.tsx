@@ -97,21 +97,21 @@ export const DashboardPage = () => {
 
   return (
     <div className="space-y-6">
-      <Card className="border-primary/20 bg-card/80 shadow-panel">
+      <Card className="border-primary/25 bg-card/55 backdrop-blur-xl animate-in fade-in-0 slide-in-from-top-1 duration-300">
         <CardHeader className="gap-4 md:flex-row md:items-center md:justify-between md:space-y-0">
           <div className="space-y-2">
-            <Badge variant="secondary" className="w-fit gap-1">
+            <Badge variant="secondary" className="w-fit gap-1 border border-border/40">
               <Users className="h-3 w-3" />
               Admin Overview
             </Badge>
-            <CardTitle className="text-3xl font-bold tracking-tight">Unimarket Portfolio Atlas</CardTitle>
+            <CardTitle className="text-3xl font-bold tracking-tight sm:text-4xl">Unimarket Portfolio Atlas</CardTitle>
             <CardDescription>
               Live market totals and user holdings from <span className="font-mono">/api/admin/overview</span>
             </CardDescription>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-right text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-3 md:justify-end">
+            <div className="text-xs text-muted-foreground md:text-right">
               <p className="font-semibold uppercase tracking-wide">Last snapshot</p>
               <p>{generatedAtLabel}</p>
             </div>
@@ -124,7 +124,7 @@ export const DashboardPage = () => {
       </Card>
 
       {error ? (
-        <Card className="border-destructive/40 bg-destructive/5 shadow-none">
+        <Card className="border-destructive/40 bg-destructive/10 shadow-none animate-in fade-in-0 duration-200">
           <CardContent className="flex items-center gap-2 py-4 text-sm text-destructive">
             <CircleAlert className="h-4 w-4" />
             {error}
@@ -134,7 +134,7 @@ export const DashboardPage = () => {
 
       {overview ? (
         <>
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 animate-in fade-in-0 slide-in-from-bottom-1 duration-300">
             <KpiCard
               title="Portfolio Equity"
               value={formatCurrency(overview.totals.equity)}
@@ -157,9 +157,9 @@ export const DashboardPage = () => {
 
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {overview.markets.map((market, index) => (
-              <Card key={market.marketId} className="relative overflow-hidden">
+              <Card key={market.marketId} className="relative overflow-hidden bg-card/50 hover:-translate-y-0.5 hover:border-primary/30">
                 <div
-                  className="pointer-events-none absolute right-0 top-0 h-24 w-24 -translate-y-8 translate-x-8 rounded-full opacity-20"
+                  className="pointer-events-none absolute right-0 top-0 h-24 w-24 -translate-y-8 translate-x-8 rounded-full opacity-30 blur-sm"
                   style={{ backgroundColor: chartPalette[index % chartPalette.length] }}
                 />
                 <CardHeader className="pb-2">
@@ -173,7 +173,13 @@ export const DashboardPage = () => {
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Unrealized PnL</span>
-                    <span className={market.totalUnrealizedPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                    <span
+                      className={
+                        market.totalUnrealizedPnl >= 0
+                          ? "font-medium text-emerald-600 dark:text-emerald-400"
+                          : "font-medium text-rose-600 dark:text-rose-400"
+                      }
+                    >
                       {formatSignedCurrency(market.totalUnrealizedPnl)}
                     </span>
                   </div>
@@ -190,8 +196,8 @@ export const DashboardPage = () => {
             ))}
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-            <Card>
+          <section className="grid gap-4 xl:grid-cols-[1.2fr_1fr] animate-in fade-in-0 duration-300">
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader>
                 <CardTitle>Position Explorer</CardTitle>
                 <CardDescription>Filter and sort holdings by user, market, and symbol.</CardDescription>
@@ -207,12 +213,13 @@ export const DashboardPage = () => {
                       className="pl-9"
                     />
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
                     {marketOptions.map((option) => (
                       <Button
                         key={option}
                         size="sm"
                         variant={marketFilter === option ? "default" : "outline"}
+                        className="shrink-0"
                         onClick={() => setMarketFilter(option)}
                       >
                         {option}
@@ -225,7 +232,7 @@ export const DashboardPage = () => {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader>
                 <CardTitle>Agent Summary</CardTitle>
                 <CardDescription>Click any agent to view balances and positions.</CardDescription>
@@ -244,7 +251,7 @@ export const DashboardPage = () => {
                     {overview.agents.map((agent) => (
                       <TableRow
                         key={agent.userId}
-                        className="cursor-pointer transition hover:bg-muted/60"
+                        className="cursor-pointer transition-all duration-200 hover:bg-accent/60"
                         onClick={() => navigate(`/agents/${agent.userId}`)}
                       >
                         <TableCell>
@@ -255,7 +262,13 @@ export const DashboardPage = () => {
                         </TableCell>
                         <TableCell>{formatNumber(agent.totals.positions)}</TableCell>
                         <TableCell className="font-semibold">{formatCurrency(agent.totals.equity)}</TableCell>
-                        <TableCell className={agent.totals.unrealizedPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                        <TableCell
+                          className={
+                            agent.totals.unrealizedPnl >= 0
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-rose-600 dark:text-rose-400"
+                          }
+                        >
                           {formatSignedCurrency(agent.totals.unrealizedPnl)}
                         </TableCell>
                       </TableRow>
@@ -281,7 +294,7 @@ export const DashboardPage = () => {
           </section>
         </>
       ) : (
-        <Card>
+        <Card className="bg-card/55">
           <CardContent className="py-16 text-center">
             <p className="text-sm text-muted-foreground">Admin overview not available yet.</p>
           </CardContent>

@@ -45,7 +45,7 @@ export const AgentDetailPage = () => {
 
   if (!agent && overview) {
     return (
-      <Card>
+      <Card className="bg-card/55">
         <CardContent className="space-y-4 py-12 text-center">
           <p className="text-sm text-muted-foreground">Agent not found in the latest overview.</p>
           <Button onClick={() => navigate("/dashboard")} variant="outline">
@@ -70,7 +70,7 @@ export const AgentDetailPage = () => {
       </div>
 
       {error ? (
-        <Card className="border-destructive/40 bg-destructive/5 shadow-none">
+        <Card className="border-destructive/40 bg-destructive/10 shadow-none">
           <CardContent className="flex items-center gap-2 py-4 text-sm text-destructive">
             <CircleAlert className="h-4 w-4" />
             {error}
@@ -80,7 +80,7 @@ export const AgentDetailPage = () => {
 
       {agent ? (
         <>
-          <Card className="border-primary/20 bg-card/80 shadow-panel">
+          <Card className="border-primary/25 bg-card/55 shadow-panel backdrop-blur-xl animate-in fade-in-0 slide-in-from-top-1 duration-300">
             <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between md:space-y-0">
               <div className="space-y-2">
                 <Badge variant="secondary" className="w-fit">
@@ -99,8 +99,8 @@ export const AgentDetailPage = () => {
             </CardHeader>
           </Card>
 
-          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <Card>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 animate-in fade-in-0 duration-300">
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Cash Balance</CardTitle>
                 <CardDescription>Available funds for new positions</CardDescription>
@@ -109,7 +109,7 @@ export const AgentDetailPage = () => {
                 <p className="text-2xl font-semibold">{formatCurrency(agent.balance)}</p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Portfolio Equity</CardTitle>
                 <CardDescription>Cash plus marked value</CardDescription>
@@ -118,21 +118,27 @@ export const AgentDetailPage = () => {
                 <p className="text-2xl font-semibold">{formatCurrency(agent.totals.equity)}</p>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Unrealized PnL</CardTitle>
                 <CardDescription>Based on latest cached marks</CardDescription>
               </CardHeader>
               <CardContent>
-                <p className={agent.totals.unrealizedPnl >= 0 ? "text-2xl font-semibold text-emerald-600" : "text-2xl font-semibold text-rose-600"}>
+                <p
+                  className={
+                    agent.totals.unrealizedPnl >= 0
+                      ? "text-2xl font-semibold text-emerald-600 dark:text-emerald-400"
+                      : "text-2xl font-semibold text-rose-600 dark:text-rose-400"
+                  }
+                >
                   {formatSignedCurrency(agent.totals.unrealizedPnl)}
                 </p>
               </CardContent>
             </Card>
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-            <Card>
+          <section className="grid gap-4 xl:grid-cols-[1.4fr_1fr] animate-in fade-in-0 duration-300">
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader>
                 <CardTitle>Open Positions</CardTitle>
                 <CardDescription>Current holdings across markets.</CardDescription>
@@ -142,7 +148,7 @@ export const AgentDetailPage = () => {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Clock className="h-4 w-4" />
@@ -151,7 +157,7 @@ export const AgentDetailPage = () => {
                 <CardDescription>Audit trail for automated actions.</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/40 p-4 text-sm text-muted-foreground">
+                <div className="rounded-xl border border-dashed border-muted-foreground/35 bg-muted/35 p-4 text-sm text-muted-foreground">
                   Timeline entries are not available from the overview endpoint yet.
                 </div>
               </CardContent>
@@ -159,7 +165,7 @@ export const AgentDetailPage = () => {
           </section>
         </>
       ) : (
-        <Card>
+        <Card className="bg-card/55">
           <CardContent className="py-16 text-center">
             <p className="text-sm text-muted-foreground">Loading agent details.</p>
           </CardContent>

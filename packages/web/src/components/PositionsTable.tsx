@@ -35,7 +35,7 @@ export const PositionsTable = ({
           <Button
             variant="ghost"
             size="sm"
-            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-transparent hover:text-foreground"
             onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           >
             Agent
@@ -57,7 +57,7 @@ export const PositionsTable = ({
         header: () => "Market / Symbol",
         cell: ({ row }) => (
           <div className="space-y-0.5">
-            <Badge variant="secondary" className="w-fit">
+            <Badge variant="secondary" className="w-fit border border-border/50">
               {row.original.market}
             </Badge>
             <p className="font-mono text-xs text-muted-foreground">{row.original.symbol}</p>
@@ -70,14 +70,14 @@ export const PositionsTable = ({
           <Button
             variant="ghost"
             size="sm"
-            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-transparent hover:text-foreground"
             onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           >
             Quantity
             <ArrowUpDown className="ml-1 h-3 w-3" />
           </Button>
         ),
-        cell: ({ row }) => <span>{formatNumber(row.original.quantity)}</span>,
+        cell: ({ row }) => <span className="font-medium">{formatNumber(row.original.quantity)}</span>,
       },
       {
         accessorKey: "avgCost",
@@ -95,7 +95,7 @@ export const PositionsTable = ({
           <Button
             variant="ghost"
             size="sm"
-            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-transparent hover:text-foreground"
             onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           >
             Value
@@ -110,7 +110,7 @@ export const PositionsTable = ({
           <Button
             variant="ghost"
             size="sm"
-            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+            className="h-auto p-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-transparent hover:text-foreground"
             onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
           >
             PnL
@@ -123,7 +123,11 @@ export const PositionsTable = ({
             return <span className="text-muted-foreground">N/A</span>;
           }
 
-          return <span className={value >= 0 ? "text-emerald-600" : "text-rose-600"}>{formatSignedCurrency(value)}</span>;
+          return (
+            <span className={value >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
+              {formatSignedCurrency(value)}
+            </span>
+          );
         },
       },
     );
@@ -143,7 +147,7 @@ export const PositionsTable = ({
   });
 
   return (
-    <Table>
+    <Table className="min-w-[760px]">
       <TableHeader>
         {table.getHeaderGroups().map((headerGroup) => (
           <TableRow key={headerGroup.id}>
