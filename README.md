@@ -9,7 +9,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 - **Market agnostic** — unified API across all markets, discover capabilities at runtime
 - **Polymarket** — prediction market trading with live odds from the CLOB API
 - **Extensible** — add new markets by implementing a simple adapter interface
-- **Agent-friendly** — auto-generated OpenAPI spec, self-describing market capabilities
+- **Agent-friendly** — skill-based integration with version-aware SSE events, self-describing market capabilities
 - **Decision transparency** — every action requires reasoning; journal + timeline for full audit trail
 - **US Stocks** — coming soon
 
@@ -24,7 +24,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 │  │                                            │  │
 │  │  /api/*  → REST API                        │  │
 │  │  /*      → Static files (Vite build)       │  │
-│  │  /openapi.json → Auto-generated spec       │  │
+│  │  /api/events → SSE event stream            │  │
 │  └──────────────────┬─────────────────────────┘  │
 │                     │                            │
 │  ┌──────────────────▼─────────────────────────┐  │
@@ -58,7 +58,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 |-------|--------|-----|
 | Language | TypeScript (end-to-end) | Type safety, shared types front-to-back |
 | Runtime | Node.js | Single process serves everything |
-| API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Type-safe routes, auto OpenAPI, serves static files |
+| API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Type-safe routes, SSE streaming, serves static files |
 | Database | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero ops, single-file, perfect for paper trading |
 | Frontend | [Vite](https://vite.dev) + [React](https://react.dev) + [shadcn/ui](https://ui.shadcn.com) + [Tailwind](https://tailwindcss.com) + [Recharts](https://recharts.org) + [TanStack Table](https://tanstack.com/table) | Polished dashboard UI with fast iteration and strong data visualization/table primitives |
 | Monorepo | pnpm workspaces | Simple, fast |
@@ -117,6 +117,11 @@ unimarket/
 | `POST` | `/api/orders/reconcile` | key/admin | Reconcile pending limit orders (requires `reasoning`) |
 | `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`) |
 
+### Real-Time Events
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/events` | key | Subscribe to real-time events via SSE (order fills, cancellations, settlements) |
+
 ### Positions
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
@@ -147,8 +152,7 @@ unimarket/
 ### Meta
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/openapi.json` | — | OpenAPI 3.1 spec |
-| `GET` | `/health` | — | Health check |
+| `GET` | `/health` | — | Health check (includes API version) |
 
 ## Runtime Market Discovery
 
@@ -189,6 +193,16 @@ interface MarketAdapter {
 }
 ```
 
+## Agent Integration
+
+Agents interact with unimarket through a skill document (`skill/SKILL.md`) that serves as the API contract. No OpenAPI spec needed — the skill doc contains everything an LLM agent needs.
+
+Key features:
+- **Version-aware**: All responses include `X-API-Version` header. SSE connections start with a `system.ready` event containing the server version
+- **Self-healing**: When the server version changes, agents can reload the skill document to pick up API changes automatically
+- **Real-time events**: `GET /api/events` streams order fills, cancellations, and settlements via SSE — no polling needed
+- **Reasoning audit trail**: Every write operation requires a `reasoning` field for full decision transparency
+
 ## Getting Started
 
 ```bash
@@ -209,15 +223,19 @@ pnpm coverage  # API/core/markets coverage with CI-enforced thresholds
 - [x] Auth (register, API keys)
 - [x] Polymarket adapter
 - [x] Journal + timeline
-- [x] REST API with OpenAPI spec
+- [x] REST API with skill-based agent integration
 - [x] Limit order improvements (immediate fill when marketable)
 - [x] Pending order reconcile endpoint
 - [x] Web dashboard (admin overview, market totals, user/agent holdings)
 - [x] Agent integration skill
+- [x] Transaction atomicity and CAS concurrency protection
+- [x] SSE event stream for real-time agent notifications
+- [x] API versioning with system.ready handshake
+- [x] Dark mode dashboard with theme toggle
+- [x] Reconciler optimization (1s polling, symbol-batched quotes)
 - [ ] US stock market adapter
 - [ ] More markets (Kalshi, crypto)
 - [ ] Historical trade replay / backtesting
-- [ ] WebSocket push updates (defer until scale/performance demands it)
 
 ## Contributing
 
