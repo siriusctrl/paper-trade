@@ -1,5 +1,3 @@
-# AGENTS.md
-
 Principles for agents contributing to this repository.
 
 This file intentionally stays **high-level and durable**. Avoid coupling behavior to folder names, temporary endpoints, or implementation details that may change.
@@ -65,6 +63,30 @@ Build a reliable, market-agnostic paper trading platform that:
 - Keep AGENTS.md principle-based (this file).
 - Keep integration instructions machine-readable and implementation-ready.
 - When behavior changes, update docs in the same PR/commit.
+
+## Delegating Work to Codex
+
+You can delegate implementation tasks to OpenAI Codex via bash. This is useful for large, well-scoped changes where you can describe the task clearly upfront.
+
+```bash
+codex exec --full-auto '<detailed task description>'
+```
+
+Guidelines:
+- `--full-auto` gives Codex sandboxed write access to the workspace with no approval prompts.
+- Write a detailed, self-contained prompt. Codex starts fresh with no prior context — include file paths, constraints, and expected behavior.
+- Always end the prompt with validation steps: `corepack pnpm test` and/or `npx tsc --noEmit`.
+- Codex cannot install new dependencies or modify files outside its sandbox. State this as a constraint.
+- Review the output before committing. Codex is good at mechanical changes but may miss architectural nuance.
+- For tasks touching multiple packages, be explicit about which packages to modify and which to leave alone.
+
+Example:
+```bash
+codex exec --full-auto 'In packages/api/src/reconciler.ts, wrap the
+multi-step writes inside reconcilePendingOrders in a db.transaction()
+call. Keep the existing CAS logic. Do not change API response formats.
+Do not add new dependencies. Run: corepack pnpm test'
+```
 
 ## Change Checklist (Before Merge)
 
