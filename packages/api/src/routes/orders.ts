@@ -13,6 +13,7 @@ import type { AppVariables } from "../auth.js";
 import { db } from "../db/client.js";
 import { accounts, orders, positions, trades } from "../db/schema.js";
 import { jsonError } from "../errors.js";
+import { eventBus } from "../events.js";
 import { getFirst, getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
 import { makeId, nowIso } from "../utils.js";
 import { reconcilePendingOrders } from "../reconciler.js";
@@ -149,7 +150,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         })
         .run();
 
-      return { kind: "filled" as const };
+      return { kind: "filled" as const, userId: account.userId };
     });
 
     if (persistenceResult.kind === "account_not_found") {
@@ -161,6 +162,22 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
       if (latest) return c.json(latest);
       return jsonError(c, 409, "INVALID_ORDER", "Order was already processed");
     }
+
+    eventBus.emit({
+      type: "order.filled",
+      userId: persistenceResult.userId,
+      accountId,
+      orderId,
+      data: {
+        market,
+        symbol,
+        side,
+        quantity,
+        executionPrice,
+        filledAt: createdAt,
+        limitPrice,
+      },
+    });
 
     const filled = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
     return c.json(filled, 201);
@@ -335,6 +352,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
 
       const order = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
       if (!order) return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
+      const orderAccount = await getFirst(db.select().from(accounts).where(eq(accounts.id, order.accountId)).limit(1).all());
 
       if (userId !== "admin") {
         const account = await getUserAccount(userId);
@@ -358,6 +376,21 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         if (!latest) return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
         return c.json({ id: orderId, status: latest.status });
       }
+
+      eventBus.emit({
+        type: "order.cancelled",
+        userId: orderAccount?.userId ?? (userId === "admin" ? "admin" : userId),
+        accountId: order.accountId,
+        orderId,
+        data: {
+          market: order.market,
+          symbol: order.symbol,
+          side: order.side,
+          quantity: order.quantity,
+          reasoning: parsed.data.reasoning,
+          cancelledAt: nowIso(),
+        },
+      });
 
       return c.json({ id: orderId, status: "cancelled" });
     }),

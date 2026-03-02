@@ -1,9 +1,10 @@
 import { executeFill } from "@unimarket/core";
-import type { MarketRegistry } from "@unimarket/markets";
+import type { MarketRegistry, Quote } from "@unimarket/markets";
 import { and, asc, eq, inArray } from "drizzle-orm";
 
 import { db } from "./db/client.js";
 import { accounts, orders, positions, trades } from "./db/schema.js";
+import { eventBus } from "./events.js";
 import { makeId, nowIso } from "./utils.js";
 
 const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> => {
@@ -22,6 +23,40 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
   let filled = 0;
   let skipped = 0;
   const filledOrderIds: string[] = [];
+  const pendingOrdersBySymbol = new Map<string, typeof pendingOrders>();
+
+  for (const pendingOrder of pendingOrders) {
+    const symbolKey = `${pendingOrder.market}:${pendingOrder.symbol}`;
+    const grouped = pendingOrdersBySymbol.get(symbolKey);
+    if (grouped) {
+      grouped.push(pendingOrder);
+    } else {
+      pendingOrdersBySymbol.set(symbolKey, [pendingOrder]);
+    }
+  }
+
+  const quoteMap = new Map<string, Quote>();
+  const failedQuoteKeys = new Set<string>();
+
+  for (const [symbolKey, groupedOrders] of pendingOrdersBySymbol) {
+    const sampleOrder = groupedOrders[0];
+    if (!sampleOrder) continue;
+
+    const adapter = registry.get(sampleOrder.market);
+    if (!adapter) {
+      failedQuoteKeys.add(symbolKey);
+      console.warn(`[reconciler] missing adapter for ${sampleOrder.market}; skipping ${groupedOrders.length} orders`);
+      continue;
+    }
+
+    try {
+      const quote = await adapter.getQuote(sampleOrder.symbol);
+      quoteMap.set(symbolKey, quote);
+    } catch (error) {
+      failedQuoteKeys.add(symbolKey);
+      console.warn(`[reconciler] quote fetch failed for ${symbolKey}; skipping ${groupedOrders.length} orders`, error);
+    }
+  }
 
   for (const pendingOrder of pendingOrders) {
     if (pendingOrder.type !== "limit" || pendingOrder.limitPrice === null) {
@@ -29,20 +64,19 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
       continue;
     }
 
-    const adapter = registry.get(pendingOrder.market);
-    if (!adapter) {
+    const symbolKey = `${pendingOrder.market}:${pendingOrder.symbol}`;
+    if (failedQuoteKeys.has(symbolKey)) {
       skipped += 1;
       continue;
     }
 
-    let quotePrice: number;
-    try {
-      const quote = await adapter.getQuote(pendingOrder.symbol);
-      quotePrice = pendingOrder.side === "buy" ? (quote.ask ?? quote.price) : (quote.bid ?? quote.price);
-    } catch {
+    const quote = quoteMap.get(symbolKey);
+    if (!quote) {
       skipped += 1;
       continue;
     }
+
+    const quotePrice = pendingOrder.side === "buy" ? (quote.ask ?? quote.price) : (quote.bid ?? quote.price);
 
     const shouldFill =
       pendingOrder.side === "buy" ? quotePrice <= pendingOrder.limitPrice : quotePrice >= pendingOrder.limitPrice;
@@ -56,7 +90,7 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
       const filledAt = nowIso();
       const persisted = await db.transaction(async (tx) => {
         const account = await getFirst(tx.select().from(accounts).where(eq(accounts.id, pendingOrder.accountId)).limit(1).all());
-        if (!account) return false;
+        if (!account) return null;
 
         const existingPosition = await getFirst(
           tx
@@ -87,7 +121,7 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
           .set({ status: "filled", filledPrice: quotePrice, filledAt })
           .where(and(eq(orders.id, pendingOrder.id), eq(orders.status, "pending")))
           .run();
-        if (claimedOrder.rowsAffected === 0) return false;
+        if (claimedOrder.rowsAffected === 0) return null;
 
         const updatedAccount = await tx.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, account.id)).run();
         if (updatedAccount.rowsAffected === 0) {
@@ -139,13 +173,29 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
           })
           .run();
 
-        return true;
+        return { userId: account.userId, accountId: account.id };
       });
 
       if (!persisted) {
         skipped += 1;
         continue;
       }
+
+      eventBus.emit({
+        type: "order.filled",
+        userId: persisted.userId,
+        accountId: persisted.accountId,
+        orderId: pendingOrder.id,
+        data: {
+          market: pendingOrder.market,
+          symbol: pendingOrder.symbol,
+          side: pendingOrder.side as "buy" | "sell",
+          quantity: pendingOrder.quantity,
+          executionPrice: quotePrice,
+          filledAt,
+          limitPrice: pendingOrder.limitPrice,
+        },
+      });
 
       filled += 1;
       filledOrderIds.push(pendingOrder.id);
@@ -157,7 +207,7 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
   return { processed: pendingOrders.length, filled, skipped, filledOrderIds };
 };
 
-const DEFAULT_INTERVAL_MS = 15_000;
+const DEFAULT_INTERVAL_MS = 1_000;
 
 export const startReconciler = (registry: MarketRegistry): (() => void) => {
   const intervalMs = Number(process.env.RECONCILE_INTERVAL_MS) || DEFAULT_INTERVAL_MS;

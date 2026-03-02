@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 
 import { db } from "./db/client.js";
 import { accounts, positions, trades } from "./db/schema.js";
+import { eventBus } from "./events.js";
 import { makeId, nowIso } from "./utils.js";
 
 const DEFAULT_INTERVAL_MS = 60_000; // 1 minute
@@ -43,10 +44,10 @@ export const settlePendingPositions = async (registry: MarketRegistry): Promise<
     try {
       const didSettle = await db.transaction(async (tx) => {
         const latestPosition = await tx.select().from(positions).where(eq(positions.id, pos.id)).get();
-        if (!latestPosition) return false;
+        if (!latestPosition) return null;
 
         const account = await tx.select().from(accounts).where(eq(accounts.id, latestPosition.accountId)).get();
-        if (!account) return false;
+        if (!account) return null;
 
         const proceeds = Number((latestPosition.quantity * settlementPrice).toFixed(6));
         const nextBalance = Number((account.balance + proceeds).toFixed(6));
@@ -57,11 +58,12 @@ export const settlePendingPositions = async (registry: MarketRegistry): Promise<
         }
 
         const now = nowIso();
+        const settlementOrderId = makeId("stl");
         await tx
           .insert(trades)
           .values({
             id: makeId("trd"),
-            orderId: makeId("stl"),
+            orderId: settlementOrderId,
             accountId: latestPosition.accountId,
             market: latestPosition.market,
             symbol: latestPosition.symbol,
@@ -77,10 +79,34 @@ export const settlePendingPositions = async (registry: MarketRegistry): Promise<
           throw new Error("Position delete failed during settlement");
         }
 
-        return true;
+        return {
+          userId: account.userId,
+          accountId: latestPosition.accountId,
+          orderId: settlementOrderId,
+          market: latestPosition.market,
+          symbol: latestPosition.symbol,
+          quantity: latestPosition.quantity,
+          settlementPrice,
+          proceeds,
+          settledAt: now,
+        };
       });
 
       if (didSettle) {
+        eventBus.emit({
+          type: "position.settled",
+          userId: didSettle.userId,
+          accountId: didSettle.accountId,
+          orderId: didSettle.orderId,
+          data: {
+            market: didSettle.market,
+            symbol: didSettle.symbol,
+            quantity: didSettle.quantity,
+            settlementPrice: didSettle.settlementPrice,
+            proceeds: didSettle.proceeds,
+            settledAt: didSettle.settledAt,
+          },
+        });
         settled += 1;
       } else {
         skipped += 1;

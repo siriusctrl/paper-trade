@@ -9,6 +9,7 @@ import { auth as authRoutes } from "./routes/auth.js";
 import { journalRoutes } from "./routes/journal.js";
 import { createMarketRoutes } from "./routes/markets.js";
 import { createOrderRoutes } from "./routes/orders.js";
+import { eventsRoutes } from "./routes/events.js";
 import { positionsRoutes } from "./routes/positions.js";
 
 export type CreateAppOptions = {
@@ -49,6 +50,7 @@ const createOpenApiDocument = (registry: MarketRegistry) => {
       "/api/account/portfolio": { get: { summary: "Get current user's portfolio" } },
       "/api/account/timeline": { get: { summary: "Get current user's timeline (orders + journal)" } },
       "/api/orders": { get: { summary: "List orders" }, post: { summary: "Place order (reasoning required)" } },
+      "/api/events": { get: { summary: "Subscribe to real-time account events (SSE)" } },
       "/api/orders/reconcile": { post: { summary: "Reconcile and fill marketable pending limit orders (reasoning required)" } },
       "/api/orders/{id}": {
         get: { summary: "Get order by id", parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }] },
@@ -90,6 +92,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
   app.route("/api/auth", authRoutes);
 
   app.route("/api/account", createAccountRoutes(registry));
+  app.route("/api/events", eventsRoutes);
   app.route("/api/orders", createOrderRoutes(registry));
   app.route("/api/positions", positionsRoutes);
   app.route("/api/journal", journalRoutes);

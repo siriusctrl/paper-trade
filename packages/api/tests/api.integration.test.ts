@@ -127,6 +127,32 @@ const authedJson = async (
   });
 };
 
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const parseSseDataEvent = (chunk: Uint8Array): Record<string, unknown> => {
+  const raw = new TextDecoder().decode(chunk);
+  const dataLine = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("data: "));
+  if (!dataLine) {
+    throw new Error(`Expected SSE data line but received chunk: ${raw}`);
+  }
+  return JSON.parse(dataLine.slice("data: ".length)) as Record<string, unknown>;
+};
+
 beforeAll(async () => {
   const [{ createApp }, dbModule, schemaModule] = await Promise.all([
     import("../src/app.js"),
@@ -173,6 +199,7 @@ describe("api integration", () => {
     expect(openApiResponse.status).toBe(200);
     const openApi = await openApiResponse.json();
     expect(openApi.openapi).toBe("3.1.0");
+    expect(openApi.paths["/api/events"]).toBeDefined();
     expect(openApi.paths["/api/orders/reconcile"]).toBeDefined();
     expect(openApi.paths["/api/orders/{id}"]?.get).toBeDefined();
     expect(openApi.paths["/api/admin/overview"]).toBeDefined();
@@ -518,6 +545,79 @@ describe("api integration", () => {
     expect(resolveSpy).toHaveBeenCalled();
   });
 
+  it("streams SSE events with user-scoped and admin-wide visibility", async () => {
+    const owner = await registerUser("events-owner");
+    const outsider = await registerUser("events-outsider");
+
+    quoteBySymbol["0x-events-fill"] = { price: 0.52, bid: 0.51, ask: 0.52 };
+
+    const ownerEvents = await authedJson("/api/events", owner.apiKey);
+    const outsiderEvents = await authedJson("/api/events", outsider.apiKey);
+    const adminEvents = await authedJson("/api/events", "admin_test_key");
+
+    expect(ownerEvents.status).toBe(200);
+    expect(ownerEvents.headers.get("content-type")).toContain("text/event-stream");
+    expect(ownerEvents.headers.get("cache-control")).toContain("no-cache");
+    expect(ownerEvents.headers.get("connection")).toContain("keep-alive");
+    expect(outsiderEvents.status).toBe(200);
+    expect(adminEvents.status).toBe(200);
+
+    const ownerReader = ownerEvents.body?.getReader();
+    const outsiderReader = outsiderEvents.body?.getReader();
+    const adminReader = adminEvents.body?.getReader();
+
+    expect(ownerReader).toBeDefined();
+    expect(outsiderReader).toBeDefined();
+    expect(adminReader).toBeDefined();
+
+    const ownerReadPromise = ownerReader!.read();
+    const outsiderReadPromise = outsiderReader!.read();
+    const adminReadPromise = adminReader!.read();
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const orderResponse = await authedJson("/api/orders", owner.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-events-fill",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "Emit event for SSE stream listeners",
+      }),
+    });
+    expect(orderResponse.status).toBe(201);
+    const orderPayload = await orderResponse.json();
+
+    const ownerChunk = await withTimeout(ownerReadPromise, 2000, "owner SSE event");
+    const adminChunk = await withTimeout(adminReadPromise, 2000, "admin SSE event");
+
+    expect(ownerChunk.done).toBe(false);
+    expect(adminChunk.done).toBe(false);
+
+    const ownerEvent = parseSseDataEvent(ownerChunk.value ?? new Uint8Array());
+    const adminEvent = parseSseDataEvent(adminChunk.value ?? new Uint8Array());
+
+    expect(ownerEvent.type).toBe("order.filled");
+    expect(ownerEvent.userId).toBe(owner.userId);
+    expect(ownerEvent.accountId).toBe(owner.account.id);
+    expect(ownerEvent.orderId).toBe(orderPayload.id);
+
+    expect(adminEvent.type).toBe("order.filled");
+    expect(adminEvent.orderId).toBe(orderPayload.id);
+    expect(adminEvent.userId).toBe(owner.userId);
+
+    await expect(withTimeout(outsiderReadPromise, 250, "outsider SSE event")).rejects.toThrow(
+      "Timed out waiting for outsider SSE event",
+    );
+
+    await ownerReader!.cancel();
+    await outsiderReader!.cancel();
+    await adminReader!.cancel();
+  });
+
   it("covers order lifecycle, journal filtering, and timeline aggregation", async () => {
     const user = await registerUser("lifecycle-user");
     quoteBySymbol["0x-pending"] = { price: 0.66, bid: 0.65, ask: 0.66 };
@@ -840,6 +940,63 @@ describe("api integration", () => {
     const filledOrdersB = await authedJson(`/api/orders?status=filled`, userB.apiKey);
     expect(filledOrdersB.status).toBe(200);
     expect((await filledOrdersB.json()).orders).toHaveLength(1);
+  });
+
+  it("batches quote requests by market and symbol during reconciliation", async () => {
+    const user = await registerUser("reconcile-batch-user");
+    quoteBySymbol["0x-reconcile-batch"] = { price: 0.8, bid: 0.79, ask: 0.8 };
+
+    const pendingOne = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-reconcile-batch",
+        side: "buy",
+        type: "limit",
+        quantity: 3,
+        limitPrice: 0.5,
+        reasoning: "batch reconcile pending one",
+      }),
+    });
+    expect(pendingOne.status).toBe(201);
+    expect((await pendingOne.json()).status).toBe("pending");
+
+    const pendingTwo = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-reconcile-batch",
+        side: "buy",
+        type: "limit",
+        quantity: 4,
+        limitPrice: 0.5,
+        reasoning: "batch reconcile pending two",
+      }),
+    });
+    expect(pendingTwo.status).toBe(201);
+    expect((await pendingTwo.json()).status).toBe("pending");
+
+    quoteBySymbol["0x-reconcile-batch"] = { price: 0.45, bid: 0.44, ask: 0.45 };
+    const originalGetQuote = polymarketAdapter.getQuote;
+    const quoteSpy = vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => originalGetQuote(symbol));
+
+    const reconcileResponse = await authedJson("/api/orders/reconcile", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "batch reconcile shared symbol" }),
+    });
+    expect(reconcileResponse.status).toBe(200);
+    const reconcilePayload = await reconcileResponse.json();
+    expect(reconcilePayload.filled).toBe(2);
+
+    const batchSymbolCalls = quoteSpy.mock.calls.filter(([symbol]) => symbol === "0x-reconcile-batch");
+    expect(batchSymbolCalls).toHaveLength(1);
+
+    const filledOrders = await authedJson("/api/orders?status=filled", user.apiKey);
+    expect(filledOrders.status).toBe(200);
+    expect((await filledOrders.json()).orders).toHaveLength(2);
   });
 
   it("covers reconcile edge branches for skipped paths and empty targets", async () => {
