@@ -52,84 +52,100 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
       continue;
     }
 
-    const account = await getFirst(db.select().from(accounts).where(eq(accounts.id, pendingOrder.accountId)).limit(1).all());
-    if (!account) {
-      skipped += 1;
-      continue;
-    }
-
-    const existingPosition = await getFirst(
-      db
-        .select()
-        .from(positions)
-        .where(
-          and(
-            eq(positions.accountId, account.id),
-            eq(positions.market, pendingOrder.market),
-            eq(positions.symbol, pendingOrder.symbol),
-          ),
-        )
-        .limit(1)
-        .all(),
-    );
-
     try {
-      const fillResult = executeFill({
-        balance: account.balance,
-        position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
-        side: pendingOrder.side as "buy" | "sell",
-        quantity: pendingOrder.quantity,
-        price: quotePrice,
-        allowShort: false,
-      });
+      const filledAt = nowIso();
+      const persisted = await db.transaction(async (tx) => {
+        const account = await getFirst(tx.select().from(accounts).where(eq(accounts.id, pendingOrder.accountId)).limit(1).all());
+        if (!account) return false;
 
-      await db.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, account.id)).run();
+        const existingPosition = await getFirst(
+          tx
+            .select()
+            .from(positions)
+            .where(
+              and(
+                eq(positions.accountId, account.id),
+                eq(positions.market, pendingOrder.market),
+                eq(positions.symbol, pendingOrder.symbol),
+              ),
+            )
+            .limit(1)
+            .all(),
+        );
 
-      if (!fillResult.nextPosition) {
-        if (existingPosition) {
-          await db.delete(positions).where(eq(positions.id, existingPosition.id)).run();
-        }
-      } else if (existingPosition) {
-        await db
-          .update(positions)
-          .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
-          .where(eq(positions.id, existingPosition.id))
+        const fillResult = executeFill({
+          balance: account.balance,
+          position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
+          side: pendingOrder.side as "buy" | "sell",
+          quantity: pendingOrder.quantity,
+          price: quotePrice,
+          allowShort: false,
+        });
+
+        const claimedOrder = await tx
+          .update(orders)
+          .set({ status: "filled", filledPrice: quotePrice, filledAt })
+          .where(and(eq(orders.id, pendingOrder.id), eq(orders.status, "pending")))
           .run();
-      } else {
-        await db
-          .insert(positions)
+        if (claimedOrder.rowsAffected === 0) return false;
+
+        const updatedAccount = await tx.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, account.id)).run();
+        if (updatedAccount.rowsAffected === 0) {
+          throw new Error("Account update failed during reconciliation");
+        }
+
+        if (!fillResult.nextPosition) {
+          if (existingPosition) {
+            const deletedPosition = await tx.delete(positions).where(eq(positions.id, existingPosition.id)).run();
+            if (deletedPosition.rowsAffected === 0) {
+              throw new Error("Position delete failed during reconciliation");
+            }
+          }
+        } else if (existingPosition) {
+          const updatedPosition = await tx
+            .update(positions)
+            .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
+            .where(eq(positions.id, existingPosition.id))
+            .run();
+          if (updatedPosition.rowsAffected === 0) {
+            throw new Error("Position update failed during reconciliation");
+          }
+        } else {
+          await tx
+            .insert(positions)
+            .values({
+              id: makeId("pos"),
+              accountId: account.id,
+              market: pendingOrder.market,
+              symbol: pendingOrder.symbol,
+              quantity: fillResult.nextPosition.quantity,
+              avgCost: fillResult.nextPosition.avgCost,
+            })
+            .run();
+        }
+
+        await tx
+          .insert(trades)
           .values({
-            id: makeId("pos"),
+            id: makeId("trd"),
+            orderId: pendingOrder.id,
             accountId: account.id,
             market: pendingOrder.market,
             symbol: pendingOrder.symbol,
-            quantity: fillResult.nextPosition.quantity,
-            avgCost: fillResult.nextPosition.avgCost,
+            side: pendingOrder.side,
+            quantity: pendingOrder.quantity,
+            price: quotePrice,
+            createdAt: filledAt,
           })
           .run();
+
+        return true;
+      });
+
+      if (!persisted) {
+        skipped += 1;
+        continue;
       }
-
-      const filledAt = nowIso();
-      await db
-        .insert(trades)
-        .values({
-          id: makeId("trd"),
-          orderId: pendingOrder.id,
-          accountId: account.id,
-          market: pendingOrder.market,
-          symbol: pendingOrder.symbol,
-          side: pendingOrder.side,
-          quantity: pendingOrder.quantity,
-          price: quotePrice,
-          createdAt: filledAt,
-        })
-        .run();
-
-      await db
-        .update(orders)
-        .set({ status: "filled", filledPrice: quotePrice, filledAt })
-        .where(eq(orders.id, pendingOrder.id))
-        .run();
 
       filled += 1;
       filledOrderIds.push(pendingOrder.id);

@@ -33,6 +33,7 @@ export const accounts = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => ({
+    userUnique: uniqueIndex("accounts_user_id_uq").on(table.userId),
     userIdx: index("accounts_user_id_idx").on(table.userId),
   }),
 );

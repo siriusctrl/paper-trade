@@ -33,87 +33,134 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
     createdAt: string,
     c: Context<{ Variables: AppVariables }>,
   ): Promise<Response> => {
-    const account = await getFirst(db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all());
-    if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-
-    const existingPosition = await getFirst(
-      db
-        .select()
-        .from(positions)
-        .where(and(eq(positions.accountId, accountId), eq(positions.market, market), eq(positions.symbol, symbol)))
-        .limit(1)
-        .all(),
-    );
-
-    const fillResult = executeFill({
-      balance: account.balance,
-      position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
-      side,
-      quantity,
-      price: executionPrice,
-      allowShort: false,
-    });
-
-    await db.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, accountId)).run();
-
-    if (!fillResult.nextPosition) {
-      if (existingPosition) {
-        await db.delete(positions).where(eq(positions.id, existingPosition.id)).run();
+    const persistenceResult = await db.transaction(async (tx) => {
+      const existingOrder = await getFirst(tx.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
+      if (existingOrder && existingOrder.status !== "pending") {
+        return { kind: "skipped" as const, order: existingOrder };
       }
-    } else if (existingPosition) {
-      await db
-        .update(positions)
-        .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
-        .where(eq(positions.id, existingPosition.id))
-        .run();
-    } else {
-      await db
-        .insert(positions)
-        .values({
-          id: makeId("pos"),
-          accountId,
-          market,
-          symbol,
-          quantity: fillResult.nextPosition.quantity,
-          avgCost: fillResult.nextPosition.avgCost,
-        })
-        .run();
-    }
 
-    await db
-      .insert(trades)
-      .values({
-        id: makeId("trd"),
-        orderId,
-        accountId,
-        market,
-        symbol,
+      const account = await getFirst(tx.select().from(accounts).where(eq(accounts.id, accountId)).limit(1).all());
+      if (!account) return { kind: "account_not_found" as const };
+
+      const existingPosition = await getFirst(
+        tx
+          .select()
+          .from(positions)
+          .where(and(eq(positions.accountId, accountId), eq(positions.market, market), eq(positions.symbol, symbol)))
+          .limit(1)
+          .all(),
+      );
+
+      const fillResult = executeFill({
+        balance: account.balance,
+        position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
         side,
         quantity,
         price: executionPrice,
-        createdAt,
-      })
-      .run();
+        allowShort: false,
+      });
 
-    await db
-      .insert(orders)
-      .values({
-        id: orderId,
-        accountId,
-        market,
-        symbol,
-        side,
-        type: limitPrice !== null ? "limit" : "market",
-        quantity,
-        limitPrice,
-        status: "filled",
-        filledPrice: executionPrice,
-        reasoning,
-        cancelReasoning: null,
-        filledAt: createdAt,
-        createdAt,
-      })
-      .run();
+      if (existingOrder) {
+        const claimedOrder = await tx
+          .update(orders)
+          .set({ status: "filled", filledPrice: executionPrice, filledAt: createdAt, cancelReasoning: null })
+          .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
+          .run();
+
+        if (claimedOrder.rowsAffected === 0) {
+          const latest = await getFirst(tx.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
+          return { kind: "skipped" as const, order: latest ?? existingOrder };
+        }
+      } else {
+        const insertedOrder = await tx
+          .insert(orders)
+          .values({
+            id: orderId,
+            accountId,
+            market,
+            symbol,
+            side,
+            type: limitPrice !== null ? "limit" : "market",
+            quantity,
+            limitPrice,
+            status: "filled",
+            filledPrice: executionPrice,
+            reasoning,
+            cancelReasoning: null,
+            filledAt: createdAt,
+            createdAt,
+          })
+          .onConflictDoNothing()
+          .run();
+
+        if (insertedOrder.rowsAffected === 0) {
+          const latest = await getFirst(tx.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
+          return { kind: "skipped" as const, order: latest };
+        }
+      }
+
+      const updatedAccount = await tx.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, accountId)).run();
+      if (updatedAccount.rowsAffected === 0) {
+        throw new Error("Account update failed during order fill");
+      }
+
+      if (!fillResult.nextPosition) {
+        if (existingPosition) {
+          const deletedPosition = await tx.delete(positions).where(eq(positions.id, existingPosition.id)).run();
+          if (deletedPosition.rowsAffected === 0) {
+            throw new Error("Position delete failed during order fill");
+          }
+        }
+      } else if (existingPosition) {
+        const updatedPosition = await tx
+          .update(positions)
+          .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
+          .where(eq(positions.id, existingPosition.id))
+          .run();
+        if (updatedPosition.rowsAffected === 0) {
+          throw new Error("Position update failed during order fill");
+        }
+      } else {
+        await tx
+          .insert(positions)
+          .values({
+            id: makeId("pos"),
+            accountId,
+            market,
+            symbol,
+            quantity: fillResult.nextPosition.quantity,
+            avgCost: fillResult.nextPosition.avgCost,
+          })
+          .run();
+      }
+
+      await tx
+        .insert(trades)
+        .values({
+          id: makeId("trd"),
+          orderId,
+          accountId,
+          market,
+          symbol,
+          side,
+          quantity,
+          price: executionPrice,
+          createdAt,
+        })
+        .run();
+
+      return { kind: "filled" as const };
+    });
+
+    if (persistenceResult.kind === "account_not_found") {
+      return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+    }
+    if (persistenceResult.kind === "skipped") {
+      if (persistenceResult.order) return c.json(persistenceResult.order);
+      const latest = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
+      if (latest) return c.json(latest);
+      return jsonError(c, 409, "INVALID_ORDER", "Order was already processed");
+    }
 
     const filled = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
     return c.json(filled, 201);
@@ -300,11 +347,17 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         return jsonError(c, 400, "INVALID_ORDER", "Only pending orders can be cancelled");
       }
 
-      await db
+      const updated = await db
         .update(orders)
         .set({ status: "cancelled", cancelReasoning: parsed.data.reasoning })
-        .where(eq(orders.id, orderId))
+        .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
         .run();
+
+      if (updated.rowsAffected === 0) {
+        const latest = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
+        if (!latest) return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
+        return c.json({ id: orderId, status: latest.status });
+      }
 
       return c.json({ id: orderId, status: "cancelled" });
     }),

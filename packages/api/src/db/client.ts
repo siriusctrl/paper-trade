@@ -39,6 +39,7 @@ const migrationStatements = [
   )
   `,
   `CREATE INDEX IF NOT EXISTS accounts_user_id_idx ON accounts(user_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS accounts_user_id_uq ON accounts(user_id)`,
   `
   CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY,
