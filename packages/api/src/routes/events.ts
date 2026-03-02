@@ -3,7 +3,9 @@ import { streamSSE } from "hono/streaming";
 
 import type { AppVariables } from "../auth.js";
 import { jsonError } from "../errors.js";
-import { ALL_EVENTS_SUBSCRIBER, eventBus, type TradingEvent } from "../events.js";
+import { ALL_EVENTS_SUBSCRIBER, eventBus, type EmittedTradingEvent } from "../events.js";
+import { nowIso } from "../utils.js";
+import { API_VERSION } from "../version.js";
 
 const router = new Hono<{ Variables: AppVariables }>();
 
@@ -14,7 +16,12 @@ router.get("/", (c) => {
   const subscriptionKey = c.get("isAdmin") ? ALL_EVENTS_SUBSCRIBER : userId;
 
   return streamSSE(c, async (stream) => {
-    const onEvent = (event: TradingEvent) => {
+    await stream.writeSSE({
+      event: "system.ready",
+      data: JSON.stringify({ type: "system.ready", data: { version: API_VERSION, connectedAt: nowIso() } }),
+    });
+
+    const onEvent = (event: EmittedTradingEvent) => {
       void stream.write(`data: ${JSON.stringify(event)}\n\n`);
     };
 

@@ -2,7 +2,7 @@
 
 Base URL: `http://<host>:3100/api`
 
-Auto-generated OpenAPI 3.1 spec available at `/openapi.json`.
+All responses include an `X-API-Version` header with the current server version.
 
 All endpoints except `/api/auth/register` and `/health` require:
 ```
@@ -382,6 +382,8 @@ Authorization: Bearer <api_key>
 
 → 200 (text/event-stream)
 
+data: {"type":"system.ready","data":{"version":"2.0.0","connectedAt":"2026-03-02T12:00:00.000Z"}}
+
 data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
 
 data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
@@ -389,9 +391,10 @@ data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderI
 data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
 ```
 
-Connection stays open. Events are pushed as they happen. User tokens receive only their own events. Admin tokens receive all events.
+Connection stays open. Events are pushed as they happen. The first event is always `system.ready`. User tokens receive only their own trading events. Admin tokens receive all trading events.
 
 Event types:
+- `system.ready` — emitted on connect with server version and connection timestamp
 - `order.filled` — order was executed (market order or limit order hit)
 - `order.cancelled` — order was cancelled by user
 - `position.settled` — position was settled after market resolution

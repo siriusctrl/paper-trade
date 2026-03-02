@@ -1,6 +1,8 @@
-export type EventType = "order.filled" | "order.cancelled" | "position.settled";
+export type EventType = "system.ready" | "order.filled" | "order.cancelled" | "position.settled";
 
-type BaseEvent<TType extends EventType, TData extends Record<string, unknown>> = {
+type UserScopedEventType = Exclude<EventType, "system.ready">;
+
+type BaseEvent<TType extends UserScopedEventType, TData extends Record<string, unknown>> = {
   type: TType;
   userId: string;
   accountId: string;
@@ -45,8 +47,14 @@ export type PositionSettledEvent = BaseEvent<
   }
 >;
 
-export type TradingEvent = OrderFilledEvent | OrderCancelledEvent | PositionSettledEvent;
-export type TradingEventListener = (event: TradingEvent) => void;
+export type SystemReadyEvent = {
+  type: "system.ready";
+  data: { version: string; connectedAt: string };
+};
+
+export type TradingEvent = SystemReadyEvent | OrderFilledEvent | OrderCancelledEvent | PositionSettledEvent;
+export type EmittedTradingEvent = Exclude<TradingEvent, SystemReadyEvent>;
+export type TradingEventListener = (event: EmittedTradingEvent) => void;
 
 const ALL_USERS_CHANNEL = "*";
 export const ALL_EVENTS_SUBSCRIBER = ALL_USERS_CHANNEL;
@@ -55,7 +63,7 @@ class EventBus {
   static readonly ALL_USERS = ALL_USERS_CHANNEL;
   private listenersByUserId = new Map<string, Set<TradingEventListener>>();
 
-  emit(event: TradingEvent): void {
+  emit(event: EmittedTradingEvent): void {
     this.dispatch(event.userId, event);
     this.dispatch(ALL_EVENTS_SUBSCRIBER, event);
   }
@@ -76,7 +84,7 @@ class EventBus {
     }
   }
 
-  private dispatch(userId: string, event: TradingEvent): void {
+  private dispatch(userId: string, event: EmittedTradingEvent): void {
     const listeners = this.listenersByUserId.get(userId);
     if (!listeners) return;
 

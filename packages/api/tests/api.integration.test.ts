@@ -7,6 +7,7 @@ import { INITIAL_BALANCE } from "@unimarket/core";
 import { MarketAdapterError, MarketRegistry, type MarketAdapter } from "@unimarket/markets";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { API_VERSION } from "../src/version.js";
 
 type AppLike = {
   request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -191,18 +192,11 @@ describe("api integration", () => {
     const healthResponse = await app.request("/health");
     expect(healthResponse.status).toBe(200);
     const health = await healthResponse.json();
+    expect(healthResponse.headers.get("x-api-version")).toBe(API_VERSION);
     expect(health.status).toBe("ok");
+    expect(health.version).toBe(API_VERSION);
     expect(health.markets.polymarket).toBe("available");
     expect(health.markets["quote-only"]).toBe("available");
-
-    const openApiResponse = await app.request("/openapi.json");
-    expect(openApiResponse.status).toBe(200);
-    const openApi = await openApiResponse.json();
-    expect(openApi.openapi).toBe("3.1.0");
-    expect(openApi.paths["/api/events"]).toBeDefined();
-    expect(openApi.paths["/api/orders/reconcile"]).toBeDefined();
-    expect(openApi.paths["/api/orders/{id}"]?.get).toBeDefined();
-    expect(openApi.paths["/api/admin/overview"]).toBeDefined();
 
     const unauthorizedOrders = await app.request("/api/orders");
     expect(unauthorizedOrders.status).toBe(401);
@@ -241,12 +235,9 @@ describe("api integration", () => {
     const healthResponse = await defaultApp.request("/health");
     expect(healthResponse.status).toBe(200);
     const healthPayload = await healthResponse.json();
+    expect(healthResponse.headers.get("x-api-version")).toBe(API_VERSION);
+    expect(healthPayload.version).toBe(API_VERSION);
     expect(healthPayload.markets.polymarket).toBe("available");
-
-    const openApiResponse = await defaultApp.request("/openapi.json");
-    expect(openApiResponse.status).toBe(200);
-    const openApiPayload = await openApiResponse.json();
-    expect(openApiPayload.paths["/api/markets/{market}/quote"]).toBeDefined();
   });
 
   it("rejects malformed auth headers and invalid query payloads", async () => {
@@ -559,6 +550,7 @@ describe("api integration", () => {
     expect(ownerEvents.headers.get("content-type")).toContain("text/event-stream");
     expect(ownerEvents.headers.get("cache-control")).toContain("no-cache");
     expect(ownerEvents.headers.get("connection")).toContain("keep-alive");
+    expect(ownerEvents.headers.get("x-api-version")).toBe(API_VERSION);
     expect(outsiderEvents.status).toBe(200);
     expect(adminEvents.status).toBe(200);
 
@@ -570,11 +562,42 @@ describe("api integration", () => {
     expect(outsiderReader).toBeDefined();
     expect(adminReader).toBeDefined();
 
+    const ownerReadyPromise = ownerReader!.read();
+    const outsiderReadyPromise = outsiderReader!.read();
+    const adminReadyPromise = adminReader!.read();
+
+    const ownerReadyChunk = await withTimeout(ownerReadyPromise, 2000, "owner system.ready");
+    const outsiderReadyChunk = await withTimeout(outsiderReadyPromise, 2000, "outsider system.ready");
+    const adminReadyChunk = await withTimeout(adminReadyPromise, 2000, "admin system.ready");
+
+    expect(ownerReadyChunk.done).toBe(false);
+    expect(outsiderReadyChunk.done).toBe(false);
+    expect(adminReadyChunk.done).toBe(false);
+
+    const ownerReadyEvent = parseSseDataEvent(ownerReadyChunk.value ?? new Uint8Array());
+    const outsiderReadyEvent = parseSseDataEvent(outsiderReadyChunk.value ?? new Uint8Array());
+    const adminReadyEvent = parseSseDataEvent(adminReadyChunk.value ?? new Uint8Array());
+
+    expect(ownerReadyEvent).toMatchObject({
+      type: "system.ready",
+      data: { version: API_VERSION },
+    });
+    expect(outsiderReadyEvent).toMatchObject({
+      type: "system.ready",
+      data: { version: API_VERSION },
+    });
+    expect(adminReadyEvent).toMatchObject({
+      type: "system.ready",
+      data: { version: API_VERSION },
+    });
+
+    expect(typeof (ownerReadyEvent.data as { connectedAt?: unknown }).connectedAt).toBe("string");
+    expect(typeof (outsiderReadyEvent.data as { connectedAt?: unknown }).connectedAt).toBe("string");
+    expect(typeof (adminReadyEvent.data as { connectedAt?: unknown }).connectedAt).toBe("string");
+
     const ownerReadPromise = ownerReader!.read();
     const outsiderReadPromise = outsiderReader!.read();
     const adminReadPromise = adminReader!.read();
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
 
     const orderResponse = await authedJson("/api/orders", owner.apiKey, {
       method: "POST",

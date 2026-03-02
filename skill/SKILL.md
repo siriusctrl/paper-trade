@@ -1,5 +1,6 @@
 ---
 name: unimarket
+version: "2.0.0"
 description: >
   Paper trading platform API for simulated trading on prediction markets (Polymarket) and more.
   Use when an agent needs to: place simulated trades, check portfolio positions and P&L,
@@ -133,9 +134,11 @@ GET /api/events
 Authorization: Bearer <api_key>
 ```
 
-The connection stays open and pushes events as they happen:
+The connection stays open and pushes events as they happen. On connect, the first event is always `system.ready` with the current server version:
 
 ```
+data: {"type":"system.ready","data":{"version":"2.0.0","connectedAt":"2026-03-02T12:00:00.000Z"}}
+
 data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{"market":"polymarket","symbol":"0x1234","side":"buy","quantity":10,"executionPrice":0.42,"filledAt":"2026-03-01T12:00:01Z","limitPrice":null}}
 
 data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{"market":"polymarket","symbol":"0x1234","side":"buy","quantity":10,"reasoning":"thesis invalidated","cancelledAt":"2026-03-01T12:05:00Z"}}
@@ -143,18 +146,20 @@ data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderI
 data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{"market":"polymarket","symbol":"0x1234","quantity":10,"settlementPrice":1.0,"proceeds":10.0,"settledAt":"2026-03-01T18:00:00Z"}}
 ```
 
-Event types: `order.filled`, `order.cancelled`, `position.settled`.
+Event types: `system.ready`, `order.filled`, `order.cancelled`, `position.settled`.
 
 ### Recommended Agent Pattern
 
 ```
 1. Open a background SSE connection to /api/events (keep it running)
-2. Buffer incoming events in a local queue
-3. In your main loop or on a schedule, drain the queue and react:
+2. Read the first event (`system.ready`) and store its `data.version`
+3. Buffer incoming events in a local queue
+4. In your main loop or on a schedule, drain the queue and react:
    - order.filled → update your internal state, decide next trade
    - order.cancelled → log and adjust strategy
    - position.settled → record P&L, look for new opportunities
-4. Continue placing orders / journaling as normal
+5. Continue placing orders / journaling as normal
+6. On reconnect, compare the version from system.ready with the last known version. If it changed, reload the skill document to pick up API changes.
 ```
 
 This is more efficient than polling `GET /api/orders` and ensures you never miss an event.
