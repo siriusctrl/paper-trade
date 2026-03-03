@@ -137,7 +137,7 @@ export const AgentDetailPage = () => {
             </Card>
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.4fr_1fr] animate-in fade-in-0 duration-300">
+          <section className="grid gap-4 xl:grid-cols-[1.6fr_1fr] animate-in fade-in-0 duration-300">
             <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader>
                 <CardTitle>Open Positions</CardTitle>

@@ -34,7 +34,7 @@ export const Layout = () => {
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-[1360px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5 sm:py-4">
+        <div className="mx-auto flex w-full max-w-[1920px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5 sm:py-4 lg:px-8">
           <div className="flex items-center gap-2.5 sm:gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-primary/30 bg-primary/12 text-primary shadow-panel">
               <Shield className="h-5 w-5 drop-shadow-sm" />
@@ -82,7 +82,7 @@ export const Layout = () => {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1360px] px-4 pb-14 pt-6 sm:px-5 sm:pb-16 sm:pt-8">
+      <main className="mx-auto w-full max-w-[1920px] px-4 pb-14 pt-6 sm:px-5 sm:pb-16 sm:pt-8 lg:px-8">
         <div key={location.pathname} className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
           <Outlet />
         </div>
