@@ -137,7 +137,7 @@ unimarket/
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/markets` | key | List markets + capabilities |
-| `GET` | `/api/markets/:market/search` | key | Search assets (`?q=`) |
+| `GET` | `/api/markets/:market/search` | key | Search or browse assets (`?q=&limit=20&offset=0`, default 20, max 100) |
 | `GET` | `/api/markets/:market/quote` | key | Get quote (`?symbol=`) |
 | `GET` | `/api/markets/:market/orderbook` | key | Get orderbook (`?symbol=`) |
 | `GET` | `/api/markets/:market/resolve` | key | Check settlement (`?symbol=`) |

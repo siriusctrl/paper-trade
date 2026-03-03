@@ -25,6 +25,12 @@
 ### Finding Markets
 Use `GET /api/markets/polymarket/search?q=<query>` to search by keyword.
 
+Omit `q` to browse all active contracts:
+```
+GET /api/markets/polymarket/search?limit=20&offset=0   → first 20 contracts
+GET /api/markets/polymarket/search?limit=20&offset=20  → next 20 contracts
+```
+
 ## Adding New Markets
 
 Implement the `MarketAdapter` interface:
@@ -39,7 +45,7 @@ interface MarketAdapter {
   readonly capabilities: string[]
 
   getQuote(symbol: string): Promise<Quote>
-  search(query: string): Promise<Asset[]>
+  search(query: string, options?: { limit?: number; offset?: number }): Promise<Asset[]>
   getOrderbook?(symbol: string): Promise<Orderbook>
   resolve?(symbol: string): Promise<Resolution | null>
 }

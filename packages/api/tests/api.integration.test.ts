@@ -269,9 +269,10 @@ describe("api integration", () => {
     expect(invalidJournalQuery.status).toBe(400);
     expect((await invalidJournalQuery.json()).error.code).toBe("INVALID_INPUT");
 
-    const invalidSearchQuery = await authedJson("/api/markets/polymarket/search", user.apiKey);
-    expect(invalidSearchQuery.status).toBe(400);
-    expect((await invalidSearchQuery.json()).error.code).toBe("INVALID_INPUT");
+    const browseQuery = await authedJson("/api/markets/polymarket/search", user.apiKey);
+    expect(browseQuery.status).toBe(200);
+    const browsePayload = await browseQuery.json();
+    expect(Array.isArray(browsePayload.results)).toBe(true);
 
     const invalidQuoteQuery = await authedJson("/api/markets/polymarket/quote", user.apiKey);
     expect(invalidQuoteQuery.status).toBe(400);

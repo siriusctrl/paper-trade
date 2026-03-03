@@ -29,7 +29,7 @@ All requests (except register and health) require `Authorization: Bearer <api_ke
    → discover available markets and their capabilities
 
 3. GET /api/markets/{market}/search?q=election
-   → find tradeable assets in a market
+   → find tradeable assets in a market (or omit q to browse all)
 
 4. GET /api/markets/{market}/quote?symbol=0x1234
    → get current price
@@ -118,7 +118,7 @@ Markets are discovered at runtime via `GET /api/markets`:
 ```
 
 Capabilities tell you which endpoints are available under `/api/markets/{marketId}/`:
-- `search` → `GET /api/markets/{id}/search?q={query}`
+- `search` → `GET /api/markets/{id}/search?q={query}&limit=20&offset=0` (`q` is optional — omit to browse all active contracts; default limit 20, max 100)
 - `quote` → `GET /api/markets/{id}/quote?symbol={symbol}`
 - `orderbook` → `GET /api/markets/{id}/orderbook?symbol={symbol}`
 - `resolve` → `GET /api/markets/{id}/resolve?symbol={symbol}`

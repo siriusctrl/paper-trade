@@ -285,9 +285,10 @@ GET /api/markets
 }
 ```
 
-### Search Assets
+### Search / Browse Assets
 ```
 GET /api/markets/polymarket/search?q=trump+election
+GET /api/markets/polymarket/search?limit=20&offset=0
 
 → 200
 {
@@ -301,6 +302,8 @@ GET /api/markets/polymarket/search?q=trump+election
   ]
 }
 ```
+
+`q` is optional — omit it to browse all active contracts. Supports `limit` (default 20, max 100) and `offset` (default 0) for pagination.
 
 ### Get Quote
 ```

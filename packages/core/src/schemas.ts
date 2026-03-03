@@ -79,7 +79,9 @@ export const listPositionsQuerySchema = z.object({
 });
 
 export const searchMarketQuerySchema = z.object({
-  q: z.string().trim().min(1),
+  q: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 export const quoteQuerySchema = z.object({

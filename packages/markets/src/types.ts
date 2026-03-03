@@ -45,6 +45,11 @@ export type MarketDescriptor = {
   capabilities: readonly MarketCapability[];
 };
 
+export type SearchOptions = {
+  limit?: number;
+  offset?: number;
+};
+
 export interface MarketAdapter {
   readonly marketId: string;
   readonly displayName: string;
@@ -53,7 +58,7 @@ export interface MarketAdapter {
   readonly priceRange: [number, number] | null;
   readonly capabilities: readonly MarketCapability[];
 
-  search(query: string): Promise<Asset[]>;
+  search(query: string, options?: SearchOptions): Promise<Asset[]>;
   getQuote(symbol: string): Promise<Quote>;
   getOrderbook?(symbol: string): Promise<Orderbook>;
   resolve?(symbol: string): Promise<Resolution | null>;

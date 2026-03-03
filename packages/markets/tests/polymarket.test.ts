@@ -53,6 +53,39 @@ describe("PolymarketAdapter", () => {
     expect(searchUrl).toContain("search=cpi");
     expect(searchUrl).toContain("active=true");
     expect(searchUrl).toContain("closed=false");
+    expect(searchUrl).toContain("offset=0");
+  });
+
+  it("browses all active markets when query is empty", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([
+        {
+          conditionId: "0x-browse-item",
+          question: "Will ETH hit $10k?",
+          lastTradePrice: "0.22",
+          volume24hr: "5000",
+        },
+      ]),
+    );
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("", { limit: 10, offset: 20 });
+
+    expect(results).toEqual([
+      {
+        symbol: "0x-browse-item",
+        name: "Will ETH hit $10k?",
+        price: 0.22,
+        volume: 5000,
+      },
+    ]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const browseUrl = String(fetchSpy.mock.calls[0]?.[0]);
+    expect(browseUrl).not.toContain("search=");
+    expect(browseUrl).toContain("limit=10");
+    expect(browseUrl).toContain("offset=20");
+    expect(browseUrl).toContain("active=true");
+    expect(browseUrl).toContain("closed=false");
   });
 
   it("skips malformed search rows and accepts slug/title fallback fields", async () => {

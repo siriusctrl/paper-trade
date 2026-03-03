@@ -28,7 +28,10 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
         return jsonError(c, 400, "CAPABILITY_NOT_SUPPORTED", "search is not supported for this market");
       }
 
-      const results = await adapter.search(parsed.data.q);
+      const results = await adapter.search(parsed.data.q ?? "", {
+        limit: parsed.data.limit,
+        offset: parsed.data.offset,
+      });
       return c.json({ results });
     }),
   );

@@ -7,6 +7,7 @@ import {
   type OrderbookLevel,
   type Quote,
   type Resolution,
+  type SearchOptions,
 } from "./types.js";
 
 type UnknownObject = Record<string, unknown>;
@@ -103,16 +104,21 @@ export class PolymarketAdapter implements MarketAdapter {
     this.clobBaseUrl = options.clobBaseUrl ?? DEFAULT_CLOB_BASE_URL;
   }
 
-  async search(query: string): Promise<Asset[]> {
-    const cacheKey = `search:${query.toLowerCase()}`;
+  async search(query: string, options?: SearchOptions): Promise<Asset[]> {
+    const limit = options?.limit ?? 20;
+    const offset = options?.offset ?? 0;
+    const cacheKey = `search:${query.toLowerCase()}:${limit}:${offset}`;
     const cached = this.cache.get<Asset[]>(cacheKey);
     if (cached) {
       return cached;
     }
 
     const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("search", query);
-    url.searchParams.set("limit", "20");
+    if (query.length > 0) {
+      url.searchParams.set("search", query);
+    }
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("offset", String(offset));
     url.searchParams.set("active", "true");
     url.searchParams.set("closed", "false");
 
