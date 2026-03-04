@@ -17,26 +17,26 @@ import type { TimelineEvent } from "../lib/useAgentTimeline";
 const EVENT_TYPES = [
     { value: "all", label: "All" },
     { value: "order", label: "Orders" },
-    { value: "order_cancelled", label: "Cancelled" },
+    { value: "order.cancelled", label: "Cancelled" },
     { value: "journal", label: "Journal" },
 ] as const;
 
 const eventIcon = (event: TimelineEvent) => {
     if (event.type === "journal") return <BookOpen className="h-4 w-4 text-blue-500" />;
-    if (event.type === "order_cancelled") return <XCircle className="h-4 w-4 text-amber-500" />;
+    if (event.type === "order.cancelled") return <XCircle className="h-4 w-4 text-amber-500" />;
     if (event.data.side === "buy") return <ArrowUpRight className="h-4 w-4 text-emerald-500" />;
     return <ArrowDownRight className="h-4 w-4 text-rose-500" />;
 };
 
 const eventLabel = (event: TimelineEvent) => {
     if (event.type === "journal") return "Journal";
-    if (event.type === "order_cancelled") return "Cancelled";
+    if (event.type === "order.cancelled") return "Cancelled";
     return event.data.side === "buy" ? "Buy" : "Sell";
 };
 
 const badgeVariant = (event: TimelineEvent): "default" | "secondary" | "outline" | "success" | "danger" => {
     if (event.type === "journal") return "secondary";
-    if (event.type === "order_cancelled") return "outline";
+    if (event.type === "order.cancelled") return "outline";
     if (event.data.side === "buy") return "success";
     return "danger";
 };
@@ -109,7 +109,7 @@ export const ActivityFeed = ({
                     </div>
                 ) : filteredEvents.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-muted-foreground/35 bg-muted/35 p-4 text-sm text-muted-foreground">
-                        {typeFilter !== "all" ? `No ${typeFilter} events on this page.` : emptyMessage}
+                        {typeFilter !== "all" ? `No ${typeFilter === "order.cancelled" ? "cancelled" : typeFilter} events on this page.` : emptyMessage}
                     </div>
                 ) : (
                     <div className="space-y-3">

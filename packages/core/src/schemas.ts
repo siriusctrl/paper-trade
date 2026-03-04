@@ -13,6 +13,7 @@ export const ordersViewSchema = z.enum(["all", "open", "history"]);
 
 export const placeOrderSchema = z
   .object({
+    accountId: idSchema.optional(),
     market: marketIdSchema,
     symbol: symbolSchema,
     side: sideSchema,
@@ -39,21 +40,9 @@ export const reconcileOrdersSchema = z.object({
   reasoning: reasoningSchema,
 });
 
-export const registerSchema = z
-  .object({
-    userName: z.string().trim().min(1).optional(),
-    // Backward compatibility for existing clients.
-    name: z.string().trim().min(1).optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (!value.userName && !value.name) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["userName"],
-        message: "userName is required",
-      });
-    }
-  });
+export const registerSchema = z.object({
+  userName: z.string().trim().min(1),
+});
 
 export const createJournalSchema = z.object({
   content: z.string().trim().min(1),
@@ -66,6 +55,7 @@ export const paginationQuerySchema = z.object({
 });
 
 export const listOrdersQuerySchema = z.object({
+  accountId: idSchema.optional(),
   view: ordersViewSchema.default("all"),
   status: orderStatusSchema.optional(),
   market: marketIdSchema.optional(),
@@ -76,6 +66,7 @@ export const listOrdersQuerySchema = z.object({
 
 export const listPositionsQuerySchema = z.object({
   userId: idSchema.optional(),
+  accountId: idSchema.optional(),
 });
 
 export const searchMarketQuerySchema = z.object({

@@ -22,7 +22,7 @@ All requests (except register and health) require `Authorization: Bearer <api_ke
 ## Core Workflow
 
 ```
-1. POST /api/auth/register { "name": "my-agent" }
+1. POST /api/auth/register { "userName": "my-agent" }
    → get api_key + first account with initial balance
 
 2. GET /api/markets
@@ -35,7 +35,7 @@ All requests (except register and health) require `Authorization: Bearer <api_ke
    → get current price
 
 5. POST /api/orders
-   { "accountId", "market", "symbol", "side", "type", "quantity",
+   { "market", "symbol", "side", "type", "quantity",
      "reasoning": "why you're making this trade" }
    → place a trade
 
@@ -43,10 +43,10 @@ All requests (except register and health) require `Authorization: Bearer <api_ke
    { "content": "observations, analysis, plans", "tags": ["optional"] }
    → record thoughts between trades
 
-7. GET /api/accounts/:id/portfolio
+7. GET /api/account/portfolio
    → check positions + P&L
 
-8. GET /api/accounts/:id/timeline
+8. GET /api/account/timeline
    → review full decision history (orders + journal)
 ```
 
@@ -56,7 +56,6 @@ Every write operation must include a `reasoning` field explaining the decision:
 
 - `POST /api/orders` → why you're placing this trade
 - `DELETE /api/orders/:id` → why you're cancelling
-- `POST /api/accounts` → why you're creating this account
 
 This is not optional. Requests without `reasoning` will be rejected.
 
@@ -83,7 +82,7 @@ GET /api/journal?tags=risk-management      → filter by tag
 The timeline aggregates all activity (orders + journal) for an account in chronological order:
 
 ```
-GET /api/accounts/:id/timeline?limit=20&offset=0
+GET /api/account/timeline?limit=20&offset=0
 ```
 
 Use this to review the full decision history.
@@ -109,7 +108,7 @@ Markets are discovered at runtime via `GET /api/markets`:
       "id": "polymarket",
       "name": "Polymarket",
       "description": "Prediction markets — contracts resolve to $0 or $1",
-      "symbolFormat": "Condition ID (hex string)",
+      "symbolFormat": "Condition ID or token ID",
       "priceRange": [0.01, 0.99],
       "capabilities": ["search", "quote", "orderbook", "resolve"]
     }
@@ -122,6 +121,9 @@ Capabilities tell you which endpoints are available under `/api/markets/{marketI
 - `quote` → `GET /api/markets/{id}/quote?symbol={symbol}`
 - `orderbook` → `GET /api/markets/{id}/orderbook?symbol={symbol}`
 - `resolve` → `GET /api/markets/{id}/resolve?symbol={symbol}`
+
+For Polymarket, `search` returns condition IDs. Those symbols can be used directly with `quote`, `orderbook`, and `orders`.
+If outcome-specific execution is needed, use `search` result metadata (`tokenIds` + `outcomes`) to choose a token ID explicitly.
 
 Do not hardcode market IDs — always discover via `/api/markets` first.
 

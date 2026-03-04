@@ -53,6 +53,7 @@ export const orders = sqliteTable(
     filledPrice: real("filled_price"),
     reasoning: text("reasoning").notNull(),
     cancelReasoning: text("cancel_reasoning"),
+    cancelledAt: text("cancelled_at"),
     filledAt: text("filled_at"),
     createdAt: text("created_at").notNull(),
   },

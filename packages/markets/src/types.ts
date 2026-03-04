@@ -5,6 +5,7 @@ export type Asset = {
   name: string;
   price?: number;
   volume?: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type Quote = {

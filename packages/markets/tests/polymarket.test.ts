@@ -88,6 +88,35 @@ describe("PolymarketAdapter", () => {
     expect(browseUrl).toContain("closed=false");
   });
 
+  it("includes market metadata when token and outcome details are available", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([
+        {
+          conditionId: `0x${"d".repeat(64)}`,
+          question: "Will metadata be exposed?",
+          clobTokenIds: JSON.stringify(["111", "222"]),
+          outcomes: JSON.stringify(["Yes", "No"]),
+          outcomePrices: JSON.stringify(["0.61", "0.39"]),
+          lastTradePrice: "0.61",
+        },
+      ]),
+    );
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("metadata");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      symbol: `0x${"d".repeat(64)}`,
+      name: "Will metadata be exposed?",
+      metadata: {
+        tokenIds: ["111", "222"],
+        outcomes: ["Yes", "No"],
+        outcomePrices: [0.61, 0.39],
+        defaultTokenId: "111",
+      },
+    });
+  });
+
   it("skips malformed search rows and accepts slug/title fallback fields", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse([
@@ -107,6 +136,89 @@ describe("PolymarketAdapter", () => {
         volume: 321,
       },
     ]);
+  });
+
+  it("resolves condition-id symbols to clob token ids for quote and orderbook", async () => {
+    const conditionId = `0x${"a".repeat(64)}`;
+    const tokenId = "123456789012345678901";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/markets")) {
+        return jsonResponse([
+          {
+            conditionId,
+            question: "Will test market resolve?",
+            clobTokenIds: JSON.stringify([tokenId, "987"]),
+          },
+        ]);
+      }
+      if (url === `https://clob.example/book?token_id=${tokenId}`) {
+        return jsonResponse({
+          bids: [["0.45", "12"]],
+          asks: [["0.55", "15"]],
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const quote = await adapter.getQuote(conditionId);
+
+    expect(quote.symbol).toBe(conditionId);
+    expect(quote.bid).toBe(0.45);
+    expect(quote.ask).toBe(0.55);
+    expect(quote.price).toBe(0.5);
+
+    const calledUrls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(calledUrls).toEqual(
+      expect.arrayContaining([
+        `https://clob.example/book?token_id=${tokenId}`,
+      ]),
+    );
+    expect(calledUrls.some((url) => url.includes(`conditionId=${conditionId}`))).toBe(true);
+  });
+
+  it("reuses condition-id to token-id mapping discovered during search", async () => {
+    const conditionId = `0x${"b".repeat(64)}`;
+    const tokenId = "789012345678901234567";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/markets")) {
+        return jsonResponse([
+          {
+            conditionId,
+            question: "Search should warm symbol mapping cache",
+            clobTokenIds: JSON.stringify([tokenId]),
+          },
+        ]);
+      }
+      if (url === `https://clob.example/book?token_id=${tokenId}`) {
+        return jsonResponse({
+          bids: [["0.4", "3"]],
+          asks: [["0.42", "4"]],
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("cache");
+    expect(results[0]?.symbol).toBe(conditionId);
+
+    const quote = await adapter.getQuote(conditionId);
+    expect(quote.price).toBe(0.41);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws SYMBOL_NOT_FOUND when a condition-id symbol has no token ids", async () => {
+    const conditionId = `0x${"c".repeat(64)}`;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([{ conditionId, question: "Missing tokens" }]));
+
+    const adapter = makeAdapter();
+    await expect(adapter.getQuote(conditionId)).rejects.toMatchObject<Partial<MarketAdapterError>>({
+      code: "SYMBOL_NOT_FOUND",
+    });
   });
 
   it("parses orderbook levels from tuple/object formats and sorts them", async () => {
@@ -185,12 +297,14 @@ describe("PolymarketAdapter", () => {
   });
 
   it("returns null for missing resolution and caches unresolved resolution payloads", async () => {
+    const missingConditionId = `0x${"e".repeat(64)}`;
+    const unresolvedConditionId = `0x${"f".repeat(64)}`;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(jsonResponse([]));
     fetchSpy.mockResolvedValueOnce(
       jsonResponse([
         {
-          conditionId: "0x-unresolved",
+          conditionId: unresolvedConditionId,
           resolved: false,
         },
       ]),
@@ -198,14 +312,14 @@ describe("PolymarketAdapter", () => {
 
     const adapter = makeAdapter();
 
-    const missing = await adapter.resolve("0x-missing");
+    const missing = await adapter.resolve(missingConditionId);
     expect(missing).toBeNull();
 
-    const unresolvedFirst = await adapter.resolve("0x-unresolved");
-    const unresolvedSecond = await adapter.resolve("0x-unresolved");
+    const unresolvedFirst = await adapter.resolve(unresolvedConditionId);
+    const unresolvedSecond = await adapter.resolve(unresolvedConditionId);
 
     expect(unresolvedFirst).toMatchObject({
-      symbol: "0x-unresolved",
+      symbol: unresolvedConditionId,
       resolved: false,
       outcome: null,
       settlementPrice: null,
@@ -215,10 +329,11 @@ describe("PolymarketAdapter", () => {
   });
 
   it("returns resolved payload with outcome and settlement price", async () => {
+    const resolvedConditionId = `0x${"1".repeat(64)}`;
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse([
         {
-          conditionId: "0x-resolved",
+          conditionId: resolvedConditionId,
           resolved: true,
           outcome: "YES",
           settlementPrice: "1",
@@ -227,14 +342,66 @@ describe("PolymarketAdapter", () => {
     );
 
     const adapter = makeAdapter();
-    const resolution = await adapter.resolve("0x-resolved");
+    const resolution = await adapter.resolve(resolvedConditionId);
 
     expect(resolution).toMatchObject({
-      symbol: "0x-resolved",
+      symbol: resolvedConditionId,
       resolved: true,
       outcome: "YES",
       settlementPrice: 1,
     });
+  });
+
+  it("resolves token-id symbols by mapping token ids to condition ids first", async () => {
+    const tokenId = "123456789";
+    const conditionId = `0x${"2".repeat(64)}`;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes(`clob_token_ids=${tokenId}`)) {
+        return jsonResponse([
+          {
+            conditionId,
+            clobTokenIds: JSON.stringify([tokenId]),
+          },
+        ]);
+      }
+      if (url.includes(`conditionId=${conditionId}`)) {
+        return jsonResponse([
+          {
+            conditionId,
+            resolved: true,
+            outcome: "YES",
+            settlementPrice: "1",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const resolution = await adapter.resolve(tokenId);
+
+    expect(resolution).toMatchObject({
+      symbol: tokenId,
+      resolved: true,
+      outcome: "YES",
+      settlementPrice: 1,
+    });
+    const calledUrls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(calledUrls.some((url) => url.includes(`clob_token_ids=${tokenId}`))).toBe(true);
+    expect(calledUrls.some((url) => url.includes(`conditionId=${conditionId}`))).toBe(true);
+  });
+
+  it("returns null when token-id symbols cannot be mapped to condition ids", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse([]));
+    const adapter = makeAdapter();
+
+    const first = await adapter.resolve("missing-token");
+    const second = await adapter.resolve("missing-token");
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("raises UPSTREAM_ERROR on non-200 upstream responses", async () => {
@@ -252,6 +419,15 @@ describe("PolymarketAdapter", () => {
     const adapter = makeAdapter();
     await expect(adapter.getOrderbook("0x-invalid-book")).rejects.toMatchObject<Partial<MarketAdapterError>>({
       code: "UPSTREAM_ERROR",
+    });
+  });
+
+  it("maps orderbook 404 responses to SYMBOL_NOT_FOUND", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not found", { status: 404 }));
+
+    const adapter = makeAdapter();
+    await expect(adapter.getQuote("plain-token-id")).rejects.toMatchObject<Partial<MarketAdapterError>>({
+      code: "SYMBOL_NOT_FOUND",
     });
   });
 });

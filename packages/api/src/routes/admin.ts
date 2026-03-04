@@ -5,7 +5,7 @@ import {
   paginationQuerySchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../auth.js";
@@ -15,48 +15,38 @@ import { jsonError } from "../errors.js";
 import { deserializeTags, getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
 import { makeId, nowIso } from "../utils.js";
 
+const POLYMARKET_CONDITION_ID_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const POLYMARKET_GAMMA_BATCH_SIZE = 50;
+
 export const createAdminRoutes = (registry: MarketRegistry) => {
   const router = new Hono<{ Variables: AppVariables }>();
 
-  router.post(
-    "/accounts/:id/deposit",
-    withErrorHandling(async (c) => {
-      const parsed = await parseJson(c, adminAmountSchema);
-      if (!parsed.success) return parsed.response;
+  const adjustUserBalance = async (
+    userId: string,
+    amountDelta: number,
+  ): Promise<
+    { ok: true; balance: number }
+    | { ok: false; code: "ACCOUNT_NOT_FOUND" | "INSUFFICIENT_BALANCE"; message: string; status: 404 | 400 }
+  > => {
+    const account = await getUserAccount(userId);
+    if (!account) {
+      return { ok: false, status: 404, code: "ACCOUNT_NOT_FOUND", message: "Account not found" };
+    }
 
-      const accountId = c.req.param("id");
-      const account = await db.select().from(accounts).where(eq(accounts.id, accountId)).get();
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+    if (amountDelta < 0 && account.balance < Math.abs(amountDelta)) {
+      return {
+        ok: false,
+        status: 400,
+        code: "INSUFFICIENT_BALANCE",
+        message: "Insufficient balance for withdrawal",
+      };
+    }
 
-      const nextBalance = Number((account.balance + parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, accountId)).run();
-      return c.json({ balance: nextBalance });
-    }),
-  );
+    const nextBalance = Number((account.balance + amountDelta).toFixed(6));
+    await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
+    return { ok: true, balance: nextBalance };
+  };
 
-  router.post(
-    "/accounts/:id/withdraw",
-    withErrorHandling(async (c) => {
-      const parsed = await parseJson(c, adminAmountSchema);
-      if (!parsed.success) return parsed.response;
-
-      const accountId = c.req.param("id");
-      const account = await db.select().from(accounts).where(eq(accounts.id, accountId)).get();
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-
-      if (account.balance < parsed.data.amount) {
-        return jsonError(c, 400, "INSUFFICIENT_BALANCE", "Insufficient balance for withdrawal");
-      }
-
-      const nextBalance = Number((account.balance - parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, accountId)).run();
-      return c.json({ balance: nextBalance });
-    }),
-  );
-
-
-
-  // Backward-compatible aliases (legacy user-id based admin routes)
   router.post(
     "/users/:id/deposit",
     withErrorHandling(async (c) => {
@@ -64,12 +54,9 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       if (!parsed.success) return parsed.response;
 
       const userId = c.req.param("id");
-      const account = await getUserAccount(userId);
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-
-      const nextBalance = Number((account.balance + parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
-      return c.json({ balance: nextBalance });
+      const result = await adjustUserBalance(userId, parsed.data.amount);
+      if (!result.ok) return jsonError(c, result.status, result.code, result.message);
+      return c.json({ balance: result.balance });
     }),
   );
 
@@ -80,16 +67,9 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       if (!parsed.success) return parsed.response;
 
       const userId = c.req.param("id");
-      const account = await getUserAccount(userId);
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-
-      if (account.balance < parsed.data.amount) {
-        return jsonError(c, 400, "INSUFFICIENT_BALANCE", "Insufficient balance for withdrawal");
-      }
-
-      const nextBalance = Number((account.balance - parsed.data.amount).toFixed(6));
-      await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
-      return c.json({ balance: nextBalance });
+      const result = await adjustUserBalance(userId, -parsed.data.amount);
+      if (!result.ok) return jsonError(c, result.status, result.code, result.message);
+      return c.json({ balance: result.balance });
     }),
   );
 
@@ -221,17 +201,24 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       const totalUnrealizedPnl = Number(markets.reduce((sum, m) => sum + m.totalUnrealizedPnl, 0).toFixed(6));
       const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
 
-      // Record equity snapshots (fire-and-forget, at most once per 5 minutes per agent)
       const now = nowIso();
-      const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
-      for (const agent of agents) {
-        const recent = await db.select({ id: equitySnapshots.id })
+
+      // Snapshot writes are intentionally off the GET response hot-path.
+      void (async () => {
+        if (agents.length === 0) return;
+
+        const userIds = agents.map((agent) => agent.userId);
+        const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+        const recentRows = await db
+          .select({ userId: equitySnapshots.userId })
           .from(equitySnapshots)
-          .where(and(eq(equitySnapshots.userId, agent.userId), gte(equitySnapshots.snapshotAt, fiveMinAgo)))
-          .limit(1)
+          .where(and(inArray(equitySnapshots.userId, userIds), gte(equitySnapshots.snapshotAt, fiveMinAgo)))
           .all();
-        if (recent.length === 0) {
-          await db.insert(equitySnapshots).values({
+        const recentlySnapshottedUserIds = new Set(recentRows.map((row) => row.userId));
+
+        const pendingSnapshots = agents
+          .filter((agent) => !recentlySnapshottedUserIds.has(agent.userId))
+          .map((agent) => ({
             id: makeId("snap"),
             userId: agent.userId,
             balance: agent.totals.balance,
@@ -239,9 +226,13 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
             equity: agent.totals.equity,
             unrealizedPnl: agent.totals.unrealizedPnl,
             snapshotAt: now,
-          }).run();
-        }
-      }
+          }));
+
+        if (pendingSnapshots.length === 0) return;
+        await db.insert(equitySnapshots).values(pendingSnapshots).run();
+      })().catch((error) => {
+        console.warn("[admin.overview] failed to record equity snapshots", error);
+      });
 
       return c.json({
         generatedAt: now,
@@ -271,7 +262,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
 
       const events = [
         ...orderRows.map((row) => ({
-          type: row.status === "cancelled" ? "order_cancelled" : "order",
+          type: row.status === "cancelled" ? "order.cancelled" : "order",
           data: {
             id: row.id,
             symbol: row.symbol,
@@ -280,10 +271,17 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
             quantity: row.quantity,
             status: row.status,
             filledPrice: row.filledPrice,
+            filledAt: row.filledAt,
+            cancelledAt: row.cancelledAt,
             symbolName: null as string | null,
           },
           reasoning: row.status === "cancelled" ? row.cancelReasoning : row.reasoning,
-          createdAt: row.createdAt,
+          createdAt:
+            row.status === "cancelled"
+              ? (row.cancelledAt ?? row.createdAt)
+              : row.status === "filled"
+                ? (row.filledAt ?? row.createdAt)
+                : row.createdAt,
         })),
         ...journalRows.map((row) => ({
           type: "journal",
@@ -310,26 +308,88 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
 
       const symbolNameMap = new Map<string, string>();
       if (pmSymbols.size > 0) {
-        try {
-          const ids = [...pmSymbols].join(",");
-          const gammaRes = await fetch(`https://gamma-api.polymarket.com/markets?clob_token_ids=${encodeURIComponent(ids)}&limit=50`);
-          if (gammaRes.ok) {
-            const markets = (await gammaRes.json()) as Array<Record<string, unknown>>;
-            for (const m of markets) {
-              const question = typeof m.question === "string" ? m.question : null;
-              const tokens = Array.isArray(m.tokens) ? m.tokens : [];
-              // map each token_id → "Question (Outcome)"
-              for (const token of tokens) {
-                if (typeof token === "object" && token !== null) {
-                  const t = token as Record<string, unknown>;
-                  const tokenId = typeof t.token_id === "string" ? t.token_id : null;
-                  const outcome = typeof t.outcome === "string" ? t.outcome : null;
-                  if (tokenId && question) {
-                    symbolNameMap.set(tokenId, outcome ? `${question} — ${outcome}` : question);
-                  }
-                }
+        const conditionIds: string[] = [];
+        const tokenIds: string[] = [];
+        for (const symbol of pmSymbols) {
+          if (POLYMARKET_CONDITION_ID_PATTERN.test(symbol)) {
+            conditionIds.push(symbol);
+          } else {
+            tokenIds.push(symbol);
+          }
+        }
+
+        const parseTokenIds = (value: unknown): string[] => {
+          if (Array.isArray(value)) {
+            return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+          }
+
+          if (typeof value === "string" && value.length > 0) {
+            try {
+              const parsed = JSON.parse(value);
+              return Array.isArray(parsed)
+                ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+                : [];
+            } catch {
+              return [];
+            }
+          }
+
+          return [];
+        };
+
+        const appendSymbolNames = (market: Record<string, unknown>) => {
+          const question = typeof market.question === "string" ? market.question : null;
+          const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+
+          if (conditionId && question) {
+            symbolNameMap.set(conditionId, question);
+          }
+
+          const tokens = Array.isArray(market.tokens) ? market.tokens : [];
+          for (const token of tokens) {
+            if (typeof token !== "object" || token === null || !question) continue;
+            const tokenRecord = token as Record<string, unknown>;
+            const tokenId = typeof tokenRecord.token_id === "string" ? tokenRecord.token_id : null;
+            const outcome = typeof tokenRecord.outcome === "string" ? tokenRecord.outcome : null;
+            if (!tokenId) continue;
+            symbolNameMap.set(tokenId, outcome ? `${question} — ${outcome}` : question);
+          }
+
+          if (!question) return;
+          for (const tokenId of parseTokenIds(market.clobTokenIds)) {
+            if (!symbolNameMap.has(tokenId)) {
+              symbolNameMap.set(tokenId, question);
+            }
+          }
+        };
+
+        const fetchMarketsBy = async (queryKey: "conditionId" | "clob_token_ids", symbols: string[]) => {
+          for (let i = 0; i < symbols.length; i += POLYMARKET_GAMMA_BATCH_SIZE) {
+            const batch = symbols.slice(i, i + POLYMARKET_GAMMA_BATCH_SIZE);
+            const gammaUrl = new URL("/markets", "https://gamma-api.polymarket.com");
+            gammaUrl.searchParams.set(queryKey, batch.join(","));
+            gammaUrl.searchParams.set("limit", String(Math.max(POLYMARKET_GAMMA_BATCH_SIZE, batch.length)));
+
+            const gammaRes = await fetch(gammaUrl.toString());
+            if (!gammaRes.ok) continue;
+
+            const markets = (await gammaRes.json()) as unknown;
+            if (!Array.isArray(markets)) continue;
+
+            for (const market of markets) {
+              if (typeof market === "object" && market !== null) {
+                appendSymbolNames(market as Record<string, unknown>);
               }
             }
+          }
+        };
+
+        try {
+          if (conditionIds.length > 0) {
+            await fetchMarketsBy("conditionId", conditionIds);
+          }
+          if (tokenIds.length > 0) {
+            await fetchMarketsBy("clob_token_ids", tokenIds);
           }
         } catch {
           // Non-critical: skip name resolution on error

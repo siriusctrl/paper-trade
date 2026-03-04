@@ -99,6 +99,7 @@ const resetDatabase = async (): Promise<void> => {
   await sqlite.execute("DELETE FROM orders");
   await sqlite.execute("DELETE FROM positions");
   await sqlite.execute("DELETE FROM journal");
+  await sqlite.execute("DELETE FROM equity_snapshots");
   await sqlite.execute("DELETE FROM api_keys");
   await sqlite.execute("DELETE FROM accounts");
   await sqlite.execute("DELETE FROM users");
@@ -202,9 +203,15 @@ describe("api integration", () => {
     expect(unauthorizedOrders.status).toBe(401);
     const unauthorizedPayload = await unauthorizedOrders.json();
     expect(unauthorizedPayload.error.code).toBe("UNAUTHORIZED");
+
+    const user = await registerUser("api-not-found-user");
+    const unknownApiRoute = await authedJson("/api/does-not-exist", user.apiKey);
+    expect(unknownApiRoute.status).toBe(404);
+    expect(unknownApiRoute.headers.get("content-type")).toContain("application/json");
+    expect((await unknownApiRoute.json()).error.code).toBe("NOT_FOUND");
   });
 
-  it("register accepts userName and keeps backward compatibility for legacy name", async () => {
+  it("register requires userName and rejects legacy name payloads", async () => {
     const preferredResponse = await app.request("/api/auth/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -221,11 +228,8 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "legacy-user" }),
     });
-    expect(legacyResponse.status).toBe(201);
-    const legacyPayload = (await legacyResponse.json()) as RegisterPayload;
-
-    const legacyUser = await db.select().from(tables.users).where(eq(tables.users.id, legacyPayload.userId)).get();
-    expect(legacyUser?.name).toBe("legacy-user");
+    expect(legacyResponse.status).toBe(400);
+    expect((await legacyResponse.json()).error.code).toBe("INVALID_INPUT");
   });
 
   it("initializes with default registry when createApp is called without options", async () => {
@@ -340,6 +344,68 @@ describe("api integration", () => {
     const adminGetAccount = await authedJson(`/api/account`, "admin_test_key");
     expect(adminGetAccount.status).toBe(400);
     expect((await adminGetAccount.json()).error.code).toBe("INVALID_USER");
+  });
+
+  it("validates optional accountId inputs for orders and positions", async () => {
+    const owner = await registerUser("accountid-owner");
+    const outsider = await registerUser("accountid-outsider");
+
+    quoteBySymbol["0x-accountid"] = { price: 0.55, bid: 0.54, ask: 0.55 };
+
+    const matchingAccountOrder = await authedJson("/api/orders", owner.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: owner.account.id,
+        market: "polymarket",
+        symbol: "0x-accountid",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "explicitly target my own account",
+      }),
+    });
+    expect(matchingAccountOrder.status).toBe(201);
+
+    const foreignAccountOrder = await authedJson("/api/orders", owner.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: outsider.account.id,
+        market: "polymarket",
+        symbol: "0x-accountid",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "attempt to target another account",
+      }),
+    });
+    expect(foreignAccountOrder.status).toBe(404);
+    expect((await foreignAccountOrder.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+
+    const ownOrders = await authedJson(`/api/orders?accountId=${owner.account.id}`, owner.apiKey);
+    expect(ownOrders.status).toBe(200);
+    expect((await ownOrders.json()).orders).toHaveLength(1);
+
+    const foreignOrders = await authedJson(`/api/orders?accountId=${outsider.account.id}`, owner.apiKey);
+    expect(foreignOrders.status).toBe(200);
+    expect((await foreignOrders.json()).orders).toEqual([]);
+
+    const ownPositions = await authedJson(`/api/positions?accountId=${owner.account.id}`, owner.apiKey);
+    expect(ownPositions.status).toBe(200);
+    expect((await ownPositions.json()).positions).toHaveLength(1);
+
+    const foreignPositions = await authedJson(`/api/positions?accountId=${outsider.account.id}`, owner.apiKey);
+    expect(foreignPositions.status).toBe(200);
+    expect((await foreignPositions.json()).positions).toEqual([]);
+
+    const adminOrders = await authedJson(`/api/orders?accountId=${owner.account.id}`, "admin_test_key");
+    expect(adminOrders.status).toBe(200);
+    expect((await adminOrders.json()).orders.length).toBeGreaterThanOrEqual(1);
+
+    const adminPositions = await authedJson(`/api/positions?accountId=${owner.account.id}`, "admin_test_key");
+    expect(adminPositions.status).toBe(200);
+    expect((await adminPositions.json()).positions).toHaveLength(1);
   });
 
   it("covers order placement validation and trading error branches", async () => {
@@ -477,6 +543,9 @@ describe("api integration", () => {
       if (symbol === "0x-madapter-error") {
         throw new MarketAdapterError("UPSTREAM_ERROR", "upstream unavailable");
       }
+      if (symbol === "0x-symbol-not-found") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", "No quote available for symbol");
+      }
       if (symbol === "0x-generic-error") {
         throw new Error("generic quote failure");
       }
@@ -502,6 +571,13 @@ describe("api integration", () => {
     );
     expect(adapterErrorResponse.status).toBe(502);
     expect((await adapterErrorResponse.json()).error.code).toBe("UPSTREAM_ERROR");
+
+    const symbolNotFoundResponse = await authedJson(
+      "/api/markets/polymarket/quote?symbol=0x-symbol-not-found",
+      user.apiKey,
+    );
+    expect(symbolNotFoundResponse.status).toBe(404);
+    expect((await symbolNotFoundResponse.json()).error.code).toBe("SYMBOL_NOT_FOUND");
 
     const genericErrorResponse = await authedJson(
       "/api/markets/polymarket/quote?symbol=0x-generic-error",
@@ -737,7 +813,7 @@ describe("api integration", () => {
     expect(timelineResponse.status).toBe(200);
     const timelinePayload = await timelineResponse.json();
     expect(Array.isArray(timelinePayload.events)).toBe(true);
-    expect(timelinePayload.events.some((event: { type: string }) => event.type === "order_cancelled")).toBe(true);
+    expect(timelinePayload.events.some((event: { type: string }) => event.type === "order.cancelled")).toBe(true);
     expect(timelinePayload.events.some((event: { type: string }) => event.type === "journal")).toBe(true);
 
     const adminJournalAccess = await authedJson("/api/journal", "admin_test_key");
@@ -798,6 +874,72 @@ describe("api integration", () => {
     const adminOrders = await authedJson("/api/orders", "admin_test_key");
     expect(adminOrders.status).toBe(200);
     expect(Array.isArray((await adminOrders.json()).orders)).toBe(true);
+  });
+
+  it("uses cancellation time in timeline for cancelled orders", async () => {
+    const user = await registerUser("timeline-cancel-time-user");
+    const historicalCreatedAt = "2025-01-01T00:00:00.000Z";
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_timeline_cancelled_at",
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-timeline-cancelled-at",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.1,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "pending order for cancellation timeline test",
+        cancelReasoning: null,
+        cancelledAt: null,
+        filledAt: null,
+        createdAt: historicalCreatedAt,
+      })
+      .run();
+
+    const cancelResponse = await authedJson("/api/orders/ord_timeline_cancelled_at", user.apiKey, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reasoning: "cancel for timeline timestamp verification" }),
+    });
+    expect(cancelResponse.status).toBe(200);
+
+    const cancelledOrder = await db
+      .select()
+      .from(tables.orders)
+      .where(eq(tables.orders.id, "ord_timeline_cancelled_at"))
+      .get();
+    const cancelledAt = cancelledOrder?.cancelledAt ?? null;
+    expect(cancelledAt).toBeTruthy();
+    if (cancelledAt) {
+      expect(cancelledAt > historicalCreatedAt).toBe(true);
+    }
+
+    const timelineResponse = await authedJson("/api/account/timeline?limit=20&offset=0", user.apiKey);
+    expect(timelineResponse.status).toBe(200);
+    const timelinePayload = await timelineResponse.json();
+    const cancelledEvent = timelinePayload.events.find(
+      (event: { type: string; data?: { id?: string }; createdAt?: string }) =>
+        event.type === "order.cancelled" && event.data?.id === "ord_timeline_cancelled_at",
+    );
+    expect(cancelledEvent).toBeTruthy();
+    expect(cancelledEvent.createdAt).toBe(cancelledAt);
+
+    const adminTimelineResponse = await authedJson(`/api/admin/users/${user.userId}/timeline?limit=20&offset=0`, "admin_test_key");
+    expect(adminTimelineResponse.status).toBe(200);
+    const adminTimelinePayload = await adminTimelineResponse.json();
+    const adminCancelledEvent = adminTimelinePayload.events.find(
+      (event: { type: string; data?: { id?: string; cancelledAt?: string | null; filledAt?: string | null }; createdAt?: string }) =>
+        event.type === "order.cancelled" && event.data?.id === "ord_timeline_cancelled_at",
+    );
+    expect(adminCancelledEvent).toBeTruthy();
+    expect(adminCancelledEvent.data.cancelledAt).toBe(cancelledAt);
+    expect(adminCancelledEvent.data.filledAt).toBeNull();
+    expect(adminCancelledEvent.createdAt).toBe(cancelledAt);
   });
 
   it("covers market order fills, portfolio values, positions visibility, and sqlite persistence", async () => {
@@ -1033,7 +1175,9 @@ describe("api integration", () => {
     expect(await emptyAdminReconcile.json()).toMatchObject({
       processed: 0,
       filled: 0,
+      cancelled: 0,
       skipped: 0,
+      cancelledOrderIds: [],
     });
 
     const user = await registerUser("reconcile-skips");
@@ -1139,12 +1283,36 @@ describe("api integration", () => {
       })
       .run();
 
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_skip_404",
+        accountId: user.account.id,
+        market: "polymarket",
+        symbol: "0x-skip-404",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.5,
+        status: "pending",
+        filledPrice: null,
+        reasoning: "upstream 404 should auto-cancel",
+        cancelReasoning: null,
+        cancelledAt: null,
+        filledAt: null,
+        createdAt,
+      })
+      .run();
+
     quoteBySymbol["0x-skip-fill-error"] = { price: 0.6, bid: 0.59, ask: 0.6 };
     quoteBySymbol["0x-skip-missing-account"] = { price: 0.4, bid: 0.39, ask: 0.4 };
     quoteBySymbol["0x-skip-quote"] = { price: 0.4, bid: 0.39, ask: 0.4 };
 
     const originalGetQuote = polymarketAdapter.getQuote;
     vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => {
+      if (symbol === "0x-skip-404") {
+        throw new Error("Upstream request failed (404): https://example/book?token_id=0x-skip-404");
+      }
       if (symbol === "0x-skip-quote") {
         throw new Error("quote retrieval failed");
       }
@@ -1158,13 +1326,27 @@ describe("api integration", () => {
     });
     expect(reconcileResponse.status).toBe(200);
     const reconcilePayload = await reconcileResponse.json();
-    expect(reconcilePayload.processed).toBeGreaterThanOrEqual(4);
+    expect(reconcilePayload.processed).toBeGreaterThanOrEqual(5);
     expect(reconcilePayload.filled).toBe(0);
     expect(reconcilePayload.skipped).toBeGreaterThanOrEqual(4);
+    expect(reconcilePayload.cancelled).toBeGreaterThanOrEqual(1);
+    expect(reconcilePayload.cancelledOrderIds).toContain("ord_skip_404");
+
+    const autoCancelledOrder = await db.select().from(tables.orders).where(eq(tables.orders.id, "ord_skip_404")).get();
+    expect(autoCancelledOrder?.status).toBe("cancelled");
+    expect(autoCancelledOrder?.cancelledAt).toBeTruthy();
   });
 
   it("covers admin-only fund management and overview aggregation", async () => {
     const user = await registerUser("admin-overview-user");
+
+    const removedAccountRoute = await authedJson(`/api/admin/accounts/${user.account.id}/deposit`, "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount: 100 }),
+    });
+    expect(removedAccountRoute.status).toBe(404);
+    expect((await removedAccountRoute.json()).error.code).toBe("NOT_FOUND");
 
     const userAccessAdminEndpoint = await authedJson(`/api/admin/users/${user.userId}/deposit`, user.apiKey, {
       method: "POST",

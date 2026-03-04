@@ -18,9 +18,9 @@ describe("schemas", () => {
     expect(reasoningSchema.safeParse("because macro regime changed").success).toBe(true);
   });
 
-  it("accepts userName for register while keeping legacy name compatibility", () => {
+  it("requires userName for register", () => {
     expect(registerSchema.safeParse({ userName: "agent-alpha" }).success).toBe(true);
-    expect(registerSchema.safeParse({ name: "legacy-agent" }).success).toBe(true);
+    expect(registerSchema.safeParse({ name: "legacy-agent" }).success).toBe(false);
     expect(registerSchema.safeParse({}).success).toBe(false);
   });
 

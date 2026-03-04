@@ -54,6 +54,7 @@ const migrationStatements = [
     filled_price REAL,
     reasoning TEXT NOT NULL,
     cancel_reasoning TEXT,
+    cancelled_at TEXT,
     filled_at TEXT,
     created_at TEXT NOT NULL
   )

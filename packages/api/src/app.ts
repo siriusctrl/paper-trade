@@ -12,6 +12,7 @@ import { createOrderRoutes } from "./routes/orders.js";
 import { eventsRoutes } from "./routes/events.js";
 import { positionsRoutes } from "./routes/positions.js";
 import { API_VERSION } from "./version.js";
+import { jsonError } from "./errors.js";
 
 export type CreateAppOptions = {
   registry?: MarketRegistry;
@@ -54,6 +55,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
 
   app.use("/api/admin/*", adminOnlyMiddleware);
   app.route("/api/admin", createAdminRoutes(registry));
+  app.all("/api/*", (c) => jsonError(c, 404, "NOT_FOUND", `API endpoint not found: ${c.req.path}`));
 
   // Serve Vite build output as static files
   const webDistRoot = options.webDistPath ?? "../web/dist";

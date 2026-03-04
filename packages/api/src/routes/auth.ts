@@ -22,10 +22,7 @@ auth.post(
     const accountId = makeId("acc");
     const keyId = makeId("key");
     const apiKey = createApiKey();
-    const userName = parsed.data.userName ?? parsed.data.name;
-    if (!userName) {
-      return jsonError(c, 400, "INVALID_INPUT", "userName is required");
-    }
+    const userName = parsed.data.userName;
 
     await db.insert(users).values({ id: userId, name: userName, createdAt }).run();
 

@@ -64,7 +64,13 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
       if (existingOrder) {
         const claimedOrder = await tx
           .update(orders)
-          .set({ status: "filled", filledPrice: executionPrice, filledAt: createdAt, cancelReasoning: null })
+          .set({
+            status: "filled",
+            filledPrice: executionPrice,
+            filledAt: createdAt,
+            cancelReasoning: null,
+            cancelledAt: null,
+          })
           .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
           .run();
 
@@ -88,6 +94,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
             filledPrice: executionPrice,
             reasoning,
             cancelReasoning: null,
+            cancelledAt: null,
             filledAt: createdAt,
             createdAt,
           })
@@ -196,6 +203,9 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
 
       const account = await getUserAccount(userId);
       if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      if (parsed.data.accountId && parsed.data.accountId !== account.id) {
+        return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      }
 
       const adapter = registry.get(parsed.data.market);
       if (!adapter) return jsonError(c, 404, "MARKET_NOT_FOUND", `Market not found: ${parsed.data.market}`);
@@ -235,6 +245,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
             filledPrice: null,
             reasoning: parsed.data.reasoning,
             cancelReasoning: null,
+            cancelledAt: null,
             filledAt: null,
             createdAt,
           };
@@ -272,7 +283,12 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
       if (userId !== "admin") {
         const account = await getUserAccount(userId);
         if (!account) return c.json({ orders: [] });
+        if (parsed.data.accountId && parsed.data.accountId !== account.id) {
+          return c.json({ orders: [] });
+        }
         predicates.push(eq(orders.accountId, account.id));
+      } else if (parsed.data.accountId) {
+        predicates.push(eq(orders.accountId, parsed.data.accountId));
       }
 
       if (parsed.data.view === "open") {
@@ -365,9 +381,10 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         return jsonError(c, 400, "INVALID_ORDER", "Only pending orders can be cancelled");
       }
 
+      const cancelledAt = nowIso();
       const updated = await db
         .update(orders)
-        .set({ status: "cancelled", cancelReasoning: parsed.data.reasoning })
+        .set({ status: "cancelled", cancelReasoning: parsed.data.reasoning, cancelledAt })
         .where(and(eq(orders.id, orderId), eq(orders.status, "pending")))
         .run();
 
@@ -388,7 +405,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
           side: order.side,
           quantity: order.quantity,
           reasoning: parsed.data.reasoning,
-          cancelledAt: nowIso(),
+          cancelledAt,
         },
       });
 

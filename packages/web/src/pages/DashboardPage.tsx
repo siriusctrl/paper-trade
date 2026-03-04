@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -131,6 +131,11 @@ export const DashboardPage = () => {
       [agent.userName, agent.userId].join(" ").toLowerCase().includes(q),
     );
   }, [overview, search]);
+
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(filteredAgents.length / AGENTS_PER_PAGE) - 1);
+    setPage((prev) => Math.min(prev, maxPage));
+  }, [filteredAgents.length]);
 
   const totalPages = Math.max(1, Math.ceil(filteredAgents.length / AGENTS_PER_PAGE));
   const safePage = Math.min(page, totalPages - 1);
@@ -276,11 +281,12 @@ export const DashboardPage = () => {
                       width={64}
                     />
                     <Tooltip
-                      formatter={(value: number) =>
-                        chartMode === "return"
-                          ? `${value.toFixed(2)}%`
-                          : formatCurrency(value)
-                      }
+                      formatter={(value: number | undefined) => {
+                        const safeValue = value ?? 0;
+                        return chartMode === "return"
+                          ? `${safeValue.toFixed(2)}%`
+                          : formatCurrency(safeValue);
+                      }}
                       contentStyle={tooltipStyle}
                       labelStyle={{ color: "hsl(var(--muted-foreground))" }}
                     />

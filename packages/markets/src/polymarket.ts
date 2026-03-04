@@ -19,6 +19,7 @@ const RESOLVE_TTL_MS = 60_000;
 
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL = "https://clob.polymarket.com";
+const CONDITION_ID_PATTERN = /^0x[a-fA-F0-9]{64}$/;
 
 const parseNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -33,6 +34,31 @@ const parseNumber = (value: unknown): number | null => {
   }
 
   return null;
+};
+
+const parseStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+
+  if (typeof value === "string" && value.length > 0) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+};
+
+const parseNumberArray = (value: unknown): number[] => {
+  return parseStringArray(value)
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
 };
 
 const parseOrderbookSide = (value: unknown): OrderbookLevel[] => {
@@ -104,6 +130,79 @@ export class PolymarketAdapter implements MarketAdapter {
     this.clobBaseUrl = options.clobBaseUrl ?? DEFAULT_CLOB_BASE_URL;
   }
 
+  private async resolveTokenId(symbol: string): Promise<string> {
+    if (!CONDITION_ID_PATTERN.test(symbol)) {
+      return symbol;
+    }
+
+    const cacheKey = `condition-token:${symbol}`;
+    const cached = this.cache.get<string>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("conditionId", symbol);
+    url.searchParams.set("limit", "1");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for symbol: ${symbol}`);
+    }
+
+    const tokenIds = parseStringArray((raw[0] as UnknownObject).clobTokenIds);
+    const tokenId = tokenIds[0];
+    if (!tokenId) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for symbol: ${symbol}`);
+    }
+
+    for (const candidate of tokenIds) {
+      this.cache.set(`token-condition:${candidate}`, symbol, SEARCH_TTL_MS);
+    }
+    this.cache.set(cacheKey, tokenId, SEARCH_TTL_MS);
+    return tokenId;
+  }
+
+  private async resolveConditionId(symbol: string): Promise<string> {
+    if (CONDITION_ID_PATTERN.test(symbol)) {
+      return symbol;
+    }
+
+    const cacheKey = `token-condition:${symbol}`;
+    const cached = this.cache.get<string>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("clob_token_ids", symbol);
+    url.searchParams.set("limit", "1");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for symbol: ${symbol}`);
+    }
+
+    const market = raw[0] as UnknownObject;
+    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+    if (!conditionId) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for symbol: ${symbol}`);
+    }
+
+    this.cache.set(cacheKey, conditionId, SEARCH_TTL_MS);
+
+    const tokenIds = parseStringArray(market.clobTokenIds);
+    const tokenId = tokenIds[0];
+    if (tokenId) {
+      this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
+    }
+    for (const token of tokenIds) {
+      this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
+    }
+
+    return conditionId;
+  }
+
   async search(query: string, options?: SearchOptions): Promise<Asset[]> {
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
@@ -132,12 +231,22 @@ export class PolymarketAdapter implements MarketAdapter {
         }
 
         const market = item as UnknownObject;
-        const symbol =
-          typeof market.conditionId === "string"
-            ? market.conditionId
-            : typeof market.slug === "string"
-              ? market.slug
-              : null;
+        const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+        const tokenIds = parseStringArray(market.clobTokenIds);
+        const outcomes = parseStringArray(market.outcomes);
+        const outcomePrices = parseNumberArray(market.outcomePrices);
+
+        if (conditionId) {
+          const tokenId = tokenIds[0];
+          if (tokenId) {
+            this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
+          }
+          for (const token of tokenIds) {
+            this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
+          }
+        }
+
+        const symbol = conditionId ?? (typeof market.slug === "string" ? market.slug : null);
 
         const name =
           typeof market.question === "string"
@@ -150,11 +259,23 @@ export class PolymarketAdapter implements MarketAdapter {
           continue;
         }
 
+        const metadata =
+          tokenIds.length > 0 || outcomes.length > 0 || outcomePrices.length > 0
+            ? {
+                conditionId,
+                tokenIds,
+                outcomes,
+                outcomePrices,
+                defaultTokenId: tokenIds[0] ?? null,
+              }
+            : null;
+
         results.push({
           symbol,
           name,
           price: parseNumber(market.lastTradePrice) ?? parseNumber(market.outcomePrice) ?? undefined,
           volume: parseNumber(market.volume24hr) ?? parseNumber(market.volume) ?? undefined,
+          ...(metadata ? { metadata } : {}),
         });
       }
     }
@@ -202,10 +323,19 @@ export class PolymarketAdapter implements MarketAdapter {
       return cached;
     }
 
+    const tokenId = await this.resolveTokenId(symbol);
     const url = new URL("/book", this.clobBaseUrl);
-    url.searchParams.set("token_id", symbol);
+    url.searchParams.set("token_id", tokenId);
 
-    const raw = await fetchJson<unknown>(url.toString());
+    let raw: unknown;
+    try {
+      raw = await fetchJson<unknown>(url.toString());
+    } catch (error) {
+      if (error instanceof MarketAdapterError && error.code === "UPSTREAM_ERROR" && error.message.includes("(404)")) {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No orderbook available for symbol: ${symbol}`);
+      }
+      throw error;
+    }
     if (typeof raw !== "object" || raw === null) {
       throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid orderbook response from Polymarket CLOB API");
     }
@@ -229,8 +359,19 @@ export class PolymarketAdapter implements MarketAdapter {
       return cached;
     }
 
+    let conditionId: string;
+    try {
+      conditionId = await this.resolveConditionId(symbol);
+    } catch (error) {
+      if (error instanceof MarketAdapterError && error.code === "SYMBOL_NOT_FOUND") {
+        this.cache.set(cacheKey, null, RESOLVE_TTL_MS);
+        return null;
+      }
+      throw error;
+    }
+
     const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("conditionId", symbol);
+    url.searchParams.set("conditionId", conditionId);
     url.searchParams.set("limit", "1");
 
     const raw = await fetchJson<unknown>(url.toString());

@@ -12,7 +12,17 @@ const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> => {
   return rows[0];
 };
 
-export const reconcilePendingOrders = async (registry: MarketRegistry, accountIds?: string[]): Promise<{ processed: number; filled: number; skipped: number; filledOrderIds: string[] }> => {
+export const reconcilePendingOrders = async (
+  registry: MarketRegistry,
+  accountIds?: string[],
+): Promise<{
+  processed: number;
+  filled: number;
+  cancelled: number;
+  skipped: number;
+  filledOrderIds: string[];
+  cancelledOrderIds: string[];
+}> => {
   const pendingOrders = await db
     .select()
     .from(orders)
@@ -21,8 +31,11 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
     .all();
 
   let filled = 0;
+  let cancelled = 0;
   let skipped = 0;
   const filledOrderIds: string[] = [];
+  const cancelledOrderIds: string[] = [];
+  const cancelledOrderIdSet = new Set<string>();
   const pendingOrdersBySymbol = new Map<string, typeof pendingOrders>();
 
   for (const pendingOrder of pendingOrders) {
@@ -57,16 +70,66 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
 
       // Auto-cancel orders for expired/delisted contracts (404 from upstream)
       const is404 = error instanceof Error && error.message.includes("(404)");
-      if (is404) {
+      const errorCode =
+        typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : null;
+      const shouldAutoCancel = is404 || errorCode === "SYMBOL_NOT_FOUND";
+      if (shouldAutoCancel) {
+        const userIdsByAccountId = new Map<string, string>();
+        const uniqueAccountIds = [...new Set(groupedOrders.map((order) => order.accountId))];
+        if (uniqueAccountIds.length > 0) {
+          const accountRows = await db
+            .select({ id: accounts.id, userId: accounts.userId })
+            .from(accounts)
+            .where(inArray(accounts.id, uniqueAccountIds))
+            .all();
+          for (const accountRow of accountRows) {
+            userIdsByAccountId.set(accountRow.id, accountRow.userId);
+          }
+        }
+
         for (const order of groupedOrders) {
-          await db
+          const cancelledAt = nowIso();
+          const updated = await db
             .update(orders)
             .set({
               status: "cancelled",
-              cancelReasoning: "Auto-cancelled: upstream contract no longer exists (404)",
+              cancelReasoning:
+                errorCode === "SYMBOL_NOT_FOUND"
+                  ? "Auto-cancelled: symbol no longer available"
+                  : "Auto-cancelled: upstream contract no longer exists (404)",
+              cancelledAt,
             })
             .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
             .run();
+
+          if (updated.rowsAffected === 0) continue;
+
+          cancelled += 1;
+          cancelledOrderIds.push(order.id);
+          cancelledOrderIdSet.add(order.id);
+
+          const userId = userIdsByAccountId.get(order.accountId);
+          if (userId) {
+            eventBus.emit({
+              type: "order.cancelled",
+              userId,
+              accountId: order.accountId,
+              orderId: order.id,
+              data: {
+                market: order.market,
+                symbol: order.symbol,
+                side: order.side,
+                quantity: order.quantity,
+                reasoning:
+                  errorCode === "SYMBOL_NOT_FOUND"
+                    ? "Auto-cancelled: symbol no longer available"
+                    : "Auto-cancelled: upstream contract no longer exists (404)",
+                cancelledAt,
+              },
+            });
+          }
         }
         console.warn(`[reconciler] auto-cancelled ${groupedOrders.length} orders for expired contract ${symbolKey}`);
       } else {
@@ -76,6 +139,10 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
   }
 
   for (const pendingOrder of pendingOrders) {
+    if (cancelledOrderIdSet.has(pendingOrder.id)) {
+      continue;
+    }
+
     if (pendingOrder.type !== "limit" || pendingOrder.limitPrice === null) {
       skipped += 1;
       continue;
@@ -135,7 +202,7 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
 
         const claimedOrder = await tx
           .update(orders)
-          .set({ status: "filled", filledPrice: quotePrice, filledAt })
+          .set({ status: "filled", filledPrice: quotePrice, filledAt, cancelReasoning: null, cancelledAt: null })
           .where(and(eq(orders.id, pendingOrder.id), eq(orders.status, "pending")))
           .run();
         if (claimedOrder.rowsAffected === 0) return null;
@@ -221,7 +288,7 @@ export const reconcilePendingOrders = async (registry: MarketRegistry, accountId
     }
   }
 
-  return { processed: pendingOrders.length, filled, skipped, filledOrderIds };
+  return { processed: pendingOrders.length, filled, cancelled, skipped, filledOrderIds, cancelledOrderIds };
 };
 
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -237,6 +304,9 @@ export const startReconciler = (registry: MarketRegistry): (() => void) => {
       const result = await reconcilePendingOrders(registry);
       if (result.filled > 0) {
         console.log(`[reconciler] filled ${result.filled} pending orders`);
+      }
+      if (result.cancelled > 0) {
+        console.log(`[reconciler] auto-cancelled ${result.cancelled} pending orders`);
       }
     } catch (err) {
       console.error("[reconciler] error:", err);

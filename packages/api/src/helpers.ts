@@ -7,7 +7,7 @@ import type { AppVariables } from "./auth.js";
 import { db } from "./db/client.js";
 import { accounts } from "./db/schema.js";
 import { jsonError } from "./errors.js";
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 type AppContext = Context<{ Variables: AppVariables }>;
 
@@ -64,6 +64,9 @@ export const withErrorHandling = (fn: (c: AppContext) => Promise<Response>) => {
         return jsonError(c, 400, error.code, error.message);
       }
       if (error instanceof MarketAdapterError) {
+        if (error.code === "SYMBOL_NOT_FOUND") {
+          return jsonError(c, 404, error.code, error.message);
+        }
         return jsonError(c, 502, error.code, error.message);
       }
       if (error instanceof Error) {
@@ -80,15 +83,7 @@ export const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> =
 };
 
 export const getUserAccount = async (userId: string) => {
-  return getFirst(
-    db
-      .select()
-      .from(accounts)
-      .where(eq(accounts.userId, userId))
-      .orderBy(asc(accounts.createdAt))
-      .limit(1)
-      .all(),
-  );
+  return db.select().from(accounts).where(eq(accounts.userId, userId)).get();
 };
 
 export const serializeTags = (tags: string[] | undefined): string => JSON.stringify(tags ?? []);

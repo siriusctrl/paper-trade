@@ -46,9 +46,10 @@ Build a reliable, market-agnostic paper trading platform that:
    - Validate all external input.
    - Return consistent error shapes and stable error codes.
 
-5. **Backward compatibility matters**
-   - Evolve APIs carefully.
-   - If behavior changes, update docs and migration notes in the same change.
+5. **Clean & lean by default**
+   - Unless explicitly requested, avoid forward/backward-compatibility shims, aliases, and duplicate behavior paths.
+   - Prefer the simplest current contract and remove unnecessary legacy branches.
+   - If behavior changes, update docs and tests in the same change.
 
 ## Testing Principles
 

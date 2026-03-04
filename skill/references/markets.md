@@ -2,7 +2,7 @@
 
 ## Polymarket (`polymarket`)
 
-- **Symbols**: Polymarket condition IDs (hex strings like `0x1234...abcd`)
+- **Symbols**: Condition IDs (from `search`) or token IDs (for direct CLOB access)
 - **Data source**: Polymarket CLOB API (quotes, orderbook) + Gamma API (search, metadata)
 - **Capabilities**: `search`, `quote`, `orderbook`, `resolve`
 - **Price range**: $0.01 – $0.99 per contract
@@ -30,6 +30,15 @@ Omit `q` to browse all active contracts:
 GET /api/markets/polymarket/search?limit=20&offset=0   → first 20 contracts
 GET /api/markets/polymarket/search?limit=20&offset=20  → next 20 contracts
 ```
+
+The `symbol` returned by `search` can be used directly with:
+- `GET /api/markets/polymarket/quote`
+- `GET /api/markets/polymarket/orderbook`
+- `POST /api/orders`
+
+For explicit YES/NO routing, read `results[].metadata`:
+- `metadata.tokenIds` aligns with `metadata.outcomes`
+- `metadata.defaultTokenId` is the default tradable token
 
 ## Adding New Markets
 

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export type TimelineEvent = {
-    type: "order" | "order_cancelled" | "journal";
+    type: "order" | "order.cancelled" | "journal";
     data: {
         id: string;
         symbol?: string;
@@ -10,6 +10,8 @@ export type TimelineEvent = {
         quantity?: number;
         status?: string;
         filledPrice?: number | null;
+        filledAt?: string | null;
+        cancelledAt?: string | null;
         content?: string;
         tags?: string[];
         symbolName?: string | null;
@@ -33,22 +35,15 @@ export const useAgentTimeline = ({
     const [page, setPage] = useState(0);
     const [hasMore, setHasMore] = useState(true);
 
-    const userIdRef = useRef(userId);
-    userIdRef.current = userId;
-    const adminKeyRef = useRef(adminKey);
-    adminKeyRef.current = adminKey;
-
     const fetchPage = useCallback(async (pageNum: number) => {
-        const uid = userIdRef.current;
-        const key = adminKeyRef.current;
-        if (!uid || !key) return;
+        if (!userId || !adminKey) return;
 
         setLoading(true);
         try {
             const offset = pageNum * PAGE_SIZE;
             const response = await fetch(
-                `/api/admin/users/${uid}/timeline?limit=${PAGE_SIZE}&offset=${offset}`,
-                { headers: { Authorization: `Bearer ${key}` } },
+                `/api/admin/users/${userId}/timeline?limit=${PAGE_SIZE}&offset=${offset}`,
+                { headers: { Authorization: `Bearer ${adminKey}` } },
             );
 
             if (!response.ok) {
@@ -66,12 +61,20 @@ export const useAgentTimeline = ({
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [adminKey, userId]);
 
-    // Fetch on mount and when page changes
+    // Reset pagination when switching to a different agent.
+    useEffect(() => {
+        setEvents([]);
+        setError(null);
+        setHasMore(true);
+        setPage(0);
+    }, [userId]);
+
+    // Fetch on mount and when page changes.
     useEffect(() => {
         void fetchPage(page);
-    }, [page, fetchPage]);
+    }, [fetchPage, page]);
 
     const goToPage = useCallback((p: number) => setPage(p), []);
     const nextPage = useCallback(() => setPage((p) => p + 1), []);

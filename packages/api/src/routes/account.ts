@@ -107,7 +107,7 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
 
       const events = [
         ...orderRows.map((row) => ({
-          type: row.status === "cancelled" ? "order_cancelled" : "order",
+          type: row.status === "cancelled" ? "order.cancelled" : "order",
           data: {
             id: row.id,
             symbol: row.symbol,
@@ -116,9 +116,16 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
             quantity: row.quantity,
             status: row.status,
             filledPrice: row.filledPrice,
+            filledAt: row.filledAt,
+            cancelledAt: row.cancelledAt,
           },
           reasoning: row.status === "cancelled" ? row.cancelReasoning : row.reasoning,
-          createdAt: row.createdAt,
+          createdAt:
+            row.status === "cancelled"
+              ? (row.cancelledAt ?? row.createdAt)
+              : row.status === "filled"
+                ? (row.filledAt ?? row.createdAt)
+                : row.createdAt,
         })),
         ...journalRows.map((row) => ({
           type: "journal",

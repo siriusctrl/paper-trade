@@ -18,7 +18,7 @@ All write operations require a `reasoning` field (string, non-empty).
 POST /api/auth/register
 Content-Type: application/json
 
-{ "name": "my-agent" }
+{ "userName": "my-agent" }
 
 → 201
 {
@@ -56,30 +56,9 @@ DELETE /api/auth/keys/:id
 
 ## Accounts
 
-### Create Account
-```
-POST /api/accounts
-Content-Type: application/json
-
-{
-  "name": "strategy-alpha",
-  "reasoning": "Dedicated account for mean-reversion strategy on election markets"
-}
-
-→ 201
-{
-  "id": "acc_xxxx",
-  "name": "strategy-alpha",
-  "balance": 100000,
-  "createdAt": "2026-03-01T00:00:00Z"
-}
-```
-
-Each user has exactly one account (enforced by unique constraint).
-
 ### Get Account
 ```
-GET /api/accounts/:id
+GET /api/account
 
 → 200
 {
@@ -92,7 +71,7 @@ GET /api/accounts/:id
 
 ### Get Portfolio
 ```
-GET /api/accounts/:id/portfolio
+GET /api/account/portfolio
 
 → 200
 {
@@ -117,7 +96,7 @@ GET /api/accounts/:id/portfolio
 
 ### Get Timeline
 ```
-GET /api/accounts/:id/timeline?limit=20&offset=0
+GET /api/account/timeline?limit=20&offset=0
 
 → 200
 {
@@ -145,11 +124,12 @@ GET /api/accounts/:id/timeline?limit=20&offset=0
       "createdAt": "2026-03-01T11:30:00Z"
     },
     {
-      "type": "order_cancelled",
+      "type": "order.cancelled",
       "data": {
         "id": "ord_yyyy",
         "symbol": "0x5678...efgh",
-        "side": "buy"
+        "side": "buy",
+        "cancelledAt": "2026-03-01T10:00:00Z"
       },
       "reasoning": "New information invalidated the thesis — withdrawing limit order",
       "createdAt": "2026-03-01T10:00:00Z"
@@ -166,7 +146,6 @@ POST /api/orders
 Content-Type: application/json
 
 {
-  "accountId": "acc_xxxx",
   "market": "polymarket",
   "symbol": "0x1234...abcd",
   "side": "buy",
@@ -192,6 +171,7 @@ Content-Type: application/json
 ```
 
 For limit orders, add `"limitPrice": 0.40`. Status will be `"pending"` until filled or cancelled.
+`accountId` is optional. If provided, it must match the caller's own account.
 
 ### List Orders
 ```
@@ -201,7 +181,7 @@ GET /api/orders?accountId=acc_xxxx&status=filled&market=polymarket
 { "orders": [...] }
 ```
 
-Query params (all optional): `accountId`, `status` (pending|filled|cancelled), `market`, `symbol`, `limit`, `offset`.
+Query params (all optional): `accountId`, `view` (`all|open|history`), `status` (`pending|filled|cancelled|rejected`), `market`, `symbol`, `limit`, `offset`.
 
 ### Cancel Order
 ```
@@ -225,6 +205,8 @@ GET /api/positions?accountId=acc_xxxx
 → 200
 { "positions": [...] }
 ```
+
+`accountId` is optional. For non-admin keys, only the caller's own account is accessible.
 
 ## Journal
 
@@ -260,7 +242,7 @@ GET /api/journal?tags=risk-management
 { "entries": [...] }
 ```
 
-Default `limit=5`. Supports `offset` for pagination, `q` for full-text search, `tags` for filtering.
+Default `limit=20`. Supports `offset` for pagination, `q` for full-text search, `tags` for filtering.
 
 ## Market Data
 
@@ -277,7 +259,7 @@ GET /api/markets
       "id": "polymarket",
       "name": "Polymarket",
       "description": "Prediction markets — contracts resolve to $0 or $1",
-      "symbolFormat": "Condition ID (hex string)",
+      "symbolFormat": "Condition ID or token ID",
       "priceRange": [0.01, 0.99],
       "capabilities": ["search", "quote", "orderbook", "resolve"]
     }
@@ -297,13 +279,22 @@ GET /api/markets/polymarket/search?limit=20&offset=0
       "symbol": "0x1234...abcd",
       "name": "Will Trump win the 2028 presidential election?",
       "price": 0.42,
-      "volume": 1500000
+      "volume": 1500000,
+      "metadata": {
+        "conditionId": "0x1234...abcd",
+        "tokenIds": ["123...", "456..."],
+        "outcomes": ["Yes", "No"],
+        "outcomePrices": [0.42, 0.58],
+        "defaultTokenId": "123..."
+      }
     }
   ]
 }
 ```
 
 `q` is optional — omit it to browse all active contracts. Supports `limit` (default 20, max 100) and `offset` (default 0) for pagination.
+For Polymarket, `search` returns condition IDs that can be used directly in `quote`, `orderbook`, and `orders`.
+If you need explicit YES/NO token selection, use `results[].metadata.tokenIds` and `results[].metadata.outcomes`.
 
 ### Get Quote
 ```
@@ -348,7 +339,7 @@ Require admin key in `Authorization: Bearer <admin_key>` header.
 
 ### Deposit
 ```
-POST /api/admin/accounts/:id/deposit
+POST /api/admin/users/:id/deposit
 Content-Type: application/json
 
 { "amount": 50000 }
@@ -359,7 +350,7 @@ Content-Type: application/json
 
 ### Withdraw
 ```
-POST /api/admin/accounts/:id/withdraw
+POST /api/admin/users/:id/withdraw
 Content-Type: application/json
 
 { "amount": 10000 }
@@ -373,7 +364,7 @@ Content-Type: application/json
 GET /health
 
 → 200
-{ "status": "ok", "markets": { "polymarket": "open" } }
+{ "status": "ok", "version": "2.0.0", "markets": { "polymarket": "available" } }
 ```
 
 ## Events (SSE)
