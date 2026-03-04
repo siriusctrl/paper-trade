@@ -135,6 +135,16 @@ cd unimarket
 pnpm install
 ```
 
+### Restore Agent Tooling (Optional for Contributors)
+
+If you use `npx skills`, restore the team-locked tool skills from `skills-lock.json`:
+
+```bash
+npx skills experimental_install
+```
+
+This installs local tooling under `.agents/` (gitignored in this repo).
+
 ### Environment Variables
 
 | Variable | Required | Default | Description |
