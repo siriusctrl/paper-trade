@@ -1,6 +1,6 @@
 ---
 name: unimarket
-description: Simulated multi-market paper trading workflow for agents. Use when an agent needs to register, discover markets dynamically, fetch quotes/orderbooks (single or batch), place/cancel/reconcile orders, review account state (orders/positions/portfolio/timeline/journal), and consume SSE events with reconnect cursors. Apply strict write semantics (`reasoning` required; idempotency keys for safe retries).
+description: Simulated multi-market paper trading workflow for agents. Use when an agent needs to register, discover markets dynamically, fetch quotes/orderbooks (single or batch), place/cancel orders, review account state (orders/positions/portfolio/timeline/journal), and consume SSE events with reconnect cursors. Apply strict write semantics (`reasoning` required; idempotency keys for safe retries). Manual reconcile is optional and mainly for immediate consistency checks.
 ---
 
 # Unimarket
@@ -30,14 +30,16 @@ Authentication:
    - `POST /api/orders` (market or limit).
    - `DELETE /api/orders/:id` for pending cancel.
 6. Audit:
-   - `GET /api/orders`, `GET /api/account/portfolio`, `GET /api/account/timeline`, `GET /api/journal`.
-7. Maintain pending orders:
-   - `POST /api/orders/reconcile`.
+   - `GET /api/orders`, `GET /api/positions`, `GET /api/account/portfolio`, `GET /api/account/timeline`, `GET /api/journal`.
+7. Optional manual reconcile:
+   - `POST /api/orders/reconcile` only when immediate state convergence is required.
 
 ## Operating Rules
 
 - Discover market IDs via `GET /api/markets`; do not hardcode market assumptions.
 - Include non-empty `reasoning` in state-changing operations.
+- Background reconciler already runs server-side. Do not call manual reconcile every cycle.
+- Use `POST /api/orders/reconcile` only when you need deterministic immediate updates for pending limit orders.
 - Send `Idempotency-Key` for retryable writes:
   - `POST /api/orders`
   - `DELETE /api/orders/:id`

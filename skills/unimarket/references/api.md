@@ -216,6 +216,29 @@ Idempotency-Key: <optional-unique-key>
 
 Only pending orders can be cancelled.
 
+### Reconcile Pending Orders (Optional Manual Trigger)
+```
+POST /api/orders/reconcile
+Content-Type: application/json
+
+{ "reasoning": "need deterministic immediate pending-order state" }
+
+→ 200
+{
+  "processed": 3,
+  "filled": 1,
+  "cancelled": 0,
+  "skipped": 2,
+  "filledOrderIds": ["ord_xxxx"],
+  "cancelledOrderIds": []
+}
+```
+
+Notes:
+- The server already runs a background reconciler (default interval `RECONCILE_INTERVAL_MS=1000`).
+- Use this endpoint only when you need immediate deterministic convergence for pending limit orders.
+- For normal state reads, use `GET /api/orders`, `GET /api/positions`, and `GET /api/account/portfolio`.
+
 ## Positions
 
 ### List Positions

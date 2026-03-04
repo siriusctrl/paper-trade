@@ -215,6 +215,12 @@ curl -X POST http://localhost:3100/api/admin/users/<userId>/deposit \
 
 The reconciler runs in the background (every 1s by default) and tries to fill pending limit orders when market prices reach the limit price. If a contract is expired or delisted (upstream 404), the reconciler will **auto-cancel** those orders.
 
+For normal client behavior:
+- Read state from `GET /api/orders`, `GET /api/positions`, and `GET /api/account/portfolio`.
+- Do not call manual reconcile every cycle.
+
+Use `POST /api/orders/reconcile` only when you need immediate deterministic convergence for pending limit orders (for example, in strict tests right after place/cancel).
+
 ---
 
 ## API Reference
@@ -239,7 +245,7 @@ The reconciler runs in the background (every 1s by default) and tries to fill pe
 | `POST` | `/api/orders` | key | Place an order (requires `reasoning`; supports `Idempotency-Key`) |
 | `GET` | `/api/orders` | key | List orders (`view=open|history|all`) |
 | `GET` | `/api/orders/:id` | key | Get a single order by id |
-| `POST` | `/api/orders/reconcile` | key/admin | Reconcile pending limit orders (requires `reasoning`) |
+| `POST` | `/api/orders/reconcile` | key/admin | Optional manual reconcile trigger for pending limit orders (requires `reasoning`) |
 | `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`; supports `Idempotency-Key`) |
 
 ### Real-Time Events
@@ -290,7 +296,7 @@ This is the agent-side method used to validate the full API surface without read
 1. Use `skills/unimarket/SKILL.md` as the contract source.
 2. Start from `POST /api/auth/register`.
 3. Discover markets dynamically via `GET /api/markets` (no hardcoded market IDs).
-4. Execute the full trade lifecycle (quote -> place -> list -> cancel -> reconcile -> audit).
+4. Execute the full trade lifecycle (quote -> place -> list -> cancel -> audit).
 5. Validate consistency across `orders`, `timeline`, `portfolio`, and `SSE`.
 6. Run negative-path checks (invalid payloads, missing reasoning, unauthorized/removed routes).
 7. Only inspect code after reproducing an unexpected behavior.
@@ -298,7 +304,7 @@ This is the agent-side method used to validate the full API surface without read
 Coverage targets:
 - Auth: register, create/revoke key, unauthorized behavior
 - Market data: search/quote/orderbook/resolve for every discovered market capability
-- Trading: market order fill, pending limit order, cancel, reconcile
+- Trading: market order fill, pending limit order, cancel, optional manual reconcile check
 - Account data: account, positions, portfolio, timeline, journal
 - Realtime: SSE `system.ready` and trading events
 - Admin (optional): deposit/withdraw/timeline/overview/equity-history + removed legacy route checks
@@ -426,8 +432,12 @@ auth_get "/api/positions" >/dev/null
 TIMELINE_PAYLOAD="$(auth_get "/api/account/timeline?limit=50&offset=0")"
 jq -e '.events | any(.type == "order.cancelled")' <<<"$TIMELINE_PAYLOAD" >/dev/null
 
-echo "[6/8] Reconcile endpoint (user scope)"
-auth_post "/api/orders/reconcile" '{"reasoning":"e2e smoke: manual reconcile check"}' >/dev/null
+if [[ "${RUN_MANUAL_RECONCILE_CHECK:-0}" == "1" ]]; then
+  echo "[6/8] Optional reconcile endpoint check (user scope)"
+  auth_post "/api/orders/reconcile" '{"reasoning":"e2e smoke: manual reconcile check"}' >/dev/null
+else
+  echo "[6/8] Skip optional reconcile check (set RUN_MANUAL_RECONCILE_CHECK=1 to enable)"
+fi
 
 echo "[7/8] Negative checks (strict boundary behavior)"
 LEGACY_REGISTER_CODE="$(curl -sS -o /tmp/unimarket-legacy-register.out -w "%{http_code}" \
