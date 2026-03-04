@@ -15,11 +15,28 @@ import { accounts, orders, positions, trades } from "../db/schema.js";
 import { jsonError } from "../errors.js";
 import { eventBus } from "../events.js";
 import { getFirst, getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
+import { checkIdempotency, storeIdempotencyResponse, type IdempotencyStoreCandidate } from "../idempotency.js";
 import { makeId, nowIso } from "../utils.js";
 import { reconcilePendingOrders } from "../reconciler.js";
 
 export const createOrderRoutes = (registry: MarketRegistry) => {
   const router = new Hono<{ Variables: AppVariables }>();
+
+  const maybeStoreResponse = async (
+    idempotency: IdempotencyStoreCandidate | null,
+    response: Response,
+  ): Promise<void> => {
+    if (!idempotency || response.status >= 500) {
+      return;
+    }
+
+    try {
+      const payload = await response.clone().json();
+      await storeIdempotencyResponse(idempotency, response.status, payload);
+    } catch {
+      // Ignore non-JSON response payloads for idempotent replay cache.
+    }
+  };
 
   const persistFilledOrder = async (
     orderId: string,
@@ -207,8 +224,19 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
 
+      const idempotencyResult = await checkIdempotency(c, userId, parsed.data);
+      if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
+        return idempotencyResult.response;
+      }
+      const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
+
       const adapter = registry.get(parsed.data.market);
       if (!adapter) return jsonError(c, 404, "MARKET_NOT_FOUND", `Market not found: ${parsed.data.market}`);
+
+      const normalizedSymbol =
+        typeof adapter.normalizeSymbol === "function"
+          ? await adapter.normalizeSymbol(parsed.data.symbol)
+          : parsed.data.symbol;
 
       const createdAt = nowIso();
       const orderId = makeId("ord");
@@ -221,7 +249,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         let executionPrice: number | null = null;
 
         try {
-          const quote = await adapter.getQuote(parsed.data.symbol);
+          const quote = await adapter.getQuote(normalizedSymbol);
           const candidatePrice = quoteSidePrice(quote);
           const limitPrice = parsed.data.limitPrice as number;
           const shouldFillNow =
@@ -236,7 +264,7 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
             id: orderId,
             accountId: account.id,
             market: parsed.data.market,
-            symbol: parsed.data.symbol,
+            symbol: normalizedSymbol,
             side: parsed.data.side,
             type: "limit" as const,
             quantity: parsed.data.quantity,
@@ -250,24 +278,31 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
             createdAt,
           };
           await db.insert(orders).values(baseOrder).run();
+          if (idempotencyCandidate) {
+            await storeIdempotencyResponse(idempotencyCandidate, 201, baseOrder);
+          }
           return c.json(baseOrder, 201);
         }
 
-        return persistFilledOrder(
-          orderId, account.id, parsed.data.market, parsed.data.symbol,
+        const response = await persistFilledOrder(
+          orderId, account.id, parsed.data.market, normalizedSymbol,
           parsed.data.side, parsed.data.quantity, executionPrice,
           parsed.data.reasoning, parsed.data.limitPrice ?? null, createdAt, c,
         );
+        await maybeStoreResponse(idempotencyCandidate, response);
+        return response;
       }
 
       // Market order
-      const quote = await adapter.getQuote(parsed.data.symbol);
+      const quote = await adapter.getQuote(normalizedSymbol);
       const executionPrice = quoteSidePrice(quote);
-      return persistFilledOrder(
-        orderId, account.id, parsed.data.market, parsed.data.symbol,
+      const response = await persistFilledOrder(
+        orderId, account.id, parsed.data.market, normalizedSymbol,
         parsed.data.side, parsed.data.quantity, executionPrice,
         parsed.data.reasoning, null, createdAt, c,
       );
+      await maybeStoreResponse(idempotencyCandidate, response);
+      return response;
     }),
   );
 
@@ -299,7 +334,20 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
 
       if (parsed.data.status) predicates.push(eq(orders.status, parsed.data.status));
       if (parsed.data.market) predicates.push(eq(orders.market, parsed.data.market));
-      if (parsed.data.symbol) predicates.push(eq(orders.symbol, parsed.data.symbol));
+      if (parsed.data.symbol) {
+        let symbolFilter = parsed.data.symbol;
+        if (parsed.data.market) {
+          const marketAdapter = registry.get(parsed.data.market);
+          if (marketAdapter?.normalizeSymbol) {
+            try {
+              symbolFilter = await marketAdapter.normalizeSymbol(parsed.data.symbol);
+            } catch {
+              return c.json({ orders: [] });
+            }
+          }
+        }
+        predicates.push(eq(orders.symbol, symbolFilter));
+      }
 
       const whereClause = predicates.length > 0 ? and(...predicates) : undefined;
 
@@ -366,6 +414,12 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
       const orderId = c.req.param("id");
       const userId = c.get("userId");
 
+      const idempotencyResult = await checkIdempotency(c, userId, parsed.data);
+      if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
+        return idempotencyResult.response;
+      }
+      const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
+
       const order = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
       if (!order) return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
       const orderAccount = await getFirst(db.select().from(accounts).where(eq(accounts.id, order.accountId)).limit(1).all());
@@ -391,7 +445,11 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
       if (updated.rowsAffected === 0) {
         const latest = await getFirst(db.select().from(orders).where(eq(orders.id, orderId)).limit(1).all());
         if (!latest) return jsonError(c, 404, "ORDER_NOT_FOUND", "Order not found");
-        return c.json({ id: orderId, status: latest.status });
+        const payload = { id: orderId, status: latest.status };
+        if (idempotencyCandidate) {
+          await storeIdempotencyResponse(idempotencyCandidate, 200, payload);
+        }
+        return c.json(payload);
       }
 
       eventBus.emit({
@@ -409,7 +467,11 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         },
       });
 
-      return c.json({ id: orderId, status: "cancelled" });
+      const payload = { id: orderId, status: "cancelled" as const };
+      if (idempotencyCandidate) {
+        await storeIdempotencyResponse(idempotencyCandidate, 200, payload);
+      }
+      return c.json(payload);
     }),
   );
 

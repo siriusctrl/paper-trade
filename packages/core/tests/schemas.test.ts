@@ -5,6 +5,7 @@ import {
   createJournalSchema,
   listOrdersQuerySchema,
   listPositionsQuerySchema,
+  multiQuoteQuerySchema,
   paginationQuerySchema,
   placeOrderSchema,
   registerSchema,
@@ -74,6 +75,10 @@ describe("schemas", () => {
 
     expect(listPositionsQuerySchema.parse({})).toEqual({});
     expect(listPositionsQuerySchema.parse({ userId: "usr_1" })).toEqual({ userId: "usr_1" });
+
+    expect(multiQuoteQuerySchema.parse({ symbols: "abc,def,abc" })).toEqual({ symbols: ["abc", "def"] });
+    expect(multiQuoteQuerySchema.safeParse({ symbols: "" }).success).toBe(false);
+    expect(multiQuoteQuerySchema.safeParse({ symbols: "x".repeat(1) }).success).toBe(true);
   });
 
   it("validates reconcile, journal, and admin amount payloads", () => {

@@ -128,3 +128,27 @@ export const equitySnapshots = sqliteTable(
     userTimeIdx: index("equity_snapshots_user_time_idx").on(table.userId, table.snapshotAt),
   }),
 );
+
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    key: text("key").notNull(),
+    method: text("method").notNull(),
+    path: text("path").notNull(),
+    requestHash: text("request_hash").notNull(),
+    status: integer("status").notNull(),
+    responseBody: text("response_body").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    uniqueScope: uniqueIndex("idempotency_keys_unique_scope_uq").on(
+      table.userId,
+      table.key,
+      table.method,
+      table.path,
+    ),
+    createdIdx: index("idempotency_keys_created_at_idx").on(table.createdAt),
+  }),
+);

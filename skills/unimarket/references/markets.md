@@ -8,6 +8,7 @@
 - **Price range**: $0.01 – $0.99 per contract
 - **Quantity**: Number of contracts (integer)
 - **Resolution**: Contracts resolve to $1.00 (yes) or $0.00 (no) when the event outcome is determined
+- **Order symbol normalization**: `POST /api/orders` normalizes condition IDs to a canonical token symbol before persistence
 
 ### How Prediction Market Trading Works
 1. Buy YES contracts if you think the event will happen (price < $1.00 = potential profit)
@@ -53,6 +54,7 @@ interface MarketAdapter {
   readonly priceRange: [number, number] | null
   readonly capabilities: string[]
 
+  normalizeSymbol?(symbol: string): Promise<string>
   getQuote(symbol: string): Promise<Quote>
   search(query: string, options?: { limit?: number; offset?: number }): Promise<Asset[]>
   getOrderbook?(symbol: string): Promise<Orderbook>

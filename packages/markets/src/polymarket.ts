@@ -284,6 +284,10 @@ export class PolymarketAdapter implements MarketAdapter {
     return results;
   }
 
+  async normalizeSymbol(symbol: string): Promise<string> {
+    return this.resolveTokenId(symbol);
+  }
+
   async getQuote(symbol: string): Promise<Quote> {
     const cacheKey = `quote:${symbol}`;
     const cached = this.cache.get<Quote>(cacheKey);

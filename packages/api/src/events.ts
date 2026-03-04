@@ -54,7 +54,8 @@ export type SystemReadyEvent = {
 
 export type TradingEvent = SystemReadyEvent | OrderFilledEvent | OrderCancelledEvent | PositionSettledEvent;
 export type EmittedTradingEvent = Exclude<TradingEvent, SystemReadyEvent>;
-export type TradingEventListener = (event: EmittedTradingEvent) => void;
+export type SequencedTradingEvent = EmittedTradingEvent & { id: string; emittedAt: string };
+export type TradingEventListener = (event: SequencedTradingEvent) => void;
 
 const ALL_USERS_CHANNEL = "*";
 export const ALL_EVENTS_SUBSCRIBER = ALL_USERS_CHANNEL;
@@ -62,10 +63,26 @@ export const ALL_EVENTS_SUBSCRIBER = ALL_USERS_CHANNEL;
 class EventBus {
   static readonly ALL_USERS = ALL_USERS_CHANNEL;
   private listenersByUserId = new Map<string, Set<TradingEventListener>>();
+  private sequence = 0;
+  private readonly maxHistory = 1000;
+  private history: SequencedTradingEvent[] = [];
 
-  emit(event: EmittedTradingEvent): void {
-    this.dispatch(event.userId, event);
-    this.dispatch(ALL_EVENTS_SUBSCRIBER, event);
+  emit(event: EmittedTradingEvent): SequencedTradingEvent {
+    this.sequence += 1;
+    const sequenced: SequencedTradingEvent = {
+      ...event,
+      id: String(this.sequence),
+      emittedAt: new Date().toISOString(),
+    };
+
+    this.history.push(sequenced);
+    if (this.history.length > this.maxHistory) {
+      this.history = this.history.slice(-this.maxHistory);
+    }
+
+    this.dispatch(sequenced.userId, sequenced);
+    this.dispatch(ALL_EVENTS_SUBSCRIBER, sequenced);
+    return sequenced;
   }
 
   subscribe(userId: string, callback: TradingEventListener): () => void {
@@ -84,7 +101,22 @@ class EventBus {
     }
   }
 
-  private dispatch(userId: string, event: EmittedTradingEvent): void {
+  replay(userId: string, sinceEventId: number): SequencedTradingEvent[] {
+    return this.history.filter((event) => {
+      const id = Number(event.id);
+      if (!Number.isFinite(id) || id <= sinceEventId) {
+        return false;
+      }
+
+      if (userId === ALL_EVENTS_SUBSCRIBER) {
+        return true;
+      }
+
+      return event.userId === userId;
+    });
+  }
+
+  private dispatch(userId: string, event: SequencedTradingEvent): void {
     const listeners = this.listenersByUserId.get(userId);
     if (!listeners) return;
 

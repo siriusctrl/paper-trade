@@ -3,17 +3,33 @@ import { streamSSE } from "hono/streaming";
 
 import type { AppVariables } from "../auth.js";
 import { jsonError } from "../errors.js";
-import { ALL_EVENTS_SUBSCRIBER, eventBus, type EmittedTradingEvent } from "../events.js";
+import { ALL_EVENTS_SUBSCRIBER, eventBus, type SequencedTradingEvent } from "../events.js";
 import { nowIso } from "../utils.js";
 import { API_VERSION } from "../version.js";
 
 const router = new Hono<{ Variables: AppVariables }>();
+
+const parseEventCursor = (raw: string | undefined): number | null | "invalid" => {
+  if (raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return "invalid";
+  if (!/^\d+$/.test(trimmed)) return "invalid";
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return "invalid";
+  return parsed;
+};
 
 router.get("/", (c) => {
   const userId = c.get("userId");
   if (!userId) return jsonError(c, 401, "UNAUTHORIZED", "Missing user identity");
 
   const subscriptionKey = c.get("isAdmin") ? ALL_EVENTS_SUBSCRIBER : userId;
+  const cursorRaw = c.req.query("since") ?? c.req.header("last-event-id");
+  const sinceEventId = parseEventCursor(cursorRaw);
+  if (sinceEventId === "invalid") {
+    return jsonError(c, 400, "INVALID_INPUT", "Invalid SSE cursor. Use a positive integer for since/Last-Event-ID");
+  }
 
   return streamSSE(c, async (stream) => {
     await stream.writeSSE({
@@ -21,11 +37,30 @@ router.get("/", (c) => {
       data: JSON.stringify({ type: "system.ready", data: { version: API_VERSION, connectedAt: nowIso() } }),
     });
 
-    const onEvent = (event: EmittedTradingEvent) => {
-      void stream.write(`data: ${JSON.stringify(event)}\n\n`);
+    const deliveredEventIds = new Set<string>();
+    const writeEvent = (event: SequencedTradingEvent) => {
+      if (deliveredEventIds.has(event.id)) {
+        return;
+      }
+      deliveredEventIds.add(event.id);
+      void stream.writeSSE({
+        id: event.id,
+        data: JSON.stringify(event),
+      });
+    };
+
+    const onEvent = (event: SequencedTradingEvent) => {
+      writeEvent(event);
     };
 
     const unsubscribe = eventBus.subscribe(subscriptionKey, onEvent);
+    if (sinceEventId !== null) {
+      const replayEvents = eventBus.replay(subscriptionKey, sinceEventId);
+      for (const replayEvent of replayEvents) {
+        writeEvent(replayEvent);
+      }
+    }
+
     let cleaned = false;
 
     const cleanup = () => {

@@ -7,6 +7,7 @@ import { db } from "../db/client.js";
 import { journal } from "../db/schema.js";
 import { jsonError } from "../errors.js";
 import { deserializeTags, parseJson, parseQuery, serializeTags, withErrorHandling } from "../helpers.js";
+import { checkIdempotency, storeIdempotencyResponse } from "../idempotency.js";
 import { makeId, nowIso } from "../utils.js";
 
 const router = new Hono<{ Variables: AppVariables }>();
@@ -22,6 +23,12 @@ router.post(
       return jsonError(c, 400, "INVALID_USER", "Invalid user for journal entry");
     }
 
+    const idempotencyResult = await checkIdempotency(c, userId, parsed.data);
+    if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
+      return idempotencyResult.response;
+    }
+    const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
+
     const entry = {
       id: makeId("jrn"),
       userId,
@@ -31,7 +38,11 @@ router.post(
     };
 
     await db.insert(journal).values(entry).run();
-    return c.json({ ...entry, tags: deserializeTags(entry.tags) }, 201);
+    const payload = { ...entry, tags: deserializeTags(entry.tags) };
+    if (idempotencyCandidate) {
+      await storeIdempotencyResponse(idempotencyCandidate, 201, payload);
+    }
+    return c.json(payload, 201);
   }),
 );
 

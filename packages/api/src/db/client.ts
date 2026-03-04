@@ -111,6 +111,21 @@ const migrationStatements = [
   )
   `,
   `CREATE INDEX IF NOT EXISTS equity_snapshots_user_time_idx ON equity_snapshots(user_id, snapshot_at)`,
+  `
+  CREATE TABLE IF NOT EXISTS idempotency_keys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    response_body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )
+  `,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idempotency_keys_unique_scope_uq ON idempotency_keys(user_id, key, method, path)`,
+  `CREATE INDEX IF NOT EXISTS idempotency_keys_created_at_idx ON idempotency_keys(created_at)`,
 ];
 
 export const migrate = async (): Promise<void> => {

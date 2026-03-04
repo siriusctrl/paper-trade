@@ -1,5 +1,18 @@
 # API Reference
 
+## Table of Contents
+
+- [Auth](#auth)
+- [Accounts](#accounts)
+- [Orders](#orders)
+- [Positions](#positions)
+- [Journal](#journal)
+- [Market Data](#market-data)
+- [Real-Time Events (SSE)](#real-time-events-sse)
+- [Admin Endpoints](#admin-endpoints)
+- [Health](#health)
+- [Error Format](#error-format)
+
 Base URL: `http://<host>:3100/api`
 
 All responses include an `X-API-Version` header with the current server version.
@@ -10,6 +23,11 @@ Authorization: Bearer <api_key>
 ```
 
 All write operations require a `reasoning` field (string, non-empty).
+
+For safe retries, these write endpoints support `Idempotency-Key`:
+- `POST /api/orders`
+- `DELETE /api/orders/:id`
+- `POST /api/journal`
 
 ## Auth
 
@@ -144,6 +162,7 @@ GET /api/account/timeline?limit=20&offset=0
 ```
 POST /api/orders
 Content-Type: application/json
+Idempotency-Key: <optional-unique-key>
 
 {
   "market": "polymarket",
@@ -187,6 +206,7 @@ Query params (all optional): `accountId`, `view` (`all|open|history`), `status` 
 ```
 DELETE /api/orders/:id
 Content-Type: application/json
+Idempotency-Key: <optional-unique-key>
 
 { "reasoning": "New information invalidated the thesis" }
 
@@ -214,6 +234,7 @@ GET /api/positions?accountId=acc_xxxx
 ```
 POST /api/journal
 Content-Type: application/json
+Idempotency-Key: <optional-unique-key>
 
 {
   "content": "Noticed correlation between polling shifts and election market price movement. Will monitor for entry opportunity below 0.40.",
@@ -311,6 +332,23 @@ GET /api/markets/polymarket/quote?symbol=0x1234...abcd
 }
 ```
 
+### Get Quotes (Batch)
+```
+GET /api/markets/polymarket/quotes?symbols=0x1234...abcd,0x5678...efgh
+
+→ 200
+{
+  "quotes": [
+    { "symbol": "0x1234...abcd", "price": 0.42, "bid": 0.41, "ask": 0.43, "timestamp": "2026-03-01T00:00:00Z" }
+  ],
+  "errors": [
+    { "symbol": "0x5678...efgh", "error": { "code": "SYMBOL_NOT_FOUND", "message": "..." } }
+  ]
+}
+```
+
+`symbols` is a comma-separated list (up to 50 unique symbols).
+
 ### Get Orderbook
 ```
 GET /api/markets/polymarket/orderbook?symbol=0x1234...abcd
@@ -322,6 +360,23 @@ GET /api/markets/polymarket/orderbook?symbol=0x1234...abcd
 }
 ```
 
+### Get Orderbooks (Batch)
+```
+GET /api/markets/polymarket/orderbooks?symbols=0x1234...abcd,0x5678...efgh
+
+→ 200
+{
+  "orderbooks": [
+    { "symbol": "0x1234...abcd", "bids": [...], "asks": [...], "timestamp": "2026-03-01T00:00:00Z" }
+  ],
+  "errors": [
+    { "symbol": "0x5678...efgh", "error": { "code": "SYMBOL_NOT_FOUND", "message": "..." } }
+  ]
+}
+```
+
+`symbols` is a comma-separated list (up to 50 unique symbols).
+
 ### Check Resolution
 ```
 GET /api/markets/polymarket/resolve?symbol=0x1234...abcd
@@ -332,6 +387,41 @@ GET /api/markets/polymarket/resolve?symbol=0x1234...abcd
 // or when resolved:
 { "symbol": "0x1234...abcd", "resolved": true, "outcome": "yes", "settlementPrice": 1.00 }
 ```
+
+## Real-Time Events (SSE)
+
+```
+GET /api/events
+Authorization: Bearer <api_key>
+```
+
+On connect, the first event is `system.ready`.
+User-scoped trading events include monotonic `id` values.
+
+Resume from the last seen event:
+```
+GET /api/events?since=<event_id>
+```
+
+Or:
+```
+Last-Event-ID: <event_id>
+GET /api/events
+```
+
+Example stream payloads:
+```
+data: {"type":"system.ready","data":{"version":"2.0.0","connectedAt":"2026-03-02T12:00:00.000Z"}}
+data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
+data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
+data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
+```
+
+Event types:
+- `system.ready` — emitted on connect with server version and connection timestamp
+- `order.filled` — emitted when an order executes
+- `order.cancelled` — emitted when a pending order is cancelled
+- `position.settled` — emitted when a position settles
 
 ## Admin Endpoints
 
@@ -367,28 +457,23 @@ GET /health
 { "status": "ok", "version": "2.0.0", "markets": { "polymarket": "available" } }
 ```
 
-## Events (SSE)
+## Error Format
 
-### Subscribe to Events
-```
-GET /api/events
-Authorization: Bearer <api_key>
-
-→ 200 (text/event-stream)
-
-data: {"type":"system.ready","data":{"version":"2.0.0","connectedAt":"2026-03-02T12:00:00.000Z"}}
-
-data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
-
-data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
-
-data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
+All errors use:
+```json
+{ "error": { "code": "SOME_CODE", "message": "..." } }
 ```
 
-Connection stays open. Events are pushed as they happen. The first event is always `system.ready`. User tokens receive only their own trading events. Admin tokens receive all trading events.
-
-Event types:
-- `system.ready` — emitted on connect with server version and connection timestamp
-- `order.filled` — order was executed (market order or limit order hit)
-- `order.cancelled` — order was cancelled by user
-- `position.settled` — position was settled after market resolution
+Common codes:
+- `UNAUTHORIZED`
+- `INVALID_JSON`
+- `INVALID_INPUT`
+- `REASONING_REQUIRED`
+- `MARKET_NOT_FOUND`
+- `SYMBOL_NOT_FOUND`
+- `CAPABILITY_NOT_SUPPORTED`
+- `ACCOUNT_NOT_FOUND`
+- `ORDER_NOT_FOUND`
+- `INVALID_ORDER`
+- `INSUFFICIENT_BALANCE`
+- `INSUFFICIENT_POSITION`

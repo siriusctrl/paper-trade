@@ -79,6 +79,27 @@ export const quoteQuerySchema = z.object({
   symbol: symbolSchema,
 });
 
+const parseSymbols = (raw: string): string[] => {
+  return Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((symbol) => symbol.trim())
+        .filter((symbol) => symbol.length > 0),
+    ),
+  );
+};
+
+export const multiQuoteQuerySchema = z.object({
+  symbols: z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value) => parseSymbols(value))
+    .refine((symbols) => symbols.length > 0, { message: "symbols must include at least one value" })
+    .refine((symbols) => symbols.length <= 50, { message: "symbols supports up to 50 values" }),
+});
+
 export const adminAmountSchema = z.object({
   amount: z.number().positive(),
 });
@@ -92,6 +113,7 @@ export type ListOrdersQuery = z.infer<typeof listOrdersQuerySchema>;
 export type ListPositionsQuery = z.infer<typeof listPositionsQuerySchema>;
 export type SearchMarketQuery = z.infer<typeof searchMarketQuerySchema>;
 export type QuoteQuery = z.infer<typeof quoteQuerySchema>;
+export type MultiQuoteQuery = z.infer<typeof multiQuoteQuerySchema>;
 export type AdminAmountInput = z.infer<typeof adminAmountSchema>;
 export type OrderStatus = z.infer<typeof orderStatusSchema>;
 export type OrdersView = z.infer<typeof ordersViewSchema>;

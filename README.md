@@ -85,11 +85,12 @@ unimarket/
 │   │   ├── db/           # Drizzle schema + migrations
 │   │   └── index.ts      # Entry point
 │   └── web/              # Vite + React dashboard
-├── skill/                # Agent integration skill
-│   ├── SKILL.md
-│   └── references/
-│       ├── api.md
-│       └── markets.md
+├── skills/
+│   └── unimarket/        # Agent integration skill
+│       ├── SKILL.md
+│       └── references/
+│           ├── api.md
+│           └── markets.md
 └── README.md
 ```
 
@@ -115,11 +116,12 @@ interface MarketAdapter {
 
 ### Agent Integration
 
-Agents interact with unimarket through a skill document (`skill/SKILL.md`) that serves as the API contract. Key features:
+Agents interact with unimarket through a skill document (`skills/unimarket/SKILL.md`) that serves as the API contract. Key features:
 - **Version-aware**: All responses include `X-API-Version` header. SSE connections start with a `system.ready` event containing the server version
 - **Self-healing**: When the server version changes, agents can reload the skill document to pick up API changes
 - **Real-time events**: `GET /api/events` streams order fills, cancellations, and settlements via SSE
 - **Reasoning audit trail**: Every write operation requires a `reasoning` field for full decision transparency
+- **Helper scripts**: `skills/unimarket/scripts/unimarket-agent.sh` wraps common auth/market/trading/event operations for faster agent integration
 
 ---
 
@@ -224,16 +226,16 @@ The reconciler runs in the background (every 1s by default) and tries to fill pe
 ### Trading
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/orders` | key | Place an order (requires `reasoning`) |
+| `POST` | `/api/orders` | key | Place an order (requires `reasoning`; supports `Idempotency-Key`) |
 | `GET` | `/api/orders` | key | List orders (`view=open|history|all`) |
 | `GET` | `/api/orders/:id` | key | Get a single order by id |
 | `POST` | `/api/orders/reconcile` | key/admin | Reconcile pending limit orders (requires `reasoning`) |
-| `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`) |
+| `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`; supports `Idempotency-Key`) |
 
 ### Real-Time Events
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/events` | key | Subscribe to real-time events via SSE (order fills, cancellations, settlements) |
+| `GET` | `/api/events` | key | Subscribe to SSE events; supports replay via `Last-Event-ID` or `?since=` |
 
 ### Positions
 | Method | Endpoint | Auth | Description |
@@ -243,7 +245,7 @@ The reconciler runs in the background (every 1s by default) and tries to fill pe
 ### Journal
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/journal` | key | Write a journal entry |
+| `POST` | `/api/journal` | key | Write a journal entry (supports `Idempotency-Key`) |
 | `GET` | `/api/journal` | key | List entries (`?limit=5&offset=0&q=&tags=`) |
 
 ### Market Data
@@ -252,7 +254,9 @@ The reconciler runs in the background (every 1s by default) and tries to fill pe
 | `GET` | `/api/markets` | key | List markets + capabilities |
 | `GET` | `/api/markets/:market/search` | key | Search or browse assets (`?q=&limit=20&offset=0`, default 20, max 100) |
 | `GET` | `/api/markets/:market/quote` | key | Get quote (`?symbol=`) |
+| `GET` | `/api/markets/:market/quotes` | key | Get quotes in batch (`?symbols=s1,s2,...`, up to 50) |
 | `GET` | `/api/markets/:market/orderbook` | key | Get orderbook (`?symbol=`) |
+| `GET` | `/api/markets/:market/orderbooks` | key | Get orderbooks in batch (`?symbols=s1,s2,...`, up to 50) |
 | `GET` | `/api/markets/:market/resolve` | key | Check settlement (`?symbol=`) |
 
 ### Meta
@@ -273,7 +277,7 @@ pnpm coverage   # Coverage with CI-enforced thresholds
 
 This is the agent-side method used to validate the full API surface without reading server code first.
 
-1. Use `skill/SKILL.md` as the contract source.
+1. Use `skills/unimarket/SKILL.md` as the contract source.
 2. Start from `POST /api/auth/register`.
 3. Discover markets dynamically via `GET /api/markets` (no hardcoded market IDs).
 4. Execute the full trade lifecycle (quote -> place -> list -> cancel -> reconcile -> audit).

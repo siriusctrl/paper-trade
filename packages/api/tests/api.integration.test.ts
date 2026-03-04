@@ -58,6 +58,7 @@ const polymarketAdapter: MarketAdapter = {
       { symbol: "0x-reconcile-b", name: "Reconcile Contract B", metadata: { category: "test" } },
     ].filter((item) => item.symbol.includes(lowered) || item.name.toLowerCase().includes(lowered));
   },
+  normalizeSymbol: async (symbol) => (symbol === "alias-fill" ? "0x-market-fill" : symbol),
   getQuote: async (symbol) => {
     const quote = quoteBySymbol[symbol] ?? { price: 0.6, bid: 0.59, ask: 0.6 };
     return { symbol, ...quote, timestamp: new Date().toISOString() };
@@ -100,6 +101,7 @@ const resetDatabase = async (): Promise<void> => {
   await sqlite.execute("DELETE FROM positions");
   await sqlite.execute("DELETE FROM journal");
   await sqlite.execute("DELETE FROM equity_snapshots");
+  await sqlite.execute("DELETE FROM idempotency_keys");
   await sqlite.execute("DELETE FROM api_keys");
   await sqlite.execute("DELETE FROM accounts");
   await sqlite.execute("DELETE FROM users");
@@ -153,6 +155,15 @@ const parseSseDataEvent = (chunk: Uint8Array): Record<string, unknown> => {
     throw new Error(`Expected SSE data line but received chunk: ${raw}`);
   }
   return JSON.parse(dataLine.slice("data: ".length)) as Record<string, unknown>;
+};
+
+const parseSseDataEvents = (chunk: Uint8Array): Array<Record<string, unknown>> => {
+  const raw = new TextDecoder().decode(chunk);
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
 };
 
 beforeAll(async () => {
@@ -534,6 +545,63 @@ describe("api integration", () => {
     expect((await unsupportedResolve.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
   });
 
+  it("supports batch quote/orderbook endpoints with partial failures", async () => {
+    const user = await registerUser("market-batch-user");
+
+    const originalGetQuote = polymarketAdapter.getQuote;
+    const originalGetOrderbook = polymarketAdapter.getOrderbook;
+
+    const quoteSpy = vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => {
+      if (symbol === "0x-batch-fail") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", "No quote available for symbol");
+      }
+      return originalGetQuote(symbol);
+    });
+
+    const orderbookSpy = vi.spyOn(polymarketAdapter, "getOrderbook").mockImplementation(async (symbol) => {
+      if (symbol === "0x-batch-fail") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", "No orderbook available for symbol");
+      }
+      if (!originalGetOrderbook) {
+        throw new Error("orderbook not supported in test adapter");
+      }
+      return originalGetOrderbook(symbol);
+    });
+
+    const quotesResponse = await authedJson(
+      "/api/markets/polymarket/quotes?symbols=0x-market-fill,0x-batch-fail,0x-market-fill",
+      user.apiKey,
+    );
+    expect(quotesResponse.status).toBe(200);
+    const quotesPayload = await quotesResponse.json();
+    expect(quotesPayload.quotes).toHaveLength(1);
+    expect(quotesPayload.errors).toHaveLength(1);
+    expect(quotesPayload.errors[0]).toMatchObject({
+      symbol: "0x-batch-fail",
+      error: { code: "SYMBOL_NOT_FOUND" },
+    });
+
+    const orderbooksResponse = await authedJson(
+      "/api/markets/polymarket/orderbooks?symbols=0x-market-fill,0x-batch-fail",
+      user.apiKey,
+    );
+    expect(orderbooksResponse.status).toBe(200);
+    const orderbooksPayload = await orderbooksResponse.json();
+    expect(orderbooksPayload.orderbooks).toHaveLength(1);
+    expect(orderbooksPayload.errors).toHaveLength(1);
+    expect(orderbooksPayload.errors[0]).toMatchObject({
+      symbol: "0x-batch-fail",
+      error: { code: "SYMBOL_NOT_FOUND" },
+    });
+
+    const unsupportedBatchOrderbooks = await authedJson("/api/markets/quote-only/orderbooks?symbols=abc", user.apiKey);
+    expect(unsupportedBatchOrderbooks.status).toBe(400);
+    expect((await unsupportedBatchOrderbooks.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
+
+    expect(quoteSpy).toHaveBeenCalled();
+    expect(orderbookSpy).toHaveBeenCalled();
+  });
+
   it("covers market endpoint exception handling branches and resolve null fallback", async () => {
     const user = await registerUser("market-error-user");
     const originalGetQuote = polymarketAdapter.getQuote;
@@ -718,6 +786,107 @@ describe("api integration", () => {
     await adminReader!.cancel();
   });
 
+  it("replays missed SSE events when reconnecting with Last-Event-ID", async () => {
+    const user = await registerUser("events-replay-user");
+    quoteBySymbol["0x-events-replay"] = { price: 0.53, bid: 0.52, ask: 0.53 };
+
+    const firstStream = await authedJson("/api/events", user.apiKey);
+    expect(firstStream.status).toBe(200);
+    const firstReader = firstStream.body?.getReader();
+    expect(firstReader).toBeDefined();
+
+    const readyChunk = await withTimeout(firstReader!.read(), 2000, "first replay stream system.ready");
+    expect(readyChunk.done).toBe(false);
+    const readyEvent = parseSseDataEvent(readyChunk.value ?? new Uint8Array());
+    expect(readyEvent.type).toBe("system.ready");
+
+    const firstReadPromise = firstReader!.read();
+    const firstOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-events-replay",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "first event before reconnect",
+      }),
+    });
+    expect(firstOrder.status).toBe(201);
+    const firstOrderPayload = await firstOrder.json();
+
+    const firstEventChunk = await withTimeout(firstReadPromise, 2000, "first replay stream order event");
+    expect(firstEventChunk.done).toBe(false);
+    const firstEvent = parseSseDataEvent(firstEventChunk.value ?? new Uint8Array());
+    expect(firstEvent.type).toBe("order.filled");
+    expect(firstEvent.orderId).toBe(firstOrderPayload.id);
+    expect(typeof firstEvent.id).toBe("string");
+
+    const replayCursor = String(firstEvent.id);
+    await firstReader!.cancel();
+
+    const secondOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-events-replay",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "second event while disconnected",
+      }),
+    });
+    expect(secondOrder.status).toBe(201);
+    const secondOrderPayload = await secondOrder.json();
+
+    const thirdOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "0x-events-replay",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "third event while disconnected",
+      }),
+    });
+    expect(thirdOrder.status).toBe(201);
+    const thirdOrderPayload = await thirdOrder.json();
+
+    const replayStream = await authedJson("/api/events", user.apiKey, {
+      headers: { "last-event-id": replayCursor },
+    });
+    expect(replayStream.status).toBe(200);
+    const replayReader = replayStream.body?.getReader();
+    expect(replayReader).toBeDefined();
+
+    const replayReadyChunk = await withTimeout(replayReader!.read(), 2000, "replay stream system.ready");
+    expect(replayReadyChunk.done).toBe(false);
+    const replayReadyEvent = parseSseDataEvent(replayReadyChunk.value ?? new Uint8Array());
+    expect(replayReadyEvent.type).toBe("system.ready");
+
+    const expectedReplayOrderIds = new Set([secondOrderPayload.id as string, thirdOrderPayload.id as string]);
+    const observedReplayOrderIds = new Set<string>();
+
+    for (let i = 0; i < 5 && observedReplayOrderIds.size < expectedReplayOrderIds.size; i += 1) {
+      const replayChunk = await withTimeout(replayReader!.read(), 2000, `replay chunk ${i + 1}`);
+      if (replayChunk.done) break;
+
+      const events = parseSseDataEvents(replayChunk.value ?? new Uint8Array());
+      for (const event of events) {
+        if (event.type === "order.filled" && typeof event.orderId === "string" && expectedReplayOrderIds.has(event.orderId)) {
+          observedReplayOrderIds.add(event.orderId);
+        }
+      }
+    }
+
+    expect(Array.from(observedReplayOrderIds)).toEqual(expect.arrayContaining(Array.from(expectedReplayOrderIds)));
+    await replayReader!.cancel();
+  });
+
   it("covers order lifecycle, journal filtering, and timeline aggregation", async () => {
     const user = await registerUser("lifecycle-user");
     quoteBySymbol["0x-pending"] = { price: 0.66, bid: 0.65, ask: 0.66 };
@@ -819,6 +988,106 @@ describe("api integration", () => {
     const adminJournalAccess = await authedJson("/api/journal", "admin_test_key");
     expect(adminJournalAccess.status).toBe(400);
     expect((await adminJournalAccess.json()).error.code).toBe("INVALID_USER");
+  });
+
+  it("normalizes symbols for order placement and replays idempotent writes", async () => {
+    const user = await registerUser("idempotency-user");
+
+    const initialOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "idem-order-1",
+      },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "idempotency placement",
+      }),
+    });
+    expect(initialOrder.status).toBe(201);
+    const initialOrderPayload = await initialOrder.json();
+    expect(initialOrderPayload.symbol).toBe("0x-market-fill");
+
+    const replayedOrder = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "idem-order-1",
+      },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "idempotency placement",
+      }),
+    });
+    expect(replayedOrder.status).toBe(201);
+    expect(replayedOrder.headers.get("x-idempotent-replay")).toBe("true");
+    const replayedOrderPayload = await replayedOrder.json();
+    expect(replayedOrderPayload.id).toBe(initialOrderPayload.id);
+    expect(replayedOrderPayload.symbol).toBe("0x-market-fill");
+
+    const conflictingReplay = await authedJson("/api/orders", user.apiKey, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "idem-order-1",
+      },
+      body: JSON.stringify({
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 3,
+        reasoning: "same key different payload should fail",
+      }),
+    });
+    expect(conflictingReplay.status).toBe(409);
+    expect((await conflictingReplay.json()).error.code).toBe("IDEMPOTENCY_KEY_CONFLICT");
+
+    const filteredOrders = await authedJson("/api/orders?market=polymarket&symbol=alias-fill", user.apiKey);
+    expect(filteredOrders.status).toBe(200);
+    expect((await filteredOrders.json()).orders).toHaveLength(1);
+
+    const positionsResponse = await authedJson("/api/positions", user.apiKey);
+    expect(positionsResponse.status).toBe(200);
+    const positionsPayload = await positionsResponse.json();
+    expect(positionsPayload.positions).toHaveLength(1);
+    expect(positionsPayload.positions[0].symbol).toBe("0x-market-fill");
+
+    const orderRows = await db.select().from(tables.orders).where(eq(tables.orders.accountId, user.account.id)).all();
+    const tradeRows = await db.select().from(tables.trades).where(eq(tables.trades.accountId, user.account.id)).all();
+    expect(orderRows).toHaveLength(1);
+    expect(tradeRows).toHaveLength(1);
+
+    const firstJournal = await authedJson("/api/journal", user.apiKey, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "idem-journal-1",
+      },
+      body: JSON.stringify({ content: "journal idem", tags: ["idem"] }),
+    });
+    expect(firstJournal.status).toBe(201);
+    const firstJournalPayload = await firstJournal.json();
+
+    const replayedJournal = await authedJson("/api/journal", user.apiKey, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "idem-journal-1",
+      },
+      body: JSON.stringify({ content: "journal idem", tags: ["idem"] }),
+    });
+    expect(replayedJournal.status).toBe(201);
+    expect(replayedJournal.headers.get("x-idempotent-replay")).toBe("true");
+    expect((await replayedJournal.json()).id).toBe(firstJournalPayload.id);
   });
 
   it("covers order cancellation not-found/ownership branches and empty account listing", async () => {

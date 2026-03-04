@@ -60,6 +60,7 @@ export interface MarketAdapter {
   readonly capabilities: readonly MarketCapability[];
 
   search(query: string, options?: SearchOptions): Promise<Asset[]>;
+  normalizeSymbol?(symbol: string): Promise<string>;
   getQuote(symbol: string): Promise<Quote>;
   getOrderbook?(symbol: string): Promise<Orderbook>;
   resolve?(symbol: string): Promise<Resolution | null>;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unimarket Trading"
+  short_description: "Agent workflows for Unimarket paper trading"
+  default_prompt: "Use $unimarket to run end-to-end paper trading flows through the Unimarket API."
