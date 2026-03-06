@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db/client.js";
 import { accounts, positions, trades } from "./db/schema.js";
 import { eventBus } from "./events.js";
+import { startPeriodicWorker } from "./periodic-worker.js";
 import { makeId, nowIso } from "./utils.js";
 
 const DEFAULT_INTERVAL_MS = 60_000; // 1 minute
@@ -120,28 +121,15 @@ export const settlePendingPositions = async (registry: MarketRegistry): Promise<
 };
 
 export const startSettler = (registry: MarketRegistry): (() => void) => {
-  const intervalMs = Number(process.env.SETTLE_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-
-  let running = false;
-  const timer = setInterval(async () => {
-    if (running) return;
-    running = true;
-    try {
-      const result = await settlePendingPositions(registry);
+  return startPeriodicWorker({
+    name: "settler",
+    defaultIntervalMs: DEFAULT_INTERVAL_MS,
+    envVar: "SETTLE_INTERVAL_MS",
+    run: () => settlePendingPositions(registry),
+    onResult: (result) => {
       if (result.settled > 0) {
         console.log(`[settler] settled ${result.settled} positions`);
       }
-    } catch (err) {
-      console.error("[settler] error:", err);
-    } finally {
-      running = false;
-    }
-  }, intervalMs);
-
-  console.log(`[settler] started (interval: ${intervalMs}ms)`);
-
-  return () => {
-    clearInterval(timer);
-    console.log("[settler] stopped");
-  };
+    },
+  });
 };

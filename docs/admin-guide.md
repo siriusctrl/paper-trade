@@ -35,7 +35,7 @@ The overview screen shows:
 - total balance, market value, unrealized PnL, and equity across users
 - per-user cards with balances, equity, and top holdings
 - market-level summary data across all tracked positions
-- equity trend charts backed by periodic admin snapshots
+- equity trend charts backed by the background equity snapshotter worker
 
 #### Agent detail
 
@@ -117,6 +117,7 @@ Important rules:
 ## Timeline Semantics
 
 Admin timelines use the same merged event builder as user timelines.
+The event record shape is shared through `@unimarket/core`, so the dashboard and API stay on one timeline contract.
 
 Current timeline event types:
 - `order`
@@ -177,7 +178,7 @@ For operators, that means the activity feed can now show:
 
 ## Operational Notes
 
-- The overview page records equity snapshots in the background. The chart becomes more useful over time.
+- `GET /api/admin/overview` is read-only. Equity snapshots are recorded by the background equity snapshotter worker.
 - Admin order placement does not bypass trading constraints or risk rules.
 - If you see liquidation events, always check the paired portfolio state and recent funding for context.
 - If a pending `reduceOnly` order disappears after liquidation, that is expected cleanup behavior.

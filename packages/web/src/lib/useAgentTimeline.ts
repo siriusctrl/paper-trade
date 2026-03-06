@@ -1,45 +1,20 @@
+import type { TimelineEventRecord } from "@unimarket/core";
 import { useCallback, useEffect, useState } from "react";
 
-export type TimelineEvent = {
-    type: "order" | "order.cancelled" | "journal" | "funding.applied" | "position.liquidated";
-    data: {
-        id: string;
-        symbol?: string;
-        market?: string;
-        side?: string;
-        quantity?: number;
-        status?: string;
-        filledPrice?: number | null;
-        filledAt?: string | null;
-        cancelledAt?: string | null;
-        content?: string;
-        tags?: string[];
-        fundingRate?: number;
-        payment?: number;
-        appliedAt?: string;
-        triggerPrice?: number;
-        executionPrice?: number;
-        triggerPositionEquity?: number;
-        maintenanceMargin?: number;
-        grossPayout?: number;
-        feeCharged?: number;
-        netPayout?: number;
-        liquidatedAt?: string;
-        cancelledReduceOnlyOrderIds?: string[];
-        symbolName?: string | null;
-    };
-    reasoning: string | null;
-    createdAt: string;
-};
+import { createAdminApiClient, isAdminAuthError } from "./admin-api";
+
+export type TimelineEvent = TimelineEventRecord;
 
 const PAGE_SIZE = 20;
 
 export const useAgentTimeline = ({
     userId,
     adminKey,
+    onAuthError,
 }: {
     userId: string | undefined;
     adminKey: string;
+    onAuthError?: () => void;
 }) => {
     const [events, setEvents] = useState<TimelineEvent[]>([]);
     const [loading, setLoading] = useState(false);
@@ -53,27 +28,22 @@ export const useAgentTimeline = ({
         setLoading(true);
         try {
             const offset = pageNum * PAGE_SIZE;
-            const response = await fetch(
-                `/api/admin/users/${userId}/timeline?limit=${PAGE_SIZE}&offset=${offset}`,
-                { headers: { Authorization: `Bearer ${adminKey}` } },
-            );
-
-            if (!response.ok) {
-                throw new Error(`Request failed with status ${response.status}`);
-            }
-
-            const payload = await response.json();
+            const client = createAdminApiClient({ adminKey, onAuthError });
+            const payload = await client.getUserTimeline(userId, { limit: PAGE_SIZE, offset });
             const newEvents: TimelineEvent[] = payload.events ?? [];
 
             setEvents(newEvents);
             setHasMore(newEvents.length >= PAGE_SIZE);
             setError(null);
         } catch (e) {
+            if (isAdminAuthError(e)) {
+                return;
+            }
             setError(e instanceof Error ? e.message : "Failed to load timeline");
         } finally {
             setLoading(false);
         }
-    }, [adminKey, userId]);
+    }, [adminKey, onAuthError, userId]);
 
     // Reset pagination when switching to a different agent.
     useEffect(() => {

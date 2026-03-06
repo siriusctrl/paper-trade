@@ -53,7 +53,7 @@ export const DashboardPage = () => {
   };
 
   const { overview, error, loading, refresh } = useAdminOverview({ adminKey, onAuthError: handleAuthError });
-  const { data: historyData, loading: historyLoading } = useEquityHistory({ adminKey, range });
+  const { data: historyData, loading: historyLoading } = useEquityHistory({ adminKey, range, onAuthError: handleAuthError });
 
   const generatedAtLabel = useMemo(() => {
     if (!overview?.generatedAt) return "-";

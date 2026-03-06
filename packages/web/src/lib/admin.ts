@@ -1,57 +1,6 @@
-export type PositionView = {
-  market: string;
-  symbol: string;
-  symbolName?: string | null;
-  side?: string | null;
-  quantity: number;
-  avgCost: number;
-  currentPrice: number | null;
-  marketValue: number | null;
-  unrealizedPnl: number | null;
-  quoteTimestamp?: string | null;
-};
+import type { AgentView, OverviewResponse } from "./admin-api";
 
-export type AgentView = {
-  userId: string;
-  userName: string;
-  createdAt: string;
-  accountId: string | null;
-  accountName: string | null;
-  balance: number;
-  positions: PositionView[];
-  totals: {
-    positions: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
-  };
-};
-
-export type MarketView = {
-  marketId: string;
-  marketName: string;
-  users: number;
-  positions: number;
-  totalQuantity: number;
-  totalMarketValue: number;
-  totalUnrealizedPnl: number;
-  quotedPositions: number;
-  unpricedPositions: number;
-};
-
-export type OverviewResponse = {
-  generatedAt: string;
-  totals: {
-    users: number;
-    positions: number;
-    balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
-  };
-  markets: MarketView[];
-  agents: AgentView[];
-};
+export type { AgentView, MarketView, OverviewResponse, PositionView } from "./admin-api";
 
 export type PositionTableRow = {
   id: string;

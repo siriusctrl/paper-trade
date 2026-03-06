@@ -36,7 +36,7 @@
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  Background workers: reconciler · settler · funding collector ·     │
-│  liquidator                                                         │
+│  liquidator · equity snapshotter                                    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -70,12 +70,14 @@ unimarket/
 │   ├── api/
 │   │   └── src/
 │   │       ├── routes/        # HTTP entrypoints
-│   │       ├── services/      # Shared API orchestration (e.g. order placement)
+│   │       ├── services/      # Shared API orchestration + read models
 │   │       ├── db/            # Schema and SQLite setup
 │   │       ├── reconciler.ts  # Pending limit worker
 │   │       ├── settler.ts     # Resolution worker
 │   │       ├── funding-collector.ts
 │   │       ├── liquidator.ts
+│   │       ├── equity-snapshotter.ts
+│   │       ├── periodic-worker.ts
 │   │       ├── timeline.ts    # Unified audit timeline builder
 │   │       ├── events.ts      # SSE event bus + event types
 │   │       └── index.ts       # API bootstrap
@@ -131,6 +133,7 @@ It handles:
 - request validation
 - idempotency
 - shared order-placement and order-cancellation orchestration for routes and workers
+- shared portfolio and overview read-model builders
 - persistence
 - worker scheduling
 - SSE event emission
@@ -144,6 +147,7 @@ The `web` package is the operator dashboard.
 
 It is intentionally thin:
 - reads from REST endpoints
+- centralizes authenticated admin requests in a small API client layer
 - renders portfolio, market, and timeline state
 - writes through documented admin endpoints
 - does not reimplement trading logic in the browser
@@ -211,7 +215,7 @@ A few design choices matter here.
 
 ## Background Workers
 
-The server process starts four workers after database migration.
+The server process starts five workers after database migration.
 
 ### Reconciler
 
@@ -250,6 +254,15 @@ Why it exists:
 - keeps the risk model explicit and testable
 - surfaces liquidation as a first-class event instead of a hidden side effect
 
+### Equity Snapshotter
+
+Purpose:
+- record periodic account-equity snapshots for operator history charts
+
+Why it exists:
+- keeps `GET /api/admin/overview` read-only
+- makes snapshot cadence an explicit background policy instead of a dashboard side effect
+
 ## Timeline and Event Architecture
 
 The system exposes two audit surfaces.
@@ -266,6 +279,8 @@ Current timeline event types:
 - `position.liquidated`
 
 The account timeline and admin timeline both use the same builder so operators and end users see consistent event semantics.
+
+The timeline record contract is shared through `@unimarket/core`, so the API and web dashboard do not maintain separate event-shape definitions.
 
 ### SSE
 

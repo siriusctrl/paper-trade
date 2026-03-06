@@ -46,7 +46,7 @@ export const AgentDetailPage = () => {
     hasMore,
     nextPage,
     prevPage,
-  } = useAgentTimeline({ userId: id, adminKey });
+  } = useAgentTimeline({ userId: id, adminKey, onAuthError: handleAuthError });
 
   if (loading && !overview) {
     return <LoadingState label="Loading agent snapshot..." />;

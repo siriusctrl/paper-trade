@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db/client.js";
 import { accounts, fundingPayments, positions } from "./db/schema.js";
 import { eventBus } from "./events.js";
+import { startPeriodicWorker } from "./periodic-worker.js";
 import { nowIso } from "./utils.js";
 
 const DEFAULT_INTERVAL_MS = 3_600_000; // 1 hour
@@ -148,28 +149,15 @@ export const applyFundingPayments = async (
 };
 
 export const startFundingCollector = (registry: MarketRegistry): (() => void) => {
-    const intervalMs = Number(process.env.FUNDING_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-
-    let running = false;
-    const timer = setInterval(async () => {
-        if (running) return;
-        running = true;
-        try {
-            const result = await applyFundingPayments(registry);
+    return startPeriodicWorker({
+        name: "funding",
+        defaultIntervalMs: DEFAULT_INTERVAL_MS,
+        envVar: "FUNDING_INTERVAL_MS",
+        run: () => applyFundingPayments(registry),
+        onResult: (result) => {
             if (result.applied > 0) {
                 console.log(`[funding] applied ${result.applied} funding payments`);
             }
-        } catch (err) {
-            console.error("[funding] error:", err);
-        } finally {
-            running = false;
-        }
-    }, intervalMs);
-
-    console.log(`[funding] collector started (interval: ${intervalMs}ms)`);
-
-    return () => {
-        clearInterval(timer);
-        console.log("[funding] collector stopped");
-    };
+        },
+    });
 };

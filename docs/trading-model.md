@@ -108,6 +108,12 @@ The reconciler runs in the background and:
 
 This keeps limit-order behavior deterministic without introducing a full matching engine.
 
+Future evolution:
+
+- the short-term contract remains whole-order fills once the executable price crosses
+- a future depth-aware model may be added for markets with `orderbook`
+- if that happens, it should use price-time priority and partial fills rather than a simplified FIFO approximation
+
 ## Trading Constraints
 
 Every market may expose symbol-level constraints through `getTradingConstraints(symbol)`.

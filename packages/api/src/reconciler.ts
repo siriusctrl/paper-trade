@@ -3,6 +3,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 
 import { db } from "./db/client.js";
 import { accounts, orders } from "./db/schema.js";
+import { startPeriodicWorker } from "./periodic-worker.js";
 import { cancelPendingOrder } from "./services/order-cancellation.js";
 import { createOrderPlacementService } from "./services/order-placement.js";
 import { nowIso } from "./utils.js";
@@ -167,31 +168,18 @@ export const reconcilePendingOrders = async (
 const DEFAULT_INTERVAL_MS = 1_000;
 
 export const startReconciler = (registry: MarketRegistry): (() => void) => {
-  const intervalMs = Number(process.env.RECONCILE_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-
-  let running = false;
-  const timer = setInterval(async () => {
-    if (running) return;
-    running = true;
-    try {
-      const result = await reconcilePendingOrders(registry);
+  return startPeriodicWorker({
+    name: "reconciler",
+    defaultIntervalMs: DEFAULT_INTERVAL_MS,
+    envVar: "RECONCILE_INTERVAL_MS",
+    run: () => reconcilePendingOrders(registry),
+    onResult: (result) => {
       if (result.filled > 0) {
         console.log(`[reconciler] filled ${result.filled} pending orders`);
       }
       if (result.cancelled > 0) {
         console.log(`[reconciler] auto-cancelled ${result.cancelled} pending orders`);
       }
-    } catch (err) {
-      console.error("[reconciler] error:", err);
-    } finally {
-      running = false;
-    }
-  }, intervalMs);
-
-  console.log(`[reconciler] started (interval: ${intervalMs}ms)`);
-
-  return () => {
-    clearInterval(timer);
-    console.log("[reconciler] stopped");
-  };
+    },
+  });
 };

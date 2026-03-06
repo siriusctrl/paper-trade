@@ -1,30 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 
-export type EquitySnapshot = {
-    snapshotAt: string;
-    equity: number;
-    balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-};
-
-export type AgentSeries = {
-    userId: string;
-    userName: string;
-    snapshots: EquitySnapshot[];
-};
-
-export type EquityHistoryResponse = {
-    range: string;
-    series: AgentSeries[];
-};
+import { createAdminApiClient, isAdminAuthError, type EquityHistoryResponse } from "./admin-api";
 
 export const useEquityHistory = ({
     adminKey,
     range = "1m",
+    onAuthError,
 }: {
     adminKey: string;
     range?: string;
+    onAuthError?: () => void;
 }) => {
     const [data, setData] = useState<EquityHistoryResponse | null>(null);
     const [loading, setLoading] = useState(false);
@@ -34,19 +19,19 @@ export const useEquityHistory = ({
         if (!adminKey) return;
         setLoading(true);
         try {
-            const response = await fetch(`/api/admin/equity-history?range=${range}`, {
-                headers: { Authorization: `Bearer ${adminKey}` },
-            });
-            if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
-            const payload = (await response.json()) as EquityHistoryResponse;
+            const client = createAdminApiClient({ adminKey, onAuthError });
+            const payload = await client.getEquityHistory(range);
             setData(payload);
             setError(null);
         } catch (e) {
+            if (isAdminAuthError(e)) {
+                return;
+            }
             setError(e instanceof Error ? e.message : "Failed to load equity history");
         } finally {
             setLoading(false);
         }
-    }, [adminKey, range]);
+    }, [adminKey, onAuthError, range]);
 
     useEffect(() => {
         void fetchHistory();

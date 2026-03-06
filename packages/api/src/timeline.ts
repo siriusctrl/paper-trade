@@ -1,3 +1,4 @@
+import type { TimelineEventRecord } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
 import { desc, eq } from "drizzle-orm";
 
@@ -5,40 +6,6 @@ import { db } from "./db/client.js";
 import { fundingPayments, journal, liquidations, orders } from "./db/schema.js";
 import { deserializeTags } from "./helpers.js";
 import { resolveSymbolsWithCache } from "./symbol-metadata.js";
-
-type TimelineData = {
-  id: string;
-  symbol?: string;
-  market?: string;
-  side?: string;
-  quantity?: number;
-  status?: string;
-  filledPrice?: number | null;
-  filledAt?: string | null;
-  cancelledAt?: string | null;
-  content?: string;
-  tags?: string[];
-  fundingRate?: number;
-  payment?: number;
-  appliedAt?: string;
-  triggerPrice?: number;
-  executionPrice?: number;
-  triggerPositionEquity?: number;
-  maintenanceMargin?: number;
-  grossPayout?: number;
-  feeCharged?: number;
-  netPayout?: number;
-  liquidatedAt?: string;
-  cancelledReduceOnlyOrderIds?: string[];
-  symbolName?: string | null;
-};
-
-export type TimelineEventRecord = {
-  type: "order" | "order.cancelled" | "journal" | "funding.applied" | "position.liquidated";
-  data: TimelineData;
-  reasoning: string | null;
-  createdAt: string;
-};
 
 const deserializeStringArray = (raw: string): string[] => {
   try {

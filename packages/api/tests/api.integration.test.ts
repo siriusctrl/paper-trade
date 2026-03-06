@@ -36,6 +36,7 @@ let sqlite: DbModule["sqlite"];
 let tables: SchemaModule;
 let registry: MarketRegistry;
 let reconcilePendingOrders: (typeof import("../src/reconciler.js"))["reconcilePendingOrders"];
+let recordEquitySnapshots: (typeof import("../src/equity-snapshotter.js"))["recordEquitySnapshots"];
 
 const quoteBySymbol: Record<string, { price: number; bid: number; ask: number }> = {
   "0x-market-fill": { price: 0.52, bid: 0.51, ask: 0.52 },
@@ -222,11 +223,12 @@ const parseSseDataEvents = (chunk: Uint8Array): Array<Record<string, unknown>> =
 };
 
 beforeAll(async () => {
-  const [{ createApp }, dbModule, schemaModule, reconcilerModule] = await Promise.all([
+  const [{ createApp }, dbModule, schemaModule, reconcilerModule, snapshotterModule] = await Promise.all([
     import("../src/app.js"),
     import("../src/db/client.js"),
     import("../src/db/schema.js"),
     import("../src/reconciler.js"),
+    import("../src/equity-snapshotter.js"),
   ]);
 
   await dbModule.migrate();
@@ -239,6 +241,7 @@ beforeAll(async () => {
   registry.register(quoteOnlyAdapter);
   registry.register(fundingAdapter);
   reconcilePendingOrders = reconcilerModule.reconcilePendingOrders;
+  recordEquitySnapshots = snapshotterModule.recordEquitySnapshots;
 
   app = createApp({ registry });
 });
@@ -2290,6 +2293,29 @@ describe("api integration", () => {
       symbol: "0x-pending",
       status: "pending",
     });
+  });
+
+  it("keeps admin overview read-only and records equity snapshots via the worker service", async () => {
+    const user = await registerUser("overview-snapshot-user");
+
+    const initialSnapshotRows = await db.select().from(tables.equitySnapshots).all();
+    expect(initialSnapshotRows).toHaveLength(0);
+
+    const overviewResponse = await authedJson("/api/admin/overview", "admin_test_key");
+    expect(overviewResponse.status).toBe(200);
+
+    const afterOverviewRows = await db.select().from(tables.equitySnapshots).all();
+    expect(afterOverviewRows).toHaveLength(0);
+
+    const firstSnapshotRun = await recordEquitySnapshots(registry);
+    expect(firstSnapshotRun).toEqual({ created: 1, skipped: 0 });
+
+    const createdSnapshotRows = await db.select().from(tables.equitySnapshots).all();
+    expect(createdSnapshotRows).toHaveLength(1);
+    expect(createdSnapshotRows[0]?.userId).toBe(user.userId);
+
+    const secondSnapshotRun = await recordEquitySnapshots(registry);
+    expect(secondSnapshotRun).toEqual({ created: 0, skipped: 1 });
   });
 
   it("caches resolved symbol metadata for admin overview and timeline responses", async () => {

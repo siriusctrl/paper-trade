@@ -9,6 +9,7 @@ const bootstrap = async (): Promise<void> => {
   const [
     { createApp, createDefaultRegistry },
     { migrate },
+    { startEquitySnapshotter },
     { startFundingCollector },
     { startLiquidator },
     { startReconciler },
@@ -16,6 +17,7 @@ const bootstrap = async (): Promise<void> => {
   ] = await Promise.all([
     import("./app.js"),
     import("./db/client.js"),
+    import("./equity-snapshotter.js"),
     import("./funding-collector.js"),
     import("./liquidator.js"),
     import("./reconciler.js"),
@@ -36,6 +38,7 @@ const bootstrap = async (): Promise<void> => {
   startSettler(registry);
   startFundingCollector(registry);
   startLiquidator(registry);
+  startEquitySnapshotter(registry);
 
   console.log(`unimarket API is running at http://localhost:${port}`);
 };

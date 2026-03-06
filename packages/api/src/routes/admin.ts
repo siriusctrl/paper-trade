@@ -1,27 +1,23 @@
 import {
   adminAmountSchema,
-  calculateMarketValue,
-  calculatePerpMaintenanceMargin,
-  calculatePerpPositionEquity,
-  calculatePerpUnrealizedPnl,
-  calculateUnrealizedPnl,
   INITIAL_BALANCE,
   paginationQuerySchema,
   placeOrderSchema,
   registerSchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../auth.js";
 import { db } from "../db/client.js";
-import { accounts, equitySnapshots, fundingPayments, journal, orders, perpPositionState, positions, users } from "../db/schema.js";
+import { accounts, equitySnapshots, journal, users } from "../db/schema.js";
 import { jsonError } from "../errors.js";
 import { getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
 import { checkIdempotency, storeIdempotencyResponse } from "../idempotency.js";
+import { buildAdminOverviewModel } from "../services/admin-overview.js";
 import { createOrderPlacementService } from "../services/order-placement.js";
-import { resolveSymbolsWithCache } from "../symbol-metadata.js";
+import { buildAccountPortfolioModel } from "../services/portfolio-read.js";
 import { buildTimelineEvents } from "../timeline.js";
 import { makeId, nowIso } from "../utils.js";
 
@@ -84,204 +80,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
   router.get(
     "/overview",
     withErrorHandling(async (c) => {
-      const userRows = await db.select().from(users).all();
-      const accountRows = await db.select().from(accounts).all();
-      const positionRows = await db.select().from(positions).all();
-      const perpStateRows = await db.select().from(perpPositionState).all();
-      const perpStateByPositionId = new Map(perpStateRows.map((row) => [row.positionId, row]));
-
-      const primaryAccountByUserId = new Map<string, (typeof accountRows)[number]>();
-      for (const account of [...accountRows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
-        if (!primaryAccountByUserId.has(account.userId)) {
-          primaryAccountByUserId.set(account.userId, account);
-        }
-      }
-
-      const quotePriceByKey = new Map<string, number | null>();
-      const quoteTimestampByKey = new Map<string, string | null>();
-
-      for (const row of positionRows) {
-        const key = `${row.market}::${row.symbol}`;
-        if (quotePriceByKey.has(key)) continue;
-
-        const adapter = registry.get(row.market);
-        if (!adapter) {
-          quotePriceByKey.set(key, null);
-          quoteTimestampByKey.set(key, null);
-          continue;
-        }
-
-        try {
-          const quote = await adapter.getQuote(row.symbol);
-          quotePriceByKey.set(key, quote.price);
-          quoteTimestampByKey.set(key, quote.timestamp);
-        } catch {
-          quotePriceByKey.set(key, null);
-          quoteTimestampByKey.set(key, null);
-        }
-      }
-
-      // Resolve Polymarket symbol names and outcomes
-      const pmPositionSymbols = new Set<string>();
-      for (const row of positionRows) {
-        if (row.market === "polymarket") pmPositionSymbols.add(row.symbol);
-      }
-      const positionResolution = await resolveSymbolsWithCache(registry, "polymarket", pmPositionSymbols);
-
-      const positionsByAccount = new Map<string, Array<{
-        market: string; symbol: string; symbolName: string | null; side: string | null; quantity: number; avgCost: number;
-        currentPrice: number | null; marketValue: number | null;
-        unrealizedPnl: number | null; quoteTimestamp: string | null;
-        margin: number | null; maintenanceMargin: number | null; leverage: number | null; liquidationPrice: number | null;
-      }>>();
-
-      const marketSummaryById = new Map<string, {
-        marketId: string; marketName: string; users: Set<string>;
-        positions: number; totalQuantity: number; totalMarketValue: number;
-        totalUnrealizedPnl: number; quotedPositions: number; unpricedPositions: number;
-      }>();
-
-      const accountById = new Map(accountRows.map((a) => [a.id, a]));
-
-      for (const row of positionRows) {
-        const account = accountById.get(row.accountId);
-        if (!account) continue;
-
-        const adapter = registry.get(row.market);
-        const key = `${row.market}::${row.symbol}`;
-        const currentPrice = quotePriceByKey.get(key) ?? null;
-        const quoteTimestamp = quoteTimestampByKey.get(key) ?? null;
-        const perpState = perpStateByPositionId.get(row.id);
-        const isPerp = Boolean(adapter?.capabilities.includes("funding") && perpState);
-
-        const unrealizedPnl = currentPrice === null
-          ? null
-          : isPerp
-            ? calculatePerpUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice)
-            : calculateUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
-        const marketValue = currentPrice === null
-          ? null
-          : isPerp && perpState
-            ? calculatePerpPositionEquity({ quantity: row.quantity, avgCost: row.avgCost, margin: perpState.margin }, currentPrice)
-            : calculateMarketValue({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
-        const maintenanceMargin = currentPrice === null
-          ? null
-          : isPerp && perpState
-            ? calculatePerpMaintenanceMargin(
-              { quantity: row.quantity, maintenanceMarginRatio: perpState.maintenanceMarginRatio },
-              currentPrice,
-            )
-            : null;
-
-        if (!positionsByAccount.has(row.accountId)) positionsByAccount.set(row.accountId, []);
-        positionsByAccount.get(row.accountId)?.push({
-          market: row.market, symbol: row.symbol, symbolName: positionResolution.names.get(row.symbol) ?? null,
-          side: positionResolution.outcomes.get(row.symbol) ?? null,
-          quantity: row.quantity, avgCost: row.avgCost,
-          currentPrice, marketValue, unrealizedPnl, quoteTimestamp,
-          margin: perpState?.margin ?? null,
-          maintenanceMargin,
-          leverage: perpState?.leverage ?? null,
-          liquidationPrice: perpState?.liquidationPrice ?? null,
-        });
-
-        if (!marketSummaryById.has(row.market)) {
-          marketSummaryById.set(row.market, {
-            marketId: row.market, marketName: adapter?.displayName ?? row.market,
-            users: new Set(), positions: 0, totalQuantity: 0, totalMarketValue: 0,
-            totalUnrealizedPnl: 0, quotedPositions: 0, unpricedPositions: 0,
-          });
-        }
-
-        const ms = marketSummaryById.get(row.market)!;
-        ms.positions += 1;
-        ms.totalQuantity += row.quantity;
-        ms.users.add(account.userId);
-
-        if (marketValue === null || unrealizedPnl === null) {
-          ms.unpricedPositions += 1;
-        } else {
-          ms.quotedPositions += 1;
-          ms.totalMarketValue += marketValue;
-          ms.totalUnrealizedPnl += unrealizedPnl;
-        }
-      }
-
-      const agents = userRows
-        .map((user) => {
-          const primaryAccount = primaryAccountByUserId.get(user.id) ?? null;
-          const agentPositions = [...(primaryAccount ? positionsByAccount.get(primaryAccount.id) ?? [] : [])].sort((a, b) =>
-            `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`),
-          );
-
-          const totalBalance = Number((primaryAccount?.balance ?? 0).toFixed(6));
-          const totalMarketValue = Number(agentPositions.reduce((sum, p) => sum + (p.marketValue ?? 0), 0).toFixed(6));
-          const totalUnrealizedPnl = Number(agentPositions.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0).toFixed(6));
-          const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
-
-          return {
-            userId: user.id, userName: user.name, createdAt: user.createdAt,
-            accountId: primaryAccount?.id ?? null, accountName: primaryAccount?.name ?? null,
-            balance: totalBalance, positions: agentPositions,
-            totals: { positions: agentPositions.length, balance: totalBalance, marketValue: totalMarketValue, unrealizedPnl: totalUnrealizedPnl, equity: totalEquity },
-          };
-        })
-        .sort((a, b) => b.totals.equity - a.totals.equity);
-
-      const markets = Array.from(marketSummaryById.values())
-        .map((m) => ({
-          marketId: m.marketId, marketName: m.marketName, users: m.users.size,
-          positions: m.positions, totalQuantity: m.totalQuantity,
-          totalMarketValue: Number(m.totalMarketValue.toFixed(6)),
-          totalUnrealizedPnl: Number(m.totalUnrealizedPnl.toFixed(6)),
-          quotedPositions: m.quotedPositions, unpricedPositions: m.unpricedPositions,
-        }))
-        .sort((a, b) => b.totalMarketValue - a.totalMarketValue);
-
-      const totalBalance = Number(agents.reduce((sum, a) => sum + a.totals.balance, 0).toFixed(6));
-      const totalMarketValue = Number(markets.reduce((sum, m) => sum + m.totalMarketValue, 0).toFixed(6));
-      const totalUnrealizedPnl = Number(markets.reduce((sum, m) => sum + m.totalUnrealizedPnl, 0).toFixed(6));
-      const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
-
-      const now = nowIso();
-
-      // Snapshot writes are intentionally off the GET response hot-path.
-      void (async () => {
-        if (agents.length === 0) return;
-
-        const userIds = agents.map((agent) => agent.userId);
-        const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
-        const recentRows = await db
-          .select({ userId: equitySnapshots.userId })
-          .from(equitySnapshots)
-          .where(and(inArray(equitySnapshots.userId, userIds), gte(equitySnapshots.snapshotAt, fiveMinAgo)))
-          .all();
-        const recentlySnapshottedUserIds = new Set(recentRows.map((row) => row.userId));
-
-        const pendingSnapshots = agents
-          .filter((agent) => !recentlySnapshottedUserIds.has(agent.userId))
-          .map((agent) => ({
-            id: makeId("snap"),
-            userId: agent.userId,
-            balance: agent.totals.balance,
-            marketValue: agent.totals.marketValue,
-            equity: agent.totals.equity,
-            unrealizedPnl: agent.totals.unrealizedPnl,
-            snapshotAt: now,
-          }));
-
-        if (pendingSnapshots.length === 0) return;
-        await db.insert(equitySnapshots).values(pendingSnapshots).run();
-      })().catch((error) => {
-        console.warn("[admin.overview] failed to record equity snapshots", error);
-      });
-
-      return c.json({
-        generatedAt: now,
-        totals: { users: userRows.length, positions: positionRows.length, balance: totalBalance, marketValue: totalMarketValue, unrealizedPnl: totalUnrealizedPnl, equity: totalEquity },
-        markets,
-        agents,
-      });
+      return c.json(await buildAdminOverviewModel({ registry }));
     }),
   );
 
@@ -405,80 +204,25 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       const account = await getUserAccount(userId);
       if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
-      const positionRows = await db
-        .select()
-        .from(positions)
-        .where(eq(positions.accountId, account.id))
-        .all();
-      const perpStateRows = await db
-        .select()
-        .from(perpPositionState)
-        .where(eq(perpPositionState.accountId, account.id))
-        .all();
-      const perpStateByPositionId = new Map(perpStateRows.map((row) => [row.positionId, row]));
-
-      const enrichedPositions = [];
-      for (const row of positionRows) {
-        const adapter = registry.get(row.market);
-        let currentPrice: number | null = null;
-        try {
-          if (adapter) {
-            const quote = await adapter.getQuote(row.symbol);
-            currentPrice = quote.price;
-          }
-        } catch {
-          // ignore quote failures
-        }
-        const perpState = perpStateByPositionId.get(row.id);
-        const isPerp = Boolean(adapter?.capabilities.includes("funding") && perpState);
-
-        const unrealizedPnl = currentPrice === null
-          ? null
-          : isPerp
-            ? calculatePerpUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice)
-            : calculateUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
-        const marketValue = currentPrice === null
-          ? null
-          : isPerp && perpState
-            ? calculatePerpPositionEquity({ quantity: row.quantity, avgCost: row.avgCost, margin: perpState.margin }, currentPrice)
-            : calculateMarketValue({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
-
-        enrichedPositions.push({
-          market: row.market,
-          symbol: row.symbol,
-          quantity: row.quantity,
-          avgCost: row.avgCost,
-          currentPrice,
-          marketValue,
-          unrealizedPnl,
-          leverage: perpState?.leverage ?? null,
-          margin: perpState?.margin ?? null,
-          liquidationPrice: perpState?.liquidationPrice ?? null,
-        });
-      }
-
-      const recentOrders = await db
-        .select()
-        .from(orders)
-        .where(eq(orders.accountId, account.id))
-        .orderBy(desc(orders.createdAt))
-        .limit(20)
-        .all();
-      const openOrders = await db
-        .select()
-        .from(orders)
-        .where(and(eq(orders.accountId, account.id), eq(orders.status, "pending")))
-        .orderBy(desc(orders.createdAt))
-        .all();
+      const portfolio = await buildAccountPortfolioModel({
+        account,
+        registry,
+        includeRecentOrders: true,
+        tolerateQuoteFailures: true,
+        includeMissingAdapterAsUnpriced: true,
+      });
 
       return c.json({
         userId: user.id,
         userName: user.name,
-        accountId: account.id,
-        balance: account.balance,
-        positions: enrichedPositions,
-        openOrders,
-        recentOrders,
+        accountId: portfolio.accountId,
+        balance: portfolio.balance,
+        positions: portfolio.positions,
+        openOrders: portfolio.openOrders,
+        recentOrders: portfolio.recentOrders,
+        totalValue: portfolio.totalValue,
+        totalPnl: portfolio.totalPnl,
+        totalFunding: portfolio.totalFunding,
       });
     }),
   );

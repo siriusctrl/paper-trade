@@ -35,6 +35,7 @@ Notes:
 - liquidation timeline entries are sourced from the dedicated `liquidations` audit table
 - the backing filled liquidation order is hidden from timeline results to avoid duplicate entries
 - Polymarket timeline items try to resolve human-readable market names and outcomes
+- the timeline record shape is shared with the dashboard through `@unimarket/core`
 
 ## Trading
 
@@ -172,6 +173,10 @@ The full operator workflow is documented in [Admin Guide](admin-guide.md). The m
 
 All admin endpoints require `Authorization: Bearer <ADMIN_API_KEY>`.
 
+Admin read-model notes:
+- `GET /api/admin/overview` is read-only and does not write equity snapshots as a side effect
+- `GET /api/admin/equity-history` is backed by the background equity snapshotter worker
+
 Admin order-placement notes:
 - `POST /api/admin/users/:id/orders` accepts the same payload shape as `POST /api/orders`
 - optional `accountId` must match the target user's default account
@@ -196,6 +201,7 @@ Relevant runtime settings:
 - `SETTLE_INTERVAL_MS`
 - `FUNDING_INTERVAL_MS`
 - `LIQUIDATION_INTERVAL_MS`
+- `EQUITY_SNAPSHOT_INTERVAL_MS`
 - `MAINTENANCE_MARGIN_RATIO`
 - `DEFAULT_TAKER_FEE_RATE`
 - `${MARKET}_TAKER_FEE_RATE`

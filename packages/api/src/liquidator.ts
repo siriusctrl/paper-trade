@@ -10,6 +10,7 @@ import { db } from "./db/client.js";
 import { accounts, liquidations, orderExecutionParams, orders, perpPositionState, positions, trades } from "./db/schema.js";
 import { eventBus } from "./events.js";
 import { getTakerFeeRate } from "./fees.js";
+import { startPeriodicWorker } from "./periodic-worker.js";
 import {
   cancelPendingOrderInTx,
   emitOrderCancelled,
@@ -382,27 +383,15 @@ export const liquidateUnsafePerpPositions = async (
 };
 
 export const startLiquidator = (registry: MarketRegistry): (() => void) => {
-  const intervalMs = Number(process.env.LIQUIDATION_INTERVAL_MS) || DEFAULT_INTERVAL_MS;
-  let running = false;
-
-  const timer = setInterval(async () => {
-    if (running) return;
-    running = true;
-    try {
-      const result = await liquidateUnsafePerpPositions(registry);
+  return startPeriodicWorker({
+    name: "liquidator",
+    defaultIntervalMs: DEFAULT_INTERVAL_MS,
+    envVar: "LIQUIDATION_INTERVAL_MS",
+    run: () => liquidateUnsafePerpPositions(registry),
+    onResult: (result) => {
       if (result.liquidated > 0) {
         console.log(`[liquidator] liquidated ${result.liquidated} positions`);
       }
-    } catch (error) {
-      console.error("[liquidator] error:", error);
-    } finally {
-      running = false;
-    }
-  }, intervalMs);
-
-  console.log(`[liquidator] started (interval: ${intervalMs}ms)`);
-  return () => {
-    clearInterval(timer);
-    console.log("[liquidator] stopped");
-  };
+    },
+  });
 };

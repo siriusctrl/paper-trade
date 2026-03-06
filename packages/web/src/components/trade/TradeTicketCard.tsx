@@ -1,0 +1,282 @@
+import { ArrowDownUp, Loader2, ShoppingCart, TrendingDown, TrendingUp } from "lucide-react";
+
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { Input } from "../ui/input";
+import { formatCurrency } from "../../lib/admin";
+import type { AssetResult, QuoteData, TradingConstraints } from "../../lib/admin-api";
+
+type OrderResult = { ok: boolean; message: string } | null;
+
+export const TradeTicketCard = ({
+  selectedAsset,
+  quote,
+  quoteLoading,
+  constraints,
+  isPerpMarket,
+  orderSide,
+  orderType,
+  quantity,
+  limitPrice,
+  leverage,
+  reasoning,
+  submitting,
+  orderResult,
+  onOrderSideChange,
+  onOrderTypeChange,
+  onQuantityChange,
+  onLimitPriceChange,
+  onLeverageChange,
+  onReasoningChange,
+  onSubmit,
+  canSubmit,
+}: {
+  selectedAsset: AssetResult | null;
+  quote: QuoteData | null;
+  quoteLoading: boolean;
+  constraints: TradingConstraints | null;
+  isPerpMarket: boolean;
+  orderSide: "buy" | "sell";
+  orderType: "market" | "limit";
+  quantity: string;
+  limitPrice: string;
+  leverage: string;
+  reasoning: string;
+  submitting: boolean;
+  orderResult: OrderResult;
+  onOrderSideChange: (side: "buy" | "sell") => void;
+  onOrderTypeChange: (type: "market" | "limit") => void;
+  onQuantityChange: (value: string) => void;
+  onLimitPriceChange: (value: string) => void;
+  onLeverageChange: (value: string) => void;
+  onReasoningChange: (value: string) => void;
+  onSubmit: () => void;
+  canSubmit: boolean;
+}) => {
+  if (!selectedAsset) {
+    return (
+      <Card className="border-border/40 bg-card/30">
+        <CardContent className="py-16 text-center">
+          <ArrowDownUp className="mx-auto mb-3 h-8 w-8 text-muted-foreground/50" />
+          <p className="text-sm text-muted-foreground">Select an asset from the search results to start trading.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const numericQuantity = Number(quantity);
+  const executablePrice = quote
+    ? orderType === "limit" && limitPrice
+      ? Number(limitPrice)
+      : orderSide === "buy"
+        ? (quote.ask ?? quote.price)
+        : (quote.bid ?? quote.price)
+    : null;
+
+  return (
+    <Card className="animate-in fade-in-0 border-primary/25 bg-card/55 backdrop-blur-xl duration-200">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between">
+          <div className="min-w-0 flex-1">
+            <CardTitle className="truncate text-lg">{selectedAsset.name}</CardTitle>
+            <CardDescription className="truncate font-mono text-xs">{selectedAsset.symbol}</CardDescription>
+          </div>
+          {quoteLoading ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {quote ? (
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-lg bg-muted/50 p-2.5 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Price</p>
+              <p className="font-mono text-lg font-bold">{quote.price.toFixed(quote.price < 1 ? 4 : 2)}</p>
+            </div>
+            <div className="rounded-lg bg-emerald-500/10 p-2.5 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Bid</p>
+              <p className="font-mono text-lg font-bold text-emerald-600 dark:text-emerald-400">
+                {(quote.bid ?? quote.price).toFixed(quote.price < 1 ? 4 : 2)}
+              </p>
+            </div>
+            <div className="rounded-lg bg-rose-500/10 p-2.5 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-600 dark:text-rose-400">Ask</p>
+              <p className="font-mono text-lg font-bold text-rose-600 dark:text-rose-400">
+                {(quote.ask ?? quote.price).toFixed(quote.price < 1 ? 4 : 2)}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {constraints ? (
+          <div className="flex flex-wrap gap-2 text-[10px]">
+            <Badge variant="outline" className="gap-1 font-mono text-[10px]">
+              Min: {constraints.minQuantity}
+            </Badge>
+            <Badge variant="outline" className="gap-1 font-mono text-[10px]">
+              Step: {constraints.quantityStep}
+            </Badge>
+            {constraints.supportsFractional ? <Badge variant="outline" className="text-[10px]">Fractional ✓</Badge> : null}
+            {constraints.maxLeverage ? (
+              <Badge variant="outline" className="font-mono text-[10px]">
+                Max Lev: {constraints.maxLeverage}×
+              </Badge>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="space-y-3 border-t border-border/50 pt-4">
+          <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border/50 p-1">
+            <Button
+              id="btn-buy"
+              variant={orderSide === "buy" ? "default" : "ghost"}
+              size="sm"
+              className={`h-9 gap-1.5 ${orderSide === "buy" ? "bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600" : ""}`}
+              onClick={() => onOrderSideChange("buy")}
+            >
+              <TrendingUp className="h-3.5 w-3.5" />
+              Buy
+            </Button>
+            <Button
+              id="btn-sell"
+              variant={orderSide === "sell" ? "default" : "ghost"}
+              size="sm"
+              className={`h-9 gap-1.5 ${orderSide === "sell" ? "bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600" : ""}`}
+              onClick={() => onOrderSideChange("sell")}
+            >
+              <TrendingDown className="h-3.5 w-3.5" />
+              Sell
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border/50 p-1">
+            <Button
+              variant={orderType === "market" ? "default" : "ghost"}
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => onOrderTypeChange("market")}
+            >
+              Market
+            </Button>
+            <Button
+              variant={orderType === "limit" ? "default" : "ghost"}
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => onOrderTypeChange("limit")}
+            >
+              Limit
+            </Button>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Quantity
+            </label>
+            <Input
+              id="order-quantity"
+              type="number"
+              value={quantity}
+              onChange={(event) => onQuantityChange(event.target.value)}
+              placeholder={constraints ? `Min ${constraints.minQuantity}` : "0"}
+              step={constraints?.quantityStep ?? 1}
+              min={constraints?.minQuantity ?? 0}
+            />
+          </div>
+
+          {orderType === "limit" ? (
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Limit Price
+              </label>
+              <Input
+                id="order-limit-price"
+                type="number"
+                value={limitPrice}
+                onChange={(event) => onLimitPriceChange(event.target.value)}
+                placeholder="0.00"
+                step="any"
+                min="0"
+              />
+            </div>
+          ) : null}
+
+          {isPerpMarket ? (
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Leverage {constraints?.maxLeverage ? `(max ${constraints.maxLeverage}×)` : ""}
+              </label>
+              <Input
+                id="order-leverage"
+                type="number"
+                value={leverage}
+                onChange={(event) => onLeverageChange(event.target.value)}
+                placeholder="1"
+                step="1"
+                min="1"
+                max={constraints?.maxLeverage ?? 100}
+              />
+            </div>
+          ) : null}
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Reasoning
+            </label>
+            <textarea
+              id="order-reasoning"
+              value={reasoning}
+              onChange={(event) => onReasoningChange(event.target.value)}
+              placeholder="Why are you making this trade?"
+              className="flex min-h-[60px] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              rows={2}
+            />
+          </div>
+
+          {quote && quantity && numericQuantity > 0 && executablePrice !== null ? (
+            <div className="space-y-1 rounded-lg bg-muted/40 p-2.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Estimated cost</span>
+                <span className="font-mono font-medium">
+                  {formatCurrency(numericQuantity * executablePrice)}
+                </span>
+              </div>
+              {isPerpMarket && Number(leverage) > 1 ? (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Margin required</span>
+                  <span className="font-mono font-medium">
+                    {formatCurrency((numericQuantity * executablePrice) / Number(leverage))}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <Button
+            id="btn-place-order"
+            className={`h-11 w-full gap-2 text-sm font-semibold ${
+              orderSide === "buy"
+                ? "bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                : "bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
+            }`}
+            disabled={!canSubmit}
+            onClick={onSubmit}
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}
+            {orderSide === "buy" ? "Buy" : "Sell"} {orderType === "limit" ? "Limit" : "Market"}
+          </Button>
+
+          {orderResult ? (
+            <div
+              className={`rounded-lg border p-3 text-sm ${
+                orderResult.ok
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                  : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+              }`}
+            >
+              {orderResult.message}
+            </div>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};

@@ -115,6 +115,7 @@ pnpm coverage   # Coverage with CI-enforced thresholds
 |----------|-------------|
 | [Trading Model](docs/trading-model.md) | Current simulation semantics for spot markets, perp markets, funding, settlement, and liquidation |
 | [Architecture](docs/architecture.md) | System design, package responsibilities, worker model, persistence, timeline and SSE architecture |
+| [Refactor Roadmap](docs/refactor-roadmap.md) | Current simplification targets, read-model cleanup plan, worker cleanup plan, and future reconciler evolution |
 | [API Reference](docs/api-reference.md) | Current REST and SSE surfaces, timeline event types, admin endpoints, and runtime configuration |
 | [Admin Guide](docs/admin-guide.md) | Dashboard workflows, admin order placement, timelines, liquidation monitoring, and operator APIs |
 | [Trading Agent](docs/trading-agent.md) | How to build an autonomous trading agent against the current API and event model |
