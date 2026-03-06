@@ -440,13 +440,12 @@ export const TradePage = () => {
       setLimitPrice("");
       setReasoning("");
       setClosePrefill(null);
+      setSelectedAsset(null);
+      setQuote(null);
+      setConstraints(null);
 
-      const [nextPortfolio, nextQuote] = await Promise.all([
-        client.getUserPortfolio(selectedAgent),
-        client.getQuote(selectedMarket, selectedAsset.reference),
-      ]);
+      const nextPortfolio = await client.getUserPortfolio(selectedAgent);
       setPortfolio(nextPortfolio);
-      setQuote(nextQuote);
       setError(null);
     } catch (placeError) {
       if (!isAdminAuthError(placeError)) {
@@ -606,29 +605,31 @@ export const TradePage = () => {
         />
 
         <div className="space-y-4">
-          <TradeTicketCard
-            selectedAsset={selectedAsset}
-            quote={quote}
-            quoteLoading={quoteLoading}
-            constraints={constraints}
-            isPerpMarket={isPerpMarket}
-            orderSide={orderSide}
-            orderType={orderType}
-            quantity={quantity}
-            limitPrice={limitPrice}
-            leverage={leverage}
-            reasoning={reasoning}
-            submitting={submitting}
-            orderResult={orderResult}
-            onOrderSideChange={setOrderSide}
-            onOrderTypeChange={setOrderType}
-            onQuantityChange={setQuantity}
-            onLimitPriceChange={setLimitPrice}
-            onLeverageChange={setLeverage}
-            onReasoningChange={setReasoning}
-            onSubmit={() => void handlePlaceOrder()}
-            canSubmit={canSubmit}
-          />
+          {selectedAsset ? (
+            <TradeTicketCard
+              selectedAsset={selectedAsset}
+              quote={quote}
+              quoteLoading={quoteLoading}
+              constraints={constraints}
+              isPerpMarket={isPerpMarket}
+              orderSide={orderSide}
+              orderType={orderType}
+              quantity={quantity}
+              limitPrice={limitPrice}
+              leverage={leverage}
+              reasoning={reasoning}
+              submitting={submitting}
+              orderResult={orderResult}
+              onOrderSideChange={setOrderSide}
+              onOrderTypeChange={setOrderType}
+              onQuantityChange={setQuantity}
+              onLimitPriceChange={setLimitPrice}
+              onLeverageChange={setLeverage}
+              onReasoningChange={setReasoning}
+              onSubmit={() => void handlePlaceOrder()}
+              canSubmit={canSubmit}
+            />
+          ) : null}
 
           <PortfolioPanels selectedAgent={selectedAgentInfo} portfolio={portfolio} onClosePosition={handleClosePosition} />
         </div>

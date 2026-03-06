@@ -160,9 +160,9 @@ export const MarketSearchPanel = ({
             <div
               key={asset.reference}
               className={cn(
-                "market-card group cursor-pointer overflow-hidden rounded-xl border",
+                "group cursor-pointer overflow-hidden rounded-xl border transition-all duration-200",
                 isSelected
-                  ? "market-card--selected border-primary/40 bg-primary/5"
+                  ? "border-primary/50 border-l-primary border-l-[3px] shadow-[0_0_12px_-4px_hsl(var(--primary)/0.3)]"
                   : "border-border/40 bg-gradient-to-br from-card/80 to-muted/10 hover:border-border/70",
               )}
               onClick={() => onSelectAsset(asset)}
@@ -187,11 +187,11 @@ export const MarketSearchPanel = ({
 
                 {/* Stat grid */}
                 {stats.length > 0 ? (
-                  <div className="stat-grid">
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(72px,1fr))] gap-1.5">
                     {stats.map((stat) => (
-                      <div key={stat.label} className="stat-cell">
+                      <div key={stat.label} className="flex flex-col items-center gap-0.5 rounded-md border border-border/30 bg-muted/30 px-1 py-1.5 transition-colors group-hover:bg-muted/45">
                         <stat.icon className={cn("h-3 w-3", stat.color)} />
-                        <span className="text-[10px] text-muted-foreground/70 leading-none">{stat.label}</span>
+                        <span className="text-[10px] leading-none text-muted-foreground/70">{stat.label}</span>
                         <span className="text-xs font-semibold tabular-nums leading-none">{stat.value}</span>
                       </div>
                     ))}
