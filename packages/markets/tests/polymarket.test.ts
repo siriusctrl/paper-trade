@@ -23,17 +23,33 @@ describe("PolymarketAdapter", () => {
     vi.restoreAllMocks();
   });
 
-  it("searches and caches parsed market assets", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse([
-        {
-          conditionId: "0x-condition",
-          question: "Will CPI print below 3% next month?",
-          lastTradePrice: "0.57",
-          volume24hr: "12345",
-        },
-      ]),
-    );
+  it("searches via search-v2, hydrates market details, and caches parsed assets", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "CPI search results",
+              markets: [{ slug: "cpi-below-3-next-month" }],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=cpi-below-3-next-month&limit=1") {
+        return jsonResponse([
+          {
+            conditionId: "0x-condition",
+            question: "Will CPI print below 3% next month?",
+            clobTokenIds: JSON.stringify(["111", "222"]),
+            lastTradePrice: "0.57",
+            volume24hr: "12345",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
 
     const adapter = makeAdapter();
     const first = await adapter.search("cpi");
@@ -45,15 +61,25 @@ describe("PolymarketAdapter", () => {
         name: "Will CPI print below 3% next month?",
         price: 0.57,
         volume: 12345,
+        metadata: {
+          conditionId: "0x-condition",
+          tokenIds: ["111", "222"],
+          outcomes: [],
+          outcomePrices: [],
+          defaultTokenId: "111",
+          minQuantity: 1,
+          quantityStep: 1,
+          supportsFractional: false,
+        },
       },
     ]);
     expect(second).toEqual(first);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     const searchUrl = String(fetchSpy.mock.calls[0]?.[0]);
-    expect(searchUrl).toContain("search=cpi");
-    expect(searchUrl).toContain("active=true");
-    expect(searchUrl).toContain("closed=false");
-    expect(searchUrl).toContain("offset=0");
+    expect(searchUrl).toContain("/search-v2?");
+    expect(searchUrl).toContain("q=cpi");
+    expect(searchUrl).toContain("type=events");
+    expect(searchUrl).toContain("optimized=true");
   });
 
   it("browses all active markets when query is empty", async () => {
@@ -89,18 +115,33 @@ describe("PolymarketAdapter", () => {
   });
 
   it("includes market metadata when token and outcome details are available", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse([
-        {
-          conditionId: `0x${"d".repeat(64)}`,
-          question: "Will metadata be exposed?",
-          clobTokenIds: JSON.stringify(["111", "222"]),
-          outcomes: JSON.stringify(["Yes", "No"]),
-          outcomePrices: JSON.stringify(["0.61", "0.39"]),
-          lastTradePrice: "0.61",
-        },
-      ]),
-    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "Metadata event",
+              markets: [{ slug: "metadata-market" }],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=metadata-market&limit=1") {
+        return jsonResponse([
+          {
+            conditionId: `0x${"d".repeat(64)}`,
+            question: "Will metadata be exposed?",
+            clobTokenIds: JSON.stringify(["111", "222"]),
+            outcomes: JSON.stringify(["Yes", "No"]),
+            outcomePrices: JSON.stringify(["0.61", "0.39"]),
+            lastTradePrice: "0.61",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
 
     const adapter = makeAdapter();
     const results = await adapter.search("metadata");
@@ -117,20 +158,71 @@ describe("PolymarketAdapter", () => {
     });
   });
 
-  it("skips malformed search rows and accepts slug/title fallback fields", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse([
-        "invalid-row",
-        { conditionId: "0x-missing-name" },
-        { slug: "slug-only", title: "Fallback Title", outcomePrice: "0.44", volume: "321" },
-      ]),
-    );
+  it("skips malformed search-v2 rows, deduplicates slugs, and ignores unhydratable markets", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            "invalid-row",
+            {
+              title: "Duplicate event",
+              markets: [
+                { slug: "duplicate-market" },
+                { slug: "duplicate-market" },
+                { slug: "missing-condition" },
+              ],
+            },
+            {
+              title: "Valid event",
+              markets: [{ slug: "slug-only" }],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=duplicate-market&limit=1") {
+        return jsonResponse([
+          {
+            conditionId: `0x${"a".repeat(64)}`,
+            question: "Duplicate hydrated market",
+            outcomePrice: "0.32",
+            volume: "123",
+          },
+        ]);
+      }
+      if (url === "https://gamma.example/markets?slug=missing-condition&limit=1") {
+        return jsonResponse([
+          {
+            slug: "missing-condition",
+            title: "Should be ignored",
+          },
+        ]);
+      }
+      if (url === "https://gamma.example/markets?slug=slug-only&limit=1") {
+        return jsonResponse([
+          {
+            conditionId: `0x${"b".repeat(64)}`,
+            question: "Fallback Title",
+            outcomePrice: "0.44",
+            volume: "321",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
 
     const adapter = makeAdapter();
     const results = await adapter.search("fallback");
     expect(results).toEqual([
       {
-        symbol: "slug-only",
+        symbol: `0x${"a".repeat(64)}`,
+        name: "Duplicate hydrated market",
+        price: 0.32,
+        volume: 123,
+      },
+      {
+        symbol: `0x${"b".repeat(64)}`,
         name: "Fallback Title",
         price: 0.44,
         volume: 321,
@@ -183,7 +275,18 @@ describe("PolymarketAdapter", () => {
     const tokenId = "789012345678901234567";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
-      if (url.startsWith("https://gamma.example/markets")) {
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "Cache search result",
+              markets: [{ slug: "cache-search-market" }],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=cache-search-market&limit=1") {
         return jsonResponse([
           {
             conditionId,
@@ -208,7 +311,7 @@ describe("PolymarketAdapter", () => {
     const quote = await adapter.getQuote(conditionId);
     expect(quote.price).toBe(0.41);
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it("throws SYMBOL_NOT_FOUND when a condition-id symbol has no token ids", async () => {

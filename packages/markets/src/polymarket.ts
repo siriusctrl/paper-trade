@@ -20,6 +20,9 @@ const ORDERBOOK_TTL_MS = 10_000;
 const SEARCH_TTL_MS = 300_000;
 const RESOLVE_TTL_MS = 60_000;
 const RESOLVE_NAMES_CONCURRENCY = 8;
+const SEARCH_V2_PAGE_SIZE = 20;
+const SEARCH_V2_MAX_PAGES = 10;
+const SEARCH_HYDRATION_CONCURRENCY = 8;
 
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL = "https://clob.polymarket.com";
@@ -140,6 +143,212 @@ export class PolymarketAdapter implements MarketAdapter {
     this.clobBaseUrl = options.clobBaseUrl ?? DEFAULT_CLOB_BASE_URL;
   }
 
+  private cacheMarketSymbolMappings(market: UnknownObject): void {
+    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+    const tokenIds = parseStringArray(market.clobTokenIds);
+    if (!conditionId) return;
+
+    const tokenId = tokenIds[0];
+    if (tokenId) {
+      this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
+    }
+
+    for (const token of tokenIds) {
+      this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
+    }
+  }
+
+  private marketToAsset(market: UnknownObject): Asset | null {
+    this.cacheMarketSymbolMappings(market);
+
+    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+    const tokenIds = parseStringArray(market.clobTokenIds);
+    const outcomes = parseStringArray(market.outcomes);
+    const outcomePrices = parseNumberArray(market.outcomePrices);
+    const symbol = conditionId ?? (typeof market.slug === "string" ? market.slug : null);
+    const name =
+      typeof market.question === "string"
+        ? market.question
+        : typeof market.title === "string"
+          ? market.title
+          : null;
+
+    if (!symbol || !name) {
+      return null;
+    }
+
+    const metadata =
+      tokenIds.length > 0 || outcomes.length > 0 || outcomePrices.length > 0
+        ? {
+          conditionId,
+          tokenIds,
+          outcomes,
+          outcomePrices,
+          defaultTokenId: tokenIds[0] ?? null,
+          minQuantity: POLYMARKET_TRADING_CONSTRAINTS.minQuantity,
+          quantityStep: POLYMARKET_TRADING_CONSTRAINTS.quantityStep,
+          supportsFractional: POLYMARKET_TRADING_CONSTRAINTS.supportsFractional,
+        }
+        : null;
+
+    return {
+      symbol,
+      name,
+      price: parseNumber(market.lastTradePrice) ?? parseNumber(market.outcomePrice) ?? undefined,
+      volume: parseNumber(market.volume24hr) ?? parseNumber(market.volume) ?? undefined,
+      ...(metadata ? { metadata } : {}),
+    };
+  }
+
+  private async browseMarkets(limit: number, offset: number): Promise<Asset[]> {
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("offset", String(offset));
+    url.searchParams.set("active", "true");
+    url.searchParams.set("closed", "false");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    const results: Asset[] = [];
+    for (const item of raw) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const asset = this.marketToAsset(item as UnknownObject);
+      if (asset) {
+        results.push(asset);
+      }
+    }
+
+    return results;
+  }
+
+  private async fetchSearchV2Page(query: string, page: number): Promise<{ slugs: string[]; hasMore: boolean }> {
+    const url = new URL("/search-v2", this.gammaBaseUrl);
+    url.searchParams.set("q", query);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("type", "events");
+    url.searchParams.set("optimized", "true");
+    url.searchParams.set("limit_per_type", String(SEARCH_V2_PAGE_SIZE));
+    url.searchParams.set("search_tags", "true");
+    url.searchParams.set("search_profiles", "true");
+    url.searchParams.set("cache", "true");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (typeof raw !== "object" || raw === null) {
+      return { slugs: [], hasMore: false };
+    }
+
+    const response = raw as UnknownObject;
+    const events = Array.isArray(response.events) ? response.events : [];
+    const slugs: string[] = [];
+    const seen = new Set<string>();
+
+    for (const event of events) {
+      if (typeof event !== "object" || event === null) {
+        continue;
+      }
+
+      const eventRecord = event as UnknownObject;
+      const markets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
+      for (const market of markets) {
+        if (typeof market !== "object" || market === null) {
+          continue;
+        }
+
+        const marketRecord = market as UnknownObject;
+        const slug = typeof marketRecord.slug === "string" ? marketRecord.slug : null;
+        if (!slug || seen.has(slug)) {
+          continue;
+        }
+
+        seen.add(slug);
+        slugs.push(slug);
+      }
+    }
+
+    const pagination =
+      typeof response.pagination === "object" && response.pagination !== null
+        ? (response.pagination as UnknownObject)
+        : null;
+
+    return {
+      slugs,
+      hasMore: Boolean(pagination?.hasMore),
+    };
+  }
+
+  private async hydrateSearchAsset(slug: string): Promise<Asset | null> {
+    const cacheKey = `search-market:${slug}`;
+    const cached = this.cache.get<Asset | null>(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("slug", slug);
+    url.searchParams.set("limit", "1");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
+      this.cache.set(cacheKey, null, SEARCH_TTL_MS);
+      return null;
+    }
+
+    const market = raw[0] as UnknownObject;
+    if (market.active === false || market.closed === true || typeof market.conditionId !== "string") {
+      this.cache.set(cacheKey, null, SEARCH_TTL_MS);
+      return null;
+    }
+
+    const asset = this.marketToAsset(market);
+    this.cache.set(cacheKey, asset, SEARCH_TTL_MS);
+    return asset;
+  }
+
+  private async searchMarketsByQuery(query: string, limit: number, offset: number): Promise<Asset[]> {
+    const desiredCount = limit + offset;
+    const slugs: string[] = [];
+    const seenSlugs = new Set<string>();
+    let hasMore = true;
+
+    for (let page = 1; page <= SEARCH_V2_MAX_PAGES && hasMore && slugs.length < desiredCount; page += 1) {
+      const nextPage = await this.fetchSearchV2Page(query, page);
+      hasMore = nextPage.hasMore;
+
+      for (const slug of nextPage.slugs) {
+        if (seenSlugs.has(slug)) {
+          continue;
+        }
+
+        seenSlugs.add(slug);
+        slugs.push(slug);
+      }
+    }
+
+    const results: Asset[] = [];
+    for (let i = 0; i < slugs.length && results.length < desiredCount; i += SEARCH_HYDRATION_CONCURRENCY) {
+      const chunk = slugs.slice(i, i + SEARCH_HYDRATION_CONCURRENCY);
+      const settled = await Promise.allSettled(chunk.map(async (slug) => this.hydrateSearchAsset(slug)));
+      for (const result of settled) {
+        if (result.status !== "fulfilled" || !result.value) {
+          continue;
+        }
+
+        results.push(result.value);
+        if (results.length >= desiredCount) {
+          break;
+        }
+      }
+    }
+
+    return results.slice(offset, offset + limit);
+  }
+
   private async resolveTokenId(symbol: string): Promise<string> {
     if (!CONDITION_ID_PATTERN.test(symbol)) {
       return symbol;
@@ -216,82 +425,17 @@ export class PolymarketAdapter implements MarketAdapter {
   async search(query: string, options?: SearchOptions): Promise<Asset[]> {
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
-    const cacheKey = `search:${query.toLowerCase()}:${limit}:${offset}`;
+    const normalizedQuery = query.trim();
+    const cacheKey = `search:${normalizedQuery.toLowerCase()}:${limit}:${offset}`;
     const cached = this.cache.get<Asset[]>(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const url = new URL("/markets", this.gammaBaseUrl);
-    if (query.length > 0) {
-      url.searchParams.set("search", query);
-    }
-    url.searchParams.set("limit", String(limit));
-    url.searchParams.set("offset", String(offset));
-    url.searchParams.set("active", "true");
-    url.searchParams.set("closed", "false");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    const results: Asset[] = [];
-
-    if (Array.isArray(raw)) {
-      for (const item of raw) {
-        if (typeof item !== "object" || item === null) {
-          continue;
-        }
-
-        const market = item as UnknownObject;
-        const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
-        const tokenIds = parseStringArray(market.clobTokenIds);
-        const outcomes = parseStringArray(market.outcomes);
-        const outcomePrices = parseNumberArray(market.outcomePrices);
-
-        if (conditionId) {
-          const tokenId = tokenIds[0];
-          if (tokenId) {
-            this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
-          }
-          for (const token of tokenIds) {
-            this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
-          }
-        }
-
-        const symbol = conditionId ?? (typeof market.slug === "string" ? market.slug : null);
-
-        const name =
-          typeof market.question === "string"
-            ? market.question
-            : typeof market.title === "string"
-              ? market.title
-              : null;
-
-        if (!symbol || !name) {
-          continue;
-        }
-
-        const metadata =
-          tokenIds.length > 0 || outcomes.length > 0 || outcomePrices.length > 0
-            ? {
-              conditionId,
-              tokenIds,
-              outcomes,
-              outcomePrices,
-              defaultTokenId: tokenIds[0] ?? null,
-              minQuantity: POLYMARKET_TRADING_CONSTRAINTS.minQuantity,
-              quantityStep: POLYMARKET_TRADING_CONSTRAINTS.quantityStep,
-              supportsFractional: POLYMARKET_TRADING_CONSTRAINTS.supportsFractional,
-            }
-            : null;
-
-        results.push({
-          symbol,
-          name,
-          price: parseNumber(market.lastTradePrice) ?? parseNumber(market.outcomePrice) ?? undefined,
-          volume: parseNumber(market.volume24hr) ?? parseNumber(market.volume) ?? undefined,
-          ...(metadata ? { metadata } : {}),
-        });
-      }
-    }
+    const results =
+      normalizedQuery.length > 0
+        ? await this.searchMarketsByQuery(normalizedQuery, limit, offset)
+        : await this.browseMarkets(limit, offset);
 
     this.cache.set(cacheKey, results, SEARCH_TTL_MS);
     return results;

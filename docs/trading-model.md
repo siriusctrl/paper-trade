@@ -42,6 +42,7 @@ For prediction markets, directional expression is outcome-based:
 
 For Polymarket specifically:
 - asset discovery comes from Gamma
+- query search uses Gamma `search-v2`, then hydrates selected market slugs through `/markets`
 - quotes and orderbooks come from the CLOB API
 - symbol normalization can map a `conditionId` to a concrete outcome `tokenId`
 - if you want a specific outcome such as `NO`, pass the corresponding token id explicitly
