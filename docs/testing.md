@@ -118,32 +118,37 @@ TRADE_SYMBOL=""
 while read -r MARKET_ID; do
   [[ -n "$MARKET_ID" ]] || continue
 
-  SEARCH_PAYLOAD="$(auth_get "/api/markets/$MARKET_ID/search?limit=1")"
-  SYMBOL="$(jq -r '.results[0].symbol // empty' <<<"$SEARCH_PAYLOAD")"
-  [[ -n "$SYMBOL" ]] || continue
+  SORT="$(jq -r --arg m "$MARKET_ID" '.markets[] | select(.id == $m) | .browseOptions[0].value // empty' <<<"$MARKETS_PAYLOAD")"
+  BROWSE_URL="/api/markets/$MARKET_ID/browse?limit=1"
+  if [[ -n "$SORT" ]]; then
+    BROWSE_URL="$BROWSE_URL&sort=$SORT"
+  fi
+  BROWSE_PAYLOAD="$(auth_get "$BROWSE_URL")"
+  REFERENCE="$(jq -r '.results[0].reference // empty' <<<"$BROWSE_PAYLOAD")"
+  [[ -n "$REFERENCE" ]] || continue
 
   CAPS="$(jq -r --arg m "$MARKET_ID" '.markets[] | select(.id == $m) | .capabilities[]?' <<<"$MARKETS_PAYLOAD")"
   if grep -qx "quote" <<<"$CAPS"; then
-    auth_get "/api/markets/$MARKET_ID/quote?symbol=$SYMBOL" >/dev/null
+    auth_get "/api/markets/$MARKET_ID/quote?reference=$REFERENCE" >/dev/null
   fi
   if grep -qx "orderbook" <<<"$CAPS"; then
-    auth_get "/api/markets/$MARKET_ID/orderbook?symbol=$SYMBOL" >/dev/null
+    auth_get "/api/markets/$MARKET_ID/orderbook?reference=$REFERENCE" >/dev/null
   fi
   if grep -qx "funding" <<<"$CAPS"; then
-    auth_get "/api/markets/$MARKET_ID/funding?symbol=$SYMBOL" >/dev/null
+    auth_get "/api/markets/$MARKET_ID/funding?reference=$REFERENCE" >/dev/null
   fi
   if grep -qx "resolve" <<<"$CAPS"; then
-    auth_get "/api/markets/$MARKET_ID/resolve?symbol=$SYMBOL" >/dev/null
+    auth_get "/api/markets/$MARKET_ID/resolve?reference=$REFERENCE" >/dev/null
   fi
 
   if [[ -z "$TRADE_MARKET" ]]; then
     TRADE_MARKET="$MARKET_ID"
-    TRADE_SYMBOL="$SYMBOL"
+    TRADE_SYMBOL="$REFERENCE"
   fi
 done < <(jq -r '.markets[].id' <<<"$MARKETS_PAYLOAD")
 
 [[ -n "$TRADE_MARKET" && -n "$TRADE_SYMBOL" ]] || {
-  echo "no tradeable symbol found"
+  echo "no tradeable reference found"
   exit 1
 }
 
@@ -151,7 +156,7 @@ echo "[3/8] Place market order"
 MARKET_ORDER_PAYLOAD="$(auth_post "/api/orders" "$(jq -nc \
   --arg m "$TRADE_MARKET" \
   --arg s "$TRADE_SYMBOL" \
-  '{market:$m,symbol:$s,side:"buy",type:"market",quantity:1,reasoning:"e2e smoke: open starter position"}'
+  '{market:$m,reference:$s,side:"buy",type:"market",quantity:1,reasoning:"e2e smoke: open starter position"}'
 )")"
 MARKET_ORDER_ID="$(jq -r '.id // empty' <<<"$MARKET_ORDER_PAYLOAD")"
 [[ -n "$MARKET_ORDER_ID" ]] || { echo "market order failed: $MARKET_ORDER_PAYLOAD"; exit 1; }
@@ -160,7 +165,7 @@ echo "[4/8] Place and cancel pending limit order"
 LIMIT_ORDER_PAYLOAD="$(auth_post "/api/orders" "$(jq -nc \
   --arg m "$TRADE_MARKET" \
   --arg s "$TRADE_SYMBOL" \
-  '{market:$m,symbol:$s,side:"sell",type:"limit",quantity:1,limitPrice:0.99,reasoning:"e2e smoke: pending order for cancel flow"}'
+  '{market:$m,reference:$s,side:"sell",type:"limit",quantity:1,limitPrice:0.99,reasoning:"e2e smoke: pending order for cancel flow"}'
 )")"
 LIMIT_ORDER_ID="$(jq -r '.id // empty' <<<"$LIMIT_ORDER_PAYLOAD")"
 [[ -n "$LIMIT_ORDER_ID" ]] || { echo "limit order failed: $LIMIT_ORDER_PAYLOAD"; exit 1; }
@@ -195,7 +200,7 @@ MISSING_REASONING_CODE="$(curl -sS -o /tmp/unimarket-missing-reasoning.out -w "%
   -X POST "$BASE_URL/api/orders" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"market\":\"$TRADE_MARKET\",\"symbol\":\"$TRADE_SYMBOL\",\"side\":\"buy\",\"type\":\"market\",\"quantity\":1}")"
+  -d "{\"market\":\"$TRADE_MARKET\",\"reference\":\"$TRADE_SYMBOL\",\"side\":\"buy\",\"type\":\"market\",\"quantity\":1}")"
 [[ "$MISSING_REASONING_CODE" == "400" ]] || { echo "expected 400 for missing reasoning"; exit 1; }
 
 echo "[8/8] Optional admin checks"

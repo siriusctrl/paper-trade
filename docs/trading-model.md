@@ -42,10 +42,12 @@ For prediction markets, directional expression is outcome-based:
 
 For Polymarket specifically:
 - asset discovery comes from Gamma
-- query search uses Gamma `search-v2`, then hydrates selected market slugs through `/markets`
+- query search uses Gamma `search-v2`
+- browse uses Gamma `/events`
+- external discovery results use lightweight market `reference` values, typically Polymarket slugs
 - quotes and orderbooks come from the CLOB API
-- symbol normalization can map a `conditionId` to a concrete outcome `tokenId`
-- if you want a specific outcome such as `NO`, pass the corresponding token id explicitly
+- reference normalization can map a slug or `conditionId` to a concrete outcome `tokenId`
+- if you want a specific outcome such as `NO`, pass the corresponding token id explicitly as the reference
 
 ### Perp-like markets
 
@@ -69,8 +71,8 @@ All state-changing order flows follow the same broad structure.
 
 1. Validate request payload.
 2. Resolve the market adapter.
-3. Normalize the symbol if the adapter supports normalization.
-4. Load symbol-level trading constraints.
+3. Normalize the external reference if the adapter supports normalization.
+4. Load reference-level trading constraints.
 5. Validate quantity step, minimum quantity, fractional support, and optional max leverage.
 6. Fetch a fresh quote.
 7. Either fill immediately or store a pending limit order.
@@ -117,7 +119,7 @@ Future evolution:
 
 ## Trading Constraints
 
-Every market may expose symbol-level constraints through `getTradingConstraints(symbol)`.
+Every market may expose reference-level constraints through `getTradingConstraints(reference)`.
 
 The engine uses these fields:
 - `minQuantity`
@@ -131,7 +133,7 @@ If a market does not provide custom constraints, unimarket falls back to:
 - `supportsFractional = false`
 - `maxLeverage = null`
 
-This keeps order validation market-agnostic while still allowing symbol-specific precision and leverage rules.
+This keeps order validation market-agnostic while still allowing reference-specific precision and leverage rules.
 
 ## Spot Position Accounting
 

@@ -15,8 +15,8 @@ import {
   AdminApiError,
   createAdminApiClient,
   type AgentOption,
-  type AssetResult,
   type MarketInfo,
+  type MarketReferenceResult,
   type PlaceOrderInput,
   type PortfolioData,
   type QuoteData,
@@ -26,8 +26,21 @@ import {
 
 type OrderResult = { ok: boolean; message: string } | null;
 
+const DISCOVERY_PAGE_SIZE = 20;
+
 const getErrorMessage = (error: unknown, fallback: string): string => {
   return error instanceof Error ? error.message : fallback;
+};
+
+const mergeReferences = (
+  previous: MarketReferenceResult[],
+  incoming: MarketReferenceResult[],
+): MarketReferenceResult[] => {
+  const merged = new Map(previous.map((item) => [item.reference, item] as const));
+  for (const item of incoming) {
+    merged.set(item.reference, item);
+  }
+  return Array.from(merged.values());
 };
 
 export const TradePage = () => {
@@ -48,9 +61,12 @@ export const TradePage = () => {
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [selectedMarket, setSelectedMarket] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<AssetResult[]>([]);
+  const [browseSort, setBrowseSort] = useState("");
+  const [searchResults, setSearchResults] = useState<MarketReferenceResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [selectedAsset, setSelectedAsset] = useState<AssetResult | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreResults, setHasMoreResults] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<MarketReferenceResult | null>(null);
   const [quote, setQuote] = useState<QuoteData | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [constraints, setConstraints] = useState<TradingConstraints | null>(null);
@@ -77,16 +93,20 @@ export const TradePage = () => {
 
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const agentDropdownRef = useRef<HTMLDivElement>(null);
+  const discoveryRequestRef = useRef(0);
 
   const selectedAgentInfo = useMemo(
     () => agents.find((agent) => agent.userId === selectedAgent) ?? null,
     [agents, selectedAgent],
   );
 
-  const isPerpMarket = useMemo(() => {
-    const market = markets.find((entry) => entry.id === selectedMarket);
-    return Boolean(market?.capabilities.includes("funding"));
-  }, [markets, selectedMarket]);
+  const selectedMarketInfo = useMemo(
+    () => markets.find((entry) => entry.id === selectedMarket) ?? null,
+    [markets, selectedMarket],
+  );
+
+  const isPerpMarket = Boolean(selectedMarketInfo?.capabilities.includes("funding"));
+  const discoveryMode = searchQuery.trim().length > 0 ? "search" : "browse";
 
   const canSubmit = Boolean(
     !submitting &&
@@ -103,6 +123,7 @@ export const TradePage = () => {
     setConstraints(null);
     setQuoteLoading(false);
     setSearchResults([]);
+    setHasMoreResults(false);
     setSearchQuery("");
     setOrderResult(null);
   }, []);
@@ -127,23 +148,63 @@ export const TradePage = () => {
     }
   }, [client, selectedAgent]);
 
-  const runSearch = useCallback(
-    async (query: string, marketId: string) => {
+  const loadDiscoveries = useCallback(
+    async ({
+      marketId,
+      query,
+      sort,
+      offset = 0,
+      append = false,
+    }: {
+      marketId: string;
+      query: string;
+      sort?: string;
+      offset?: number;
+      append?: boolean;
+    }) => {
       if (!marketId) {
         return;
       }
 
-      setSearchLoading(true);
+      const requestId = ++discoveryRequestRef.current;
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setSearchLoading(true);
+      }
+
       try {
-        const payload = await client.searchAssets(marketId, query.trim(), 20);
-        setSearchResults(payload.results);
+        const trimmedQuery = query.trim();
+        const payload = trimmedQuery
+          ? await client.searchMarketReferences(marketId, trimmedQuery, DISCOVERY_PAGE_SIZE, offset)
+          : await client.browseMarketReferences(marketId, sort, DISCOVERY_PAGE_SIZE, offset);
+
+        if (requestId !== discoveryRequestRef.current) {
+          return;
+        }
+
+        setSearchResults((previous) => (append ? mergeReferences(previous, payload.results) : payload.results));
+        setHasMoreResults(payload.results.length === DISCOVERY_PAGE_SIZE);
       } catch (searchError) {
+        if (requestId !== discoveryRequestRef.current) {
+          return;
+        }
         if (isAdminAuthError(searchError)) {
           return;
         }
-        setSearchResults([]);
+        if (!append) {
+          setSearchResults([]);
+          setHasMoreResults(false);
+        }
+        setError(getErrorMessage(searchError, "Failed to load market references"));
       } finally {
-        setSearchLoading(false);
+        if (requestId === discoveryRequestRef.current) {
+          if (append) {
+            setLoadingMore(false);
+          } else {
+            setSearchLoading(false);
+          }
+        }
       }
     },
     [client],
@@ -157,10 +218,12 @@ export const TradePage = () => {
     void (async () => {
       try {
         const payload = await client.getMarkets();
-        const searchableMarkets = payload.markets.filter((market) => market.capabilities.includes("search"));
-        setMarkets(searchableMarkets);
-        if (searchableMarkets.length > 0 && !selectedMarket) {
-          setSelectedMarket(searchableMarkets[0].id);
+        const discoverableMarkets = payload.markets.filter((market) =>
+          market.capabilities.includes("search") || market.capabilities.includes("browse"),
+        );
+        setMarkets(discoverableMarkets);
+        if (discoverableMarkets.length > 0 && !selectedMarket) {
+          setSelectedMarket(discoverableMarkets[0].id);
         }
       } catch (fetchError) {
         if (!isAdminAuthError(fetchError)) {
@@ -186,6 +249,20 @@ export const TradePage = () => {
   }, []);
 
   useEffect(() => {
+    const browseOptions = selectedMarketInfo?.browseOptions ?? [];
+    if (browseOptions.length === 0) {
+      if (browseSort !== "") {
+        setBrowseSort("");
+      }
+      return;
+    }
+
+    if (!browseOptions.some((option) => option.value === browseSort)) {
+      setBrowseSort(browseOptions[0]?.value ?? "");
+    }
+  }, [browseSort, selectedMarketInfo]);
+
+  useEffect(() => {
     if (!selectedMarket) {
       return;
     }
@@ -194,16 +271,22 @@ export const TradePage = () => {
       clearTimeout(searchTimerRef.current);
     }
 
+    const trimmedQuery = searchQuery.trim();
+    if (trimmedQuery.length === 0) {
+      void loadDiscoveries({ marketId: selectedMarket, query: "", sort: browseSort });
+      return;
+    }
+
     searchTimerRef.current = setTimeout(() => {
-      void runSearch(searchQuery, selectedMarket);
-    }, 400);
+      void loadDiscoveries({ marketId: selectedMarket, query: trimmedQuery, sort: browseSort });
+    }, 350);
 
     return () => {
       if (searchTimerRef.current) {
         clearTimeout(searchTimerRef.current);
       }
     };
-  }, [runSearch, searchQuery, selectedMarket]);
+  }, [browseSort, loadDiscoveries, searchQuery, selectedMarket]);
 
   useEffect(() => {
     if (!selectedAsset || !selectedMarket) {
@@ -220,8 +303,8 @@ export const TradePage = () => {
     void (async () => {
       try {
         const [nextQuote, constraintsResponse] = await Promise.all([
-          client.getQuote(selectedMarket, selectedAsset.symbol),
-          client.getTradingConstraints(selectedMarket, selectedAsset.symbol),
+          client.getQuote(selectedMarket, selectedAsset.reference),
+          client.getTradingConstraints(selectedMarket, selectedAsset.reference),
         ]);
 
         if (!active) {
@@ -277,7 +360,7 @@ export const TradePage = () => {
 
     const interval = setInterval(async () => {
       try {
-        setQuote(await client.getQuote(selectedMarket, selectedAsset.symbol));
+        setQuote(await client.getQuote(selectedMarket, selectedAsset.reference));
       } catch (fetchError) {
         if (!isAdminAuthError(fetchError)) {
           setQuote(null);
@@ -320,7 +403,7 @@ export const TradePage = () => {
 
     const order: PlaceOrderInput = {
       market: selectedMarket,
-      symbol: selectedAsset.symbol,
+      reference: selectedAsset.reference,
       side: orderSide,
       type: orderType,
       quantity: Number(quantity),
@@ -342,7 +425,7 @@ export const TradePage = () => {
 
       const [nextPortfolio, nextQuote] = await Promise.all([
         client.getUserPortfolio(selectedAgent),
-        client.getQuote(selectedMarket, selectedAsset.symbol),
+        client.getQuote(selectedMarket, selectedAsset.reference),
       ]);
       setPortfolio(nextPortfolio);
       setQuote(nextQuote);
@@ -358,7 +441,7 @@ export const TradePage = () => {
     }
   };
 
-  const handleSelectAsset = (asset: AssetResult) => {
+  const handleSelectAsset = (asset: MarketReferenceResult) => {
     setSelectedAsset(asset);
     setQuote(null);
     setConstraints(null);
@@ -377,7 +460,7 @@ export const TradePage = () => {
             </Badge>
             <CardTitle className="text-3xl font-bold tracking-tight sm:text-4xl">Trade</CardTitle>
             <CardDescription>
-              Browse markets, search assets, and place trades on behalf of any agent or trader.
+              Browse live market references, inspect quotes, and place trades on behalf of any agent or trader.
             </CardDescription>
           </div>
 
@@ -423,7 +506,7 @@ export const TradePage = () => {
         </Card>
       ) : null}
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_420px]">
+      <div className="grid items-start gap-5 lg:grid-cols-[1fr_420px]">
         <MarketSearchPanel
           markets={markets}
           selectedMarket={selectedMarket}
@@ -431,6 +514,10 @@ export const TradePage = () => {
           searchQuery={searchQuery}
           searchResults={searchResults}
           searchLoading={searchLoading}
+          browseSort={browseSort}
+          browseOptions={selectedMarketInfo?.browseOptions ?? []}
+          hasMoreResults={hasMoreResults}
+          loadingMore={loadingMore}
           onSelectMarket={(marketId) => {
             setSelectedMarket(marketId);
             clearSelectionState();
@@ -440,7 +527,23 @@ export const TradePage = () => {
             if (searchTimerRef.current) {
               clearTimeout(searchTimerRef.current);
             }
-            void runSearch(searchQuery, selectedMarket);
+            void loadDiscoveries({
+              marketId: selectedMarket,
+              query: searchQuery.trim(),
+              sort: browseSort,
+            });
+          }}
+          onBrowseSortChange={(nextSort) => {
+            setBrowseSort(nextSort);
+          }}
+          onLoadMore={() => {
+            void loadDiscoveries({
+              marketId: selectedMarket,
+              query: searchQuery.trim(),
+              sort: browseSort,
+              offset: searchResults.length,
+              append: true,
+            });
           }}
           onSelectAsset={handleSelectAsset}
         />

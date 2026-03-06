@@ -1,9 +1,11 @@
 import { TtlCache } from "./cache.js";
 import {
     MarketAdapterError,
-    type Asset,
+    type BrowseOption,
+    type BrowseOptions,
     type FundingRate,
     type MarketAdapter,
+    type MarketReference,
     type Orderbook,
     type OrderbookLevel,
     type Quote,
@@ -16,6 +18,9 @@ const ORDERBOOK_TTL_MS = 5_000;
 const META_TTL_MS = 300_000;
 const FUNDING_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const HYPERLIQUID_BROWSE_OPTIONS: readonly BrowseOption[] = [
+    { value: "price", label: "Price" },
+];
 
 const DEFAULT_API_URL = "https://api.hyperliquid.xyz/info";
 
@@ -145,9 +150,10 @@ export class HyperliquidAdapter implements MarketAdapter {
     readonly marketId = "hyperliquid";
     readonly displayName = "Hyperliquid";
     readonly description = "Crypto perpetual futures — no expiry, funding rate every hour";
-    readonly symbolFormat = "Ticker (e.g. BTC, ETH, SOL)";
+    readonly referenceFormat = "Ticker (e.g. BTC, ETH, SOL)";
     readonly priceRange: [number, number] | null = null;
-    readonly capabilities = ["search", "quote", "orderbook", "funding"] as const;
+    readonly capabilities = ["search", "browse", "quote", "orderbook", "funding"] as const;
+    readonly browseOptions = HYPERLIQUID_BROWSE_OPTIONS;
 
     private readonly apiUrl: string;
     private readonly cache = new TtlCache();
@@ -211,32 +217,40 @@ export class HyperliquidAdapter implements MarketAdapter {
         return data;
     }
 
-    async normalizeSymbol(symbol: string): Promise<string> {
-        const raw = symbol.trim();
+    async normalizeReference(reference: string): Promise<string> {
+        const raw = reference.trim();
         if (raw.length === 0) {
-            throw new MarketAdapterError("SYMBOL_NOT_FOUND", "Symbol is required");
+            throw new MarketAdapterError("SYMBOL_NOT_FOUND", "Reference is required");
         }
         const matched = await this.findMetaBySymbol(raw);
         return matched.name;
     }
 
-    async getTradingConstraints(symbol: string): Promise<TradingConstraints> {
-        const matched = await this.findMetaBySymbol(symbol);
+    async getTradingConstraints(reference: string): Promise<TradingConstraints> {
+        const matched = await this.findMetaBySymbol(reference);
         return this.buildTradingConstraints(matched);
     }
 
-    async search(query: string, options?: SearchOptions): Promise<Asset[]> {
+    private async buildReferences(
+        {
+            query,
+            sort,
+            limit = 20,
+            offset = 0,
+        }: {
+            query?: string;
+            sort?: string;
+            limit?: number;
+            offset?: number;
+        },
+    ): Promise<MarketReference[]> {
         const universe = await this.getMeta();
-        const limit = options?.limit ?? 20;
-        const offset = options?.offset ?? 0;
-        const lowerQuery = query.toLowerCase().trim();
+        const lowerQuery = query?.toLowerCase().trim() ?? "";
         const listed = universe.filter((asset) => !asset.isDelisted);
 
         const filtered = lowerQuery
             ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
             : listed;
-
-        const page = filtered.slice(offset, offset + limit);
 
         // Fetch mid prices for the page to include current price
         let midPrices: Record<string, string> = {};
@@ -246,8 +260,24 @@ export class HyperliquidAdapter implements MarketAdapter {
             // mid prices are optional enrichment; proceed without them
         }
 
+        const sorted = filtered.map((asset, index) => ({ asset, index }));
+        if (!lowerQuery && (sort ?? "price") === "price") {
+            sorted.sort((left, right) => {
+                const leftPrice = parseNumber(midPrices[left.asset.name]);
+                const rightPrice = parseNumber(midPrices[right.asset.name]);
+                if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
+                    return rightPrice - leftPrice;
+                }
+                return left.index - right.index;
+            });
+        } else {
+            sorted.sort((left, right) => left.asset.name.localeCompare(right.asset.name));
+        }
+
+        const page = sorted.slice(offset, offset + limit).map((entry) => entry.asset);
+
         return page.map((asset) => ({
-            symbol: asset.name,
+            reference: asset.name,
             name: `${asset.name}-PERP`,
             price: parseNumber(midPrices[asset.name]) ?? undefined,
             metadata: {
@@ -256,6 +286,22 @@ export class HyperliquidAdapter implements MarketAdapter {
                 ...this.buildTradingConstraints(asset),
             },
         }));
+    }
+
+    async search(query: string, options?: SearchOptions): Promise<MarketReference[]> {
+        return this.buildReferences({
+            query,
+            limit: options?.limit,
+            offset: options?.offset,
+        });
+    }
+
+    async browse(options?: BrowseOptions): Promise<MarketReference[]> {
+        return this.buildReferences({
+            sort: options?.sort,
+            limit: options?.limit,
+            offset: options?.offset,
+        });
     }
 
     private async getAllMids(): Promise<Record<string, string>> {
@@ -283,8 +329,8 @@ export class HyperliquidAdapter implements MarketAdapter {
         return data;
     }
 
-    async getQuote(symbol: string): Promise<Quote> {
-        const normalizedSymbol = await this.normalizeSymbol(symbol);
+    async getQuote(reference: string): Promise<Quote> {
+        const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `quote:${normalizedSymbol}`;
         const cached = this.cache.get<Quote>(cacheKey);
         if (cached) return cached;
@@ -306,7 +352,7 @@ export class HyperliquidAdapter implements MarketAdapter {
                 : (bestBid ?? bestAsk)!;
 
         const quote: Quote = {
-            symbol: normalizedSymbol,
+            reference,
             price: Number(mid.toFixed(6)),
             bid: bestBid ?? undefined,
             ask: bestAsk ?? undefined,
@@ -317,8 +363,8 @@ export class HyperliquidAdapter implements MarketAdapter {
         return quote;
     }
 
-    async getOrderbook(symbol: string): Promise<Orderbook> {
-        const normalizedSymbol = await this.normalizeSymbol(symbol);
+    async getOrderbook(reference: string): Promise<Orderbook> {
+        const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `ob:${normalizedSymbol}`;
         const cached = this.cache.get<Orderbook>(cacheKey);
         if (cached) return cached;
@@ -341,7 +387,7 @@ export class HyperliquidAdapter implements MarketAdapter {
         const asks = parseLevels(rawAsks).sort((a, b) => a.price - b.price);
 
         const orderbook: Orderbook = {
-            symbol: normalizedSymbol,
+            reference,
             bids,
             asks,
             timestamp: new Date().toISOString(),
@@ -351,8 +397,8 @@ export class HyperliquidAdapter implements MarketAdapter {
         return orderbook;
     }
 
-    async getFundingRate(symbol: string): Promise<FundingRate> {
-        const normalizedSymbol = await this.normalizeSymbol(symbol);
+    async getFundingRate(reference: string): Promise<FundingRate> {
+        const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `funding:${normalizedSymbol}`;
         const cached = this.cache.get<FundingRate>(cacheKey);
         if (cached) return cached;
@@ -379,7 +425,7 @@ export class HyperliquidAdapter implements MarketAdapter {
         }
 
         const fundingRate: FundingRate = {
-            symbol: normalizedSymbol,
+            reference,
             rate,
             nextFundingAt: new Date(nextFundingTimeMs).toISOString(),
             timestamp: new Date().toISOString(),

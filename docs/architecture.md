@@ -109,13 +109,14 @@ It should not know anything about:
 The `markets` package owns market-specific reads.
 
 Adapters expose a common interface so the rest of the system can ask for:
-- searchable assets
+- searchable market references
+- browseable market references
 - quotes
 - orderbooks
 - funding rates
 - resolution information
 - trading constraints
-- symbol normalization when needed
+- reference normalization when needed
 
 Adapters do not execute trades. They are data providers for the simulation engine.
 
@@ -161,18 +162,19 @@ Examples:
 - markets with `funding` are treated as perp markets
 - markets with `resolve` support settlement checks
 - markets with `orderbook` can expose live depth
-- markets with `search` can drive browse/search UX
+- markets with `search` and `browse` can drive discovery UX for humans and agents
 
 This avoids hardcoding business logic around a market name such as `if market === "hyperliquid"`.
 
 The adapter contract currently centers around methods like:
 - `search(query)`
-- `getQuote(symbol)`
-- `getOrderbook(symbol)`
-- `getFundingRate(symbol)`
-- `resolve(symbol)`
-- `getTradingConstraints(symbol)`
-- `normalizeSymbol(symbol)`
+- `browse(options)`
+- `getQuote(reference)`
+- `getOrderbook(reference)`
+- `getFundingRate(reference)`
+- `resolve(reference)`
+- `getTradingConstraints(reference)`
+- `normalizeReference(reference)`
 
 ## Request Flow
 
@@ -182,7 +184,7 @@ A typical order request follows this path.
 2. Route resolves the acting identity and target account.
 3. Route delegates to the shared order-placement service.
 4. The service loads the adapter from the registry.
-5. The service normalizes the symbol and validates trading constraints.
+5. The service normalizes the external reference and validates trading constraints.
 6. The service fetches a quote.
 7. The service chooses spot or perp engine based on capabilities.
 8. The service performs transactional writes to accounts, orders, trades, and positions.

@@ -3,6 +3,7 @@ import { z } from "zod";
 export const idSchema = z.string().min(1);
 export const marketIdSchema = z.string().min(1);
 export const symbolSchema = z.string().min(1);
+export const referenceSchema = z.string().min(1);
 
 export const reasoningSchema = z.string().trim().min(1, "reasoning is required");
 
@@ -15,7 +16,7 @@ export const placeOrderSchema = z
   .object({
     accountId: idSchema.optional(),
     market: marketIdSchema,
-    symbol: symbolSchema,
+    reference: referenceSchema,
     side: sideSchema,
     type: orderTypeSchema,
     quantity: z.number().positive(),
@@ -68,34 +69,40 @@ export const listPositionsQuerySchema = z.object({
 });
 
 export const searchMarketQuerySchema = z.object({
-  q: z.string().trim().min(1).optional(),
+  q: z.string().trim().min(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+export const browseMarketQuerySchema = z.object({
+  sort: z.string().trim().min(1).optional(),
   limit: z.coerce.number().int().positive().max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
 
 export const quoteQuerySchema = z.object({
-  symbol: symbolSchema,
+  reference: referenceSchema,
 });
 
-const parseSymbols = (raw: string): string[] => {
+const parseReferences = (raw: string): string[] => {
   return Array.from(
     new Set(
       raw
         .split(",")
-        .map((symbol) => symbol.trim())
-        .filter((symbol) => symbol.length > 0),
+        .map((reference) => reference.trim())
+        .filter((reference) => reference.length > 0),
     ),
   );
 };
 
 export const multiQuoteQuerySchema = z.object({
-  symbols: z
+  references: z
     .string()
     .trim()
     .min(1)
-    .transform((value) => parseSymbols(value))
-    .refine((symbols) => symbols.length > 0, { message: "symbols must include at least one value" })
-    .refine((symbols) => symbols.length <= 50, { message: "symbols supports up to 50 values" }),
+    .transform((value) => parseReferences(value))
+    .refine((references) => references.length > 0, { message: "references must include at least one value" })
+    .refine((references) => references.length <= 50, { message: "references supports up to 50 values" }),
 });
 
 export const adminAmountSchema = z.object({
@@ -109,8 +116,10 @@ export type CreateJournalInput = z.infer<typeof createJournalSchema>;
 export type ListOrdersQuery = z.infer<typeof listOrdersQuerySchema>;
 export type ListPositionsQuery = z.infer<typeof listPositionsQuerySchema>;
 export type SearchMarketQuery = z.infer<typeof searchMarketQuerySchema>;
+export type BrowseMarketQuery = z.infer<typeof browseMarketQuerySchema>;
 export type QuoteQuery = z.infer<typeof quoteQuerySchema>;
 export type MultiQuoteQuery = z.infer<typeof multiQuoteQuerySchema>;
 export type AdminAmountInput = z.infer<typeof adminAmountSchema>;
 export type OrderStatus = z.infer<typeof orderStatusSchema>;
 export type OrdersView = z.infer<typeof ordersViewSchema>;
+export type BrowseSort = z.infer<typeof browseMarketQuerySchema>["sort"];

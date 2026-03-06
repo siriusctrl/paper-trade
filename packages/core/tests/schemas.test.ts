@@ -27,7 +27,7 @@ describe("schemas", () => {
   it("requires limitPrice for limit orders", () => {
     const missingLimit = placeOrderSchema.safeParse({
       market: "polymarket",
-      symbol: "0x-abc",
+      reference: "market-ref",
       side: "buy",
       type: "limit",
       quantity: 10,
@@ -37,7 +37,7 @@ describe("schemas", () => {
 
     const validLimit = placeOrderSchema.safeParse({
       market: "polymarket",
-      symbol: "0x-abc",
+      reference: "market-ref",
       side: "buy",
       type: "limit",
       quantity: 10,
@@ -48,7 +48,7 @@ describe("schemas", () => {
 
     const fractionalQuantity = placeOrderSchema.safeParse({
       market: "hyperliquid",
-      symbol: "BTC",
+      reference: "BTC",
       side: "buy",
       type: "market",
       quantity: 0.25,
@@ -85,9 +85,9 @@ describe("schemas", () => {
     expect(listPositionsQuerySchema.parse({})).toEqual({});
     expect(listPositionsQuerySchema.parse({ userId: "usr_1" })).toEqual({ userId: "usr_1" });
 
-    expect(multiQuoteQuerySchema.parse({ symbols: "abc,def,abc" })).toEqual({ symbols: ["abc", "def"] });
-    expect(multiQuoteQuerySchema.safeParse({ symbols: "" }).success).toBe(false);
-    expect(multiQuoteQuerySchema.safeParse({ symbols: "x".repeat(1) }).success).toBe(true);
+    expect(multiQuoteQuerySchema.parse({ references: "abc,def,abc" })).toEqual({ references: ["abc", "def"] });
+    expect(multiQuoteQuerySchema.safeParse({ references: "" }).success).toBe(false);
+    expect(multiQuoteQuerySchema.safeParse({ references: "x".repeat(1) }).success).toBe(true);
   });
 
   it("validates journal and admin amount payloads", () => {

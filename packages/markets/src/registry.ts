@@ -20,9 +20,10 @@ export class MarketRegistry {
       id: adapter.marketId,
       name: adapter.displayName,
       description: adapter.description,
-      symbolFormat: adapter.symbolFormat,
+      referenceFormat: adapter.referenceFormat,
       priceRange: adapter.priceRange,
       capabilities: adapter.capabilities,
+      browseOptions: adapter.browseOptions ?? [],
     }));
   }
 }

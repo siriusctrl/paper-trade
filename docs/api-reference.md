@@ -50,7 +50,7 @@ Notes:
 
 Required fields:
 - `market`
-- `symbol`
+- `reference`
 - `side`
 - `type`
 - `quantity`
@@ -64,7 +64,7 @@ Optional fields:
 Rules:
 - `reasoning` is required for state-changing writes
 - `leverage` and `reduceOnly` are valid only for perp markets
-- quantity is validated against per-symbol trading constraints
+- quantity is validated against per-reference trading constraints
 - normal market-order execution uses directional executable prices: `buy -> ask`, `sell -> bid`
 - limit orders remain `pending` until the background reconciler fills or cancels them
 
@@ -86,8 +86,9 @@ Rules:
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/markets` | key or admin | Discover registered markets and capabilities |
-| `GET` | `/api/markets/:market/search` | key or admin | Search or browse assets |
-| `GET` | `/api/markets/:market/trading-constraints` | key or admin | Get symbol-level quantity and leverage constraints |
+| `GET` | `/api/markets/:market/search` | key or admin | Search market references |
+| `GET` | `/api/markets/:market/browse` | key or admin | Browse active market references |
+| `GET` | `/api/markets/:market/trading-constraints` | key or admin | Get reference-level quantity and leverage constraints |
 | `GET` | `/api/markets/:market/quote` | key or admin | Get one quote |
 | `GET` | `/api/markets/:market/quotes` | key or admin | Get quotes in batch |
 | `GET` | `/api/markets/:market/orderbook` | key or admin | Get one orderbook |
@@ -96,13 +97,38 @@ Rules:
 | `GET` | `/api/markets/:market/fundings` | key or admin | Get funding rates in batch |
 | `GET` | `/api/markets/:market/resolve` | key or admin | Get settlement or resolution status |
 
+### Search and browse contract
+
+- `search` requires a non-empty `q`
+- `browse` is explicit and accepts a market-specific `sort` string
+- browse options are discoverable from `GET /api/markets`
+- current defaults:
+  - Polymarket: `volume`, `liquidity`, `endingSoon`, `newest`
+  - Hyperliquid: `price`
+- both endpoints return lightweight discovery records shaped like:
+
+```json
+{
+  "reference": "btc",
+  "name": "BTC-PERP",
+  "price": 94321.1,
+  "volume": 12003455.2,
+  "liquidity": 882100.4,
+  "endDate": null,
+  "metadata": {}
+}
+```
+
+- discovery results are not required to be execution-ready exchange ids
+- adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, or order placement is called
+
 ### Trading constraints response
 
 Example:
 
 ```json
 {
-  "symbol": "BTC",
+  "reference": "BTC",
   "constraints": {
     "minQuantity": 0.00001,
     "quantityStep": 0.00001,
@@ -155,6 +181,9 @@ The structured liquidation event includes:
 - `netPayout`
 - `cancelledReduceOnlyOrderIds`
 - `liquidatedAt`
+
+Note:
+- timeline and settlement/liquidation audit surfaces still expose internal normalized `symbol` fields because accounting is stored against resolved execution identifiers
 
 ## Admin API
 

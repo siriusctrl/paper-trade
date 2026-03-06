@@ -7,11 +7,11 @@ const adapter: MarketAdapter = {
   marketId: "mock",
   displayName: "Mock",
   description: "mock",
-  symbolFormat: "id",
+  referenceFormat: "id",
   priceRange: null,
   capabilities: ["search", "quote"],
   search: async () => [],
-  getQuote: async (symbol) => ({ symbol, price: 1, timestamp: new Date().toISOString() }),
+  getQuote: async (reference) => ({ reference, price: 1, timestamp: new Date().toISOString() }),
 };
 
 describe("MarketRegistry", () => {
@@ -21,7 +21,7 @@ describe("MarketRegistry", () => {
 
     const markets = registry.list();
     expect(markets).toHaveLength(1);
-    expect(markets[0]?.id).toBe("mock");
+    expect(markets[0]).toMatchObject({ id: "mock", referenceFormat: "id" });
   });
 
   it("rejects duplicate adapter registration", () => {

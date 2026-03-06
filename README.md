@@ -6,7 +6,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 
 - **Market agnostic** — unified API across all markets, discover capabilities at runtime
 - **Polymarket** — prediction market trading with live odds from the CLOB API
-- **Hyperliquid** — perpetual futures with symbol-level fractional size precision and max leverage limits
+- **Hyperliquid** — perpetual futures with reference-level fractional size precision and max leverage limits
 - **Extensible** — add new markets by implementing a simple adapter interface
 - **Agent-friendly** — skill-based integration with version-aware SSE events, self-describing market capabilities
 - **Decision transparency** — every action requires reasoning; journal + timeline for full audit trail
@@ -56,19 +56,19 @@ You can start from [.env.example](.env.example).
 
 ### Trading Constraints
 
-Order payload `quantity` is decimal-capable at schema layer, then validated per market/symbol.
+Order payload `quantity` is decimal-capable at schema layer, then validated per market/reference.
 
 Discover constraints before placing orders:
 
 ```bash
-GET /api/markets/:market/trading-constraints?symbol=<symbol>
+GET /api/markets/:market/trading-constraints?reference=<reference>
 ```
 
 Example response:
 
 ```json
 {
-  "symbol": "BTC",
+  "reference": "BTC",
   "constraints": {
     "minQuantity": 0.00001,
     "quantityStep": 0.00001,
@@ -80,7 +80,28 @@ Example response:
 
 Notes:
 - Some markets require integer quantities (`supportsFractional: false`, usually `quantityStep: 1`).
-- Hyperliquid derives `quantityStep` and fractional support from `szDecimals`, and enforces symbol `maxLeverage`.
+- Search and browse surfaces now return lightweight market references. Execution endpoints (`quote`, `orderbook`, `resolve`, order placement) accept those references directly.
+- Discovery is intentionally separate from execution: `browse` and `search` help humans and agents find candidates quickly, then adapters lazily normalize the chosen `reference` only when a quote or order is requested.
+- For Polymarket, discovery references are typically market slugs. The adapter resolves those slugs into outcome token ids behind the scenes when you ask for quotes or place orders.
+- Hyperliquid derives `quantityStep` and fractional support from `szDecimals`, and enforces per-reference `maxLeverage`.
+- Browse sort options are market-specific and discoverable from `GET /api/markets`. Polymarket exposes `volume`, `liquidity`, `endingSoon`, and `newest`; Hyperliquid exposes `price`.
+
+### Market Discovery
+
+Typical discovery flow:
+
+```bash
+GET /api/markets
+GET /api/markets/:market/browse?sort=<market-specific-sort>
+GET /api/markets/:market/search?q=iran
+GET /api/markets/:market/quote?reference=<reference>
+POST /api/orders
+```
+
+The platform now treats `reference` as the single external identifier across markets:
+- Polymarket: usually a slug during discovery, resolved lazily to a token id for execution
+- Hyperliquid: usually a ticker such as `BTC`
+- Future markets: whatever adapter-specific identifier makes the most sense externally
 
 ### Running the Server
 

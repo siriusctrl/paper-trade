@@ -49,31 +49,35 @@ const polymarketAdapter: MarketAdapter = {
   marketId: "polymarket",
   displayName: "Polymarket",
   description: "mock polymarket adapter",
-  symbolFormat: "mock",
+  referenceFormat: "mock",
   priceRange: [0.01, 0.99],
-  capabilities: ["search", "quote", "orderbook", "resolve"],
+  capabilities: ["search", "browse", "quote", "orderbook", "resolve"],
   search: async (query) => {
     const lowered = query.toLowerCase();
     return [
-      { symbol: "0x-market-fill", name: "Market Fill Contract", metadata: { category: "test" } },
-      { symbol: "0x-pending", name: "Pending Contract", metadata: { category: "test" } },
-      { symbol: "0x-reconcile-a", name: "Reconcile Contract A", metadata: { category: "test" } },
-      { symbol: "0x-reconcile-b", name: "Reconcile Contract B", metadata: { category: "test" } },
-    ].filter((item) => item.symbol.includes(lowered) || item.name.toLowerCase().includes(lowered));
+      { reference: "0x-market-fill", name: "Market Fill Contract", metadata: { category: "test" } },
+      { reference: "0x-pending", name: "Pending Contract", metadata: { category: "test" } },
+      { reference: "0x-reconcile-a", name: "Reconcile Contract A", metadata: { category: "test" } },
+      { reference: "0x-reconcile-b", name: "Reconcile Contract B", metadata: { category: "test" } },
+    ].filter((item) => item.reference.includes(lowered) || item.name.toLowerCase().includes(lowered));
   },
-  normalizeSymbol: async (symbol) => (symbol === "alias-fill" ? "0x-market-fill" : symbol),
-  getQuote: async (symbol) => {
-    const quote = quoteBySymbol[symbol] ?? { price: 0.6, bid: 0.59, ask: 0.6 };
-    return { symbol, ...quote, timestamp: new Date().toISOString() };
+  browse: async () => [
+    { reference: "0x-market-fill", name: "Market Fill Contract", metadata: { category: "test" } },
+    { reference: "0x-pending", name: "Pending Contract", metadata: { category: "test" } },
+  ],
+  normalizeReference: async (reference) => (reference === "alias-fill" ? "0x-market-fill" : reference),
+  getQuote: async (reference) => {
+    const quote = quoteBySymbol[reference] ?? { price: 0.6, bid: 0.59, ask: 0.6 };
+    return { reference, ...quote, timestamp: new Date().toISOString() };
   },
-  getOrderbook: async (symbol) => ({
-    symbol,
+  getOrderbook: async (reference) => ({
+    reference,
     bids: [{ price: 0.49, size: 120 }],
     asks: [{ price: 0.51, size: 130 }],
     timestamp: new Date().toISOString(),
   }),
-  resolve: async (symbol) => ({
-    symbol,
+  resolve: async (reference) => ({
+    reference,
     resolved: false,
     outcome: null,
     settlementPrice: null,
@@ -98,12 +102,12 @@ const quoteOnlyAdapter: MarketAdapter = {
   marketId: "quote-only",
   displayName: "Quote Only",
   description: "adapter to validate capability guard rails",
-  symbolFormat: "mock",
+  referenceFormat: "mock",
   priceRange: [0.01, 1],
   capabilities: ["quote"],
   search: async () => [],
-  getQuote: async (symbol) => ({
-    symbol,
+  getQuote: async (reference) => ({
+    reference,
     price: 0.4,
     bid: 0.39,
     ask: 0.4,
@@ -115,24 +119,25 @@ const fundingAdapter: MarketAdapter = {
   marketId: "funding-only",
   displayName: "Funding Only",
   description: "adapter to validate funding capability routes",
-  symbolFormat: "ticker",
+  referenceFormat: "ticker",
   priceRange: null,
   capabilities: ["search", "quote", "funding"],
-  search: async () => [{ symbol: "BTC", name: "BTC-PERP" }],
-  normalizeSymbol: async (symbol) => symbol.trim().replace(/[-_\s]*perp$/i, "").toUpperCase(),
-  getQuote: async (symbol) => ({
-    symbol,
+  search: async () => [{ reference: "BTC", name: "BTC-PERP" }],
+  normalizeReference: async (reference) => reference.trim().replace(/[-_\s]*perp$/i, "").toUpperCase(),
+  getQuote: async (reference) => ({
+    reference,
     price: 100_000,
     bid: 99_950,
     ask: 100_050,
     timestamp: new Date().toISOString(),
   }),
-  getFundingRate: async (symbol) => {
-    if (symbol !== "BTC") {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No funding data for ${symbol}`);
+  getFundingRate: async (reference) => {
+    const normalized = reference.trim().replace(/[-_\s]*perp$/i, "").toUpperCase();
+    if (normalized !== "BTC") {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No funding data for ${reference}`);
     }
     return {
-      symbol,
+      reference,
       rate: 0.0002,
       nextFundingAt: "2026-01-01T01:00:00.000Z",
       timestamp: new Date().toISOString(),
@@ -355,7 +360,7 @@ describe("api integration", () => {
     expect(invalidJournalQuery.status).toBe(400);
     expect((await invalidJournalQuery.json()).error.code).toBe("INVALID_INPUT");
 
-    const browseQuery = await authedJson("/api/markets/polymarket/search", user.apiKey);
+    const browseQuery = await authedJson("/api/markets/polymarket/browse?sort=volume", user.apiKey);
     expect(browseQuery.status).toBe(200);
     const browsePayload = await browseQuery.json();
     expect(Array.isArray(browsePayload.results)).toBe(true);
@@ -440,7 +445,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: owner.account.id,
         market: "polymarket",
-        symbol: "0x-accountid",
+        reference: "0x-accountid",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -455,7 +460,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: outsider.account.id,
         market: "polymarket",
-        symbol: "0x-accountid",
+        reference: "0x-accountid",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -498,7 +503,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -513,7 +518,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "limit",
         quantity: 2,
@@ -528,7 +533,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "missing-market",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -543,7 +548,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 1_000_000,
@@ -558,7 +563,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "sell",
         type: "market",
         quantity: 1,
@@ -577,7 +582,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 1.5,
@@ -592,7 +597,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "funding-only",
-        symbol: "BTC",
+        reference: "BTC",
         side: "buy",
         type: "market",
         quantity: 0.1,
@@ -608,7 +613,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "funding-only",
-        symbol: "BTC",
+        reference: "BTC",
         side: "buy",
         type: "market",
         quantity: 0.1,
@@ -644,38 +649,38 @@ describe("api integration", () => {
     const searchPayload = await searchResponse.json();
     expect(searchPayload.results.length).toBeGreaterThan(0);
 
-    const quoteResponse = await authedJson("/api/markets/polymarket/quote?symbol=0x-market-fill", user.apiKey);
+    const quoteResponse = await authedJson("/api/markets/polymarket/quote?reference=0x-market-fill", user.apiKey);
     expect(quoteResponse.status).toBe(200);
     const quotePayload = await quoteResponse.json();
     expect(quotePayload.price).toBe(0.52);
 
-    const orderbookResponse = await authedJson("/api/markets/polymarket/orderbook?symbol=0x-market-fill", user.apiKey);
+    const orderbookResponse = await authedJson("/api/markets/polymarket/orderbook?reference=0x-market-fill", user.apiKey);
     expect(orderbookResponse.status).toBe(200);
     const orderbookPayload = await orderbookResponse.json();
     expect(Array.isArray(orderbookPayload.bids)).toBe(true);
 
-    const resolveResponse = await authedJson("/api/markets/polymarket/resolve?symbol=0x-market-fill", user.apiKey);
+    const resolveResponse = await authedJson("/api/markets/polymarket/resolve?reference=0x-market-fill", user.apiKey);
     expect(resolveResponse.status).toBe(200);
     const resolvePayload = await resolveResponse.json();
     expect(resolvePayload.resolved).toBe(false);
 
-    const fundingResponse = await authedJson("/api/markets/funding-only/funding?symbol=btc-perp", user.apiKey);
+    const fundingResponse = await authedJson("/api/markets/funding-only/funding?reference=btc-perp", user.apiKey);
     expect(fundingResponse.status).toBe(200);
     const fundingPayload = await fundingResponse.json();
     expect(fundingPayload).toMatchObject({
-      symbol: "BTC",
+      reference: "btc-perp",
       rate: 0.0002,
       nextFundingAt: "2026-01-01T01:00:00.000Z",
     });
 
     const fundingConstraintsResponse = await authedJson(
-      "/api/markets/funding-only/trading-constraints?symbol=btc-perp",
+      "/api/markets/funding-only/trading-constraints?reference=btc-perp",
       user.apiKey,
     );
     expect(fundingConstraintsResponse.status).toBe(200);
     const fundingConstraintsPayload = await fundingConstraintsResponse.json();
     expect(fundingConstraintsPayload).toMatchObject({
-      symbol: "BTC",
+      reference: "btc-perp",
       constraints: {
         minQuantity: 0.001,
         quantityStep: 0.001,
@@ -685,13 +690,13 @@ describe("api integration", () => {
     });
 
     const polymarketConstraintsResponse = await authedJson(
-      "/api/markets/polymarket/trading-constraints?symbol=0x-market-fill",
+      "/api/markets/polymarket/trading-constraints?reference=0x-market-fill",
       user.apiKey,
     );
     expect(polymarketConstraintsResponse.status).toBe(200);
     const polymarketConstraintsPayload = await polymarketConstraintsResponse.json();
     expect(polymarketConstraintsPayload).toMatchObject({
-      symbol: "0x-market-fill",
+      reference: "0x-market-fill",
       constraints: {
         minQuantity: 1,
         quantityStep: 1,
@@ -700,7 +705,7 @@ describe("api integration", () => {
       },
     });
 
-    const missingMarket = await authedJson("/api/markets/missing/quote?symbol=0x-market-fill", user.apiKey);
+    const missingMarket = await authedJson("/api/markets/missing/quote?reference=0x-market-fill", user.apiKey);
     expect(missingMarket.status).toBe(404);
     expect((await missingMarket.json()).error.code).toBe("MARKET_NOT_FOUND");
 
@@ -708,15 +713,15 @@ describe("api integration", () => {
     expect(unsupportedSearch.status).toBe(400);
     expect((await unsupportedSearch.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
 
-    const unsupportedOrderbook = await authedJson("/api/markets/quote-only/orderbook?symbol=abc", user.apiKey);
+    const unsupportedOrderbook = await authedJson("/api/markets/quote-only/orderbook?reference=abc", user.apiKey);
     expect(unsupportedOrderbook.status).toBe(400);
     expect((await unsupportedOrderbook.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
 
-    const unsupportedResolve = await authedJson("/api/markets/quote-only/resolve?symbol=abc", user.apiKey);
+    const unsupportedResolve = await authedJson("/api/markets/quote-only/resolve?reference=abc", user.apiKey);
     expect(unsupportedResolve.status).toBe(400);
     expect((await unsupportedResolve.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
 
-    const unsupportedFunding = await authedJson("/api/markets/quote-only/funding?symbol=abc", user.apiKey);
+    const unsupportedFunding = await authedJson("/api/markets/quote-only/funding?reference=abc", user.apiKey);
     expect(unsupportedFunding.status).toBe(400);
     expect((await unsupportedFunding.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
   });
@@ -735,7 +740,7 @@ describe("api integration", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           market: "polymarket",
-          symbol: "0x-fee-market",
+          reference: "0x-fee-market",
           side: "buy",
           type: "market",
           quantity: 5,
@@ -757,7 +762,7 @@ describe("api integration", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           market: "polymarket",
-          symbol: "0x-fee-pending",
+          reference: "0x-fee-pending",
           side: "buy",
           type: "limit",
           quantity: 2,
@@ -825,7 +830,7 @@ describe("api integration", () => {
     });
 
     const quotesResponse = await authedJson(
-      "/api/markets/polymarket/quotes?symbols=0x-market-fill,0x-batch-fail,0x-market-fill",
+      "/api/markets/polymarket/quotes?references=0x-market-fill,0x-batch-fail,0x-market-fill",
       user.apiKey,
     );
     expect(quotesResponse.status).toBe(200);
@@ -833,12 +838,12 @@ describe("api integration", () => {
     expect(quotesPayload.quotes).toHaveLength(1);
     expect(quotesPayload.errors).toHaveLength(1);
     expect(quotesPayload.errors[0]).toMatchObject({
-      symbol: "0x-batch-fail",
+      reference: "0x-batch-fail",
       error: { code: "SYMBOL_NOT_FOUND" },
     });
 
     const orderbooksResponse = await authedJson(
-      "/api/markets/polymarket/orderbooks?symbols=0x-market-fill,0x-batch-fail",
+      "/api/markets/polymarket/orderbooks?references=0x-market-fill,0x-batch-fail",
       user.apiKey,
     );
     expect(orderbooksResponse.status).toBe(200);
@@ -846,29 +851,29 @@ describe("api integration", () => {
     expect(orderbooksPayload.orderbooks).toHaveLength(1);
     expect(orderbooksPayload.errors).toHaveLength(1);
     expect(orderbooksPayload.errors[0]).toMatchObject({
-      symbol: "0x-batch-fail",
+      reference: "0x-batch-fail",
       error: { code: "SYMBOL_NOT_FOUND" },
     });
 
-    const unsupportedBatchOrderbooks = await authedJson("/api/markets/quote-only/orderbooks?symbols=abc", user.apiKey);
+    const unsupportedBatchOrderbooks = await authedJson("/api/markets/quote-only/orderbooks?references=abc", user.apiKey);
     expect(unsupportedBatchOrderbooks.status).toBe(400);
     expect((await unsupportedBatchOrderbooks.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
 
-    const fundingsResponse = await authedJson("/api/markets/funding-only/fundings?symbols=btc,missing", user.apiKey);
+    const fundingsResponse = await authedJson("/api/markets/funding-only/fundings?references=btc,missing", user.apiKey);
     expect(fundingsResponse.status).toBe(200);
     const fundingsPayload = await fundingsResponse.json();
     expect(fundingsPayload.fundings).toHaveLength(1);
     expect(fundingsPayload.fundings[0]).toMatchObject({
-      symbol: "BTC",
+      reference: "btc",
       rate: 0.0002,
     });
     expect(fundingsPayload.errors).toHaveLength(1);
     expect(fundingsPayload.errors[0]).toMatchObject({
-      symbol: "missing",
+      reference: "missing",
       error: { code: "SYMBOL_NOT_FOUND" },
     });
 
-    const unsupportedBatchFundings = await authedJson("/api/markets/quote-only/fundings?symbols=abc", user.apiKey);
+    const unsupportedBatchFundings = await authedJson("/api/markets/quote-only/fundings?references=abc", user.apiKey);
     expect(unsupportedBatchFundings.status).toBe(400);
     expect((await unsupportedBatchFundings.json()).error.code).toBe("CAPABILITY_NOT_SUPPORTED");
 
@@ -908,21 +913,21 @@ describe("api integration", () => {
     });
 
     const adapterErrorResponse = await authedJson(
-      "/api/markets/polymarket/quote?symbol=0x-madapter-error",
+      "/api/markets/polymarket/quote?reference=0x-madapter-error",
       user.apiKey,
     );
     expect(adapterErrorResponse.status).toBe(502);
     expect((await adapterErrorResponse.json()).error.code).toBe("UPSTREAM_ERROR");
 
     const symbolNotFoundResponse = await authedJson(
-      "/api/markets/polymarket/quote?symbol=0x-symbol-not-found",
+      "/api/markets/polymarket/quote?reference=0x-symbol-not-found",
       user.apiKey,
     );
     expect(symbolNotFoundResponse.status).toBe(404);
     expect((await symbolNotFoundResponse.json()).error.code).toBe("SYMBOL_NOT_FOUND");
 
     const genericErrorResponse = await authedJson(
-      "/api/markets/polymarket/quote?symbol=0x-generic-error",
+      "/api/markets/polymarket/quote?reference=0x-generic-error",
       user.apiKey,
     );
     expect(genericErrorResponse.status).toBe(500);
@@ -931,7 +936,7 @@ describe("api integration", () => {
     expect(genericErrorPayload.error.message).toContain("generic quote failure");
 
     const unknownErrorResponse = await authedJson(
-      "/api/markets/polymarket/quote?symbol=0x-unknown-error",
+      "/api/markets/polymarket/quote?reference=0x-unknown-error",
       user.apiKey,
     );
     expect(unknownErrorResponse.status).toBe(500);
@@ -940,12 +945,12 @@ describe("api integration", () => {
     expect(unknownErrorPayload.error.message).toBe("Unknown server error");
 
     const nullResolutionResponse = await authedJson(
-      "/api/markets/polymarket/resolve?symbol=0x-null-resolution",
+      "/api/markets/polymarket/resolve?reference=0x-null-resolution",
       user.apiKey,
     );
     expect(nullResolutionResponse.status).toBe(200);
     expect(await nullResolutionResponse.json()).toMatchObject({
-      symbol: "0x-null-resolution",
+      reference: "0x-null-resolution",
       resolved: false,
       outcome: null,
       settlementPrice: null,
@@ -1023,7 +1028,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-events-fill",
+        reference: "0x-events-fill",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -1080,7 +1085,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-events-replay",
+        reference: "0x-events-replay",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -1105,7 +1110,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-events-replay",
+        reference: "0x-events-replay",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -1120,7 +1125,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-events-replay",
+        reference: "0x-events-replay",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -1170,7 +1175,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-pending",
+        reference: "0x-pending",
         side: "buy",
         type: "limit",
         quantity: 9,
@@ -1281,7 +1286,7 @@ describe("api integration", () => {
       },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -1300,7 +1305,7 @@ describe("api integration", () => {
       },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -1321,7 +1326,7 @@ describe("api integration", () => {
       },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 3,
@@ -1380,7 +1385,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-pending",
+        reference: "0x-pending",
         side: "buy",
         type: "limit",
         quantity: 4,
@@ -1502,7 +1507,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 20,
@@ -1747,7 +1752,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-reconcile-a",
+        reference: "0x-reconcile-a",
         side: "buy",
         type: "limit",
         quantity: 10,
@@ -1764,7 +1769,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-reconcile-b",
+        reference: "0x-reconcile-b",
         side: "buy",
         type: "limit",
         quantity: 12,
@@ -1805,7 +1810,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-reconcile-batch",
+        reference: "0x-reconcile-batch",
         side: "buy",
         type: "limit",
         quantity: 3,
@@ -1821,7 +1826,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-reconcile-batch",
+        reference: "0x-reconcile-batch",
         side: "buy",
         type: "limit",
         quantity: 4,
@@ -2055,7 +2060,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 5,
@@ -2128,7 +2133,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: "acc_wrong_target",
         market: "polymarket",
-        symbol: "0x-market-fill",
+        reference: "0x-market-fill",
         side: "buy",
         type: "market",
         quantity: 1,
@@ -2147,7 +2152,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: createdTrader.accountId,
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -2174,7 +2179,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: createdTrader.accountId,
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 2,
@@ -2195,7 +2200,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: createdTrader.accountId,
         market: "polymarket",
-        symbol: "alias-fill",
+        reference: "alias-fill",
         side: "buy",
         type: "market",
         quantity: 3,
@@ -2258,7 +2263,7 @@ describe("api integration", () => {
       body: JSON.stringify({
         accountId: createdTrader.accountId,
         market: "polymarket",
-        symbol: "0x-pending",
+        reference: "0x-pending",
         side: "buy",
         type: "limit",
         quantity: 1,
@@ -2327,7 +2332,7 @@ describe("api integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         market: "polymarket",
-        symbol: "0x-meta-no",
+        reference: "0x-meta-no",
         side: "buy",
         type: "market",
         quantity: 2,

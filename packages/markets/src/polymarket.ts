@@ -1,8 +1,10 @@
 import { TtlCache } from "./cache.js";
 import {
   MarketAdapterError,
-  type Asset,
+  type BrowseOption,
+  type BrowseOptions,
   type MarketAdapter,
+  type MarketReference,
   type Orderbook,
   type OrderbookLevel,
   type Quote,
@@ -14,25 +16,38 @@ import {
 
 type UnknownObject = Record<string, unknown>;
 
+type BrowsePage = {
+  previews: MarketReference[];
+  hasMore: boolean;
+};
+
 const BATCH_SIZE = 50;
 const QUOTE_TTL_MS = 10_000;
 const ORDERBOOK_TTL_MS = 10_000;
 const SEARCH_TTL_MS = 300_000;
 const RESOLVE_TTL_MS = 60_000;
 const RESOLVE_NAMES_CONCURRENCY = 8;
-const SEARCH_V2_PAGE_SIZE = 20;
-const SEARCH_V2_MAX_PAGES = 10;
-const SEARCH_HYDRATION_CONCURRENCY = 8;
+const SEARCH_PAGE_SIZE = 20;
+const SEARCH_MAX_PAGES = 10;
+const BROWSE_EVENTS_PAGE_SIZE = 50;
+const BROWSE_MAX_EVENT_PAGES = 6;
 
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL = "https://clob.polymarket.com";
 const CONDITION_ID_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const TOKEN_ID_PATTERN = /^\d+$/;
 const POLYMARKET_TRADING_CONSTRAINTS: TradingConstraints = {
   minQuantity: 1,
   quantityStep: 1,
   supportsFractional: false,
   maxLeverage: null,
 };
+const POLYMARKET_BROWSE_OPTIONS: readonly BrowseOption[] = [
+  { value: "volume", label: "Volume" },
+  { value: "liquidity", label: "Liquidity" },
+  { value: "endingSoon", label: "Ending Soon" },
+  { value: "newest", label: "Newest" },
+];
 
 const parseNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -69,9 +84,22 @@ const parseStringArray = (value: unknown): string[] => {
 };
 
 const parseNumberArray = (value: unknown): number[] => {
-  return parseStringArray(value)
-    .map((item) => Number(item))
-    .filter((item) => Number.isFinite(item));
+  if (Array.isArray(value)) {
+    return value.map((item) => parseNumber(item)).filter((item): item is number => item !== null);
+  }
+
+  if (typeof value === "string" && value.length > 0) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.map((item) => parseNumber(item)).filter((item): item is number => item !== null)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
 };
 
 const parseOrderbookSide = (value: unknown): OrderbookLevel[] => {
@@ -107,10 +135,17 @@ const parseOrderbookSide = (value: unknown): OrderbookLevel[] => {
   return levels;
 };
 
+const isDiscoveryEligible = (market: UnknownObject): boolean => {
+  if (market.active === false) return false;
+  if (market.closed === true) return false;
+  if (market.archived === true) return false;
+  return true;
+};
+
 const fetchJson = async <T>(url: string): Promise<T> => {
   const response = await fetch(url, {
     headers: {
-      "accept": "application/json",
+      accept: "application/json",
     },
   });
 
@@ -119,6 +154,31 @@ const fetchJson = async <T>(url: string): Promise<T> => {
   }
 
   return (await response.json()) as T;
+};
+
+const normalizeBrowseSort = (sort?: string): string => {
+  return POLYMARKET_BROWSE_OPTIONS.some((option) => option.value === sort) ? (sort as string) : "volume";
+};
+
+const browseSortRank = (sort: string, preview: MarketReference): number => {
+  if (sort === "endingSoon") {
+    if (!preview.endDate) return Number.POSITIVE_INFINITY;
+    const ts = Date.parse(preview.endDate);
+    return Number.isFinite(ts) ? ts : Number.POSITIVE_INFINITY;
+  }
+
+  if (sort === "newest") {
+    const createdAt = typeof preview.metadata?.createdAt === "string" ? preview.metadata.createdAt : null;
+    if (!createdAt) return Number.NEGATIVE_INFINITY;
+    const ts = Date.parse(createdAt);
+    return Number.isFinite(ts) ? -ts : Number.NEGATIVE_INFINITY;
+  }
+
+  if (sort === "liquidity") {
+    return -(preview.liquidity ?? Number.NEGATIVE_INFINITY);
+  }
+
+  return -(preview.volume ?? Number.NEGATIVE_INFINITY);
 };
 
 export type PolymarketAdapterOptions = {
@@ -130,9 +190,10 @@ export class PolymarketAdapter implements MarketAdapter {
   readonly marketId = "polymarket";
   readonly displayName = "Polymarket";
   readonly description = "Prediction markets - contracts typically settle to 0 or 1";
-  readonly symbolFormat = "Condition ID or token ID";
+  readonly referenceFormat = "Market reference (slug, condition ID, or token ID)";
   readonly priceRange: [number, number] = [0.01, 0.99];
-  readonly capabilities = ["search", "quote", "orderbook", "resolve"] as const;
+  readonly capabilities = ["search", "browse", "quote", "orderbook", "resolve"] as const;
+  readonly browseOptions = POLYMARKET_BROWSE_OPTIONS;
 
   private readonly cache = new TtlCache();
   private readonly gammaBaseUrl: string;
@@ -146,26 +207,50 @@ export class PolymarketAdapter implements MarketAdapter {
   private cacheMarketSymbolMappings(market: UnknownObject): void {
     const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
     const tokenIds = parseStringArray(market.clobTokenIds);
-    if (!conditionId) return;
+    const slug = typeof market.slug === "string" ? market.slug : null;
+
+    if (!conditionId) {
+      return;
+    }
+
+    if (slug) {
+      this.cache.set(`slug-condition:${slug}`, conditionId, SEARCH_TTL_MS);
+    }
 
     const tokenId = tokenIds[0];
     if (tokenId) {
       this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
+      if (slug) {
+        this.cache.set(`slug-token:${slug}`, tokenId, SEARCH_TTL_MS);
+      }
     }
 
-    for (const token of tokenIds) {
-      this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
+    for (const candidate of tokenIds) {
+      this.cache.set(`token-condition:${candidate}`, conditionId, SEARCH_TTL_MS);
     }
   }
 
-  private marketToAsset(market: UnknownObject): Asset | null {
+  private marketToPreview(
+    market: UnknownObject,
+    extras: {
+      liquidity?: number | null;
+      endDate?: string | null;
+      createdAt?: string | null;
+      eventTitle?: string | null;
+    } = {},
+  ): MarketReference | null {
+    if (!isDiscoveryEligible(market)) {
+      return null;
+    }
+
     this.cacheMarketSymbolMappings(market);
 
-    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
-    const tokenIds = parseStringArray(market.clobTokenIds);
-    const outcomes = parseStringArray(market.outcomes);
-    const outcomePrices = parseNumberArray(market.outcomePrices);
-    const symbol = conditionId ?? (typeof market.slug === "string" ? market.slug : null);
+    const reference =
+      typeof market.slug === "string"
+        ? market.slug
+        : typeof market.conditionId === "string"
+          ? market.conditionId
+          : null;
     const name =
       typeof market.question === "string"
         ? market.question
@@ -173,118 +258,41 @@ export class PolymarketAdapter implements MarketAdapter {
           ? market.title
           : null;
 
-    if (!symbol || !name) {
+    if (!reference || !name) {
       return null;
     }
 
-    const metadata =
-      tokenIds.length > 0 || outcomes.length > 0 || outcomePrices.length > 0
-        ? {
-          conditionId,
-          tokenIds,
-          outcomes,
-          outcomePrices,
-          defaultTokenId: tokenIds[0] ?? null,
-          minQuantity: POLYMARKET_TRADING_CONSTRAINTS.minQuantity,
-          quantityStep: POLYMARKET_TRADING_CONSTRAINTS.quantityStep,
-          supportsFractional: POLYMARKET_TRADING_CONSTRAINTS.supportsFractional,
-        }
-        : null;
+    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
+    const outcomes = parseStringArray(market.outcomes);
+    const outcomePrices = parseNumberArray(market.outcomePrices);
+    const defaultOutcome = outcomes[0] ?? null;
+    const fallbackPrice = outcomePrices.length > 0 ? outcomePrices[0] : null;
 
     return {
-      symbol,
+      reference,
       name,
-      price: parseNumber(market.lastTradePrice) ?? parseNumber(market.outcomePrice) ?? undefined,
+      price: parseNumber(market.lastTradePrice) ?? parseNumber(market.outcomePrice) ?? fallbackPrice ?? undefined,
       volume: parseNumber(market.volume24hr) ?? parseNumber(market.volume) ?? undefined,
-      ...(metadata ? { metadata } : {}),
+      liquidity: parseNumber(market.liquidity) ?? extras.liquidity ?? undefined,
+      endDate:
+        (typeof market.endDate === "string" ? market.endDate : null) ?? extras.endDate ?? null,
+      metadata:
+        conditionId || outcomes.length > 0 || outcomePrices.length > 0 || extras.createdAt || extras.eventTitle
+          ? {
+              conditionId,
+              outcomes,
+              outcomePrices,
+              defaultOutcome,
+              eventTitle: extras.eventTitle ?? null,
+              createdAt: extras.createdAt ?? null,
+            }
+          : undefined,
     };
   }
 
-  private async browseMarkets(limit: number, offset: number): Promise<Asset[]> {
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("limit", String(limit));
-    url.searchParams.set("offset", String(offset));
-    url.searchParams.set("active", "true");
-    url.searchParams.set("closed", "false");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    if (!Array.isArray(raw)) {
-      return [];
-    }
-
-    const results: Asset[] = [];
-    for (const item of raw) {
-      if (typeof item !== "object" || item === null) {
-        continue;
-      }
-
-      const asset = this.marketToAsset(item as UnknownObject);
-      if (asset) {
-        results.push(asset);
-      }
-    }
-
-    return results;
-  }
-
-  private async fetchSearchV2Page(query: string, page: number): Promise<{ slugs: string[]; hasMore: boolean }> {
-    const url = new URL("/search-v2", this.gammaBaseUrl);
-    url.searchParams.set("q", query);
-    url.searchParams.set("page", String(page));
-    url.searchParams.set("type", "events");
-    url.searchParams.set("optimized", "true");
-    url.searchParams.set("limit_per_type", String(SEARCH_V2_PAGE_SIZE));
-    url.searchParams.set("search_tags", "true");
-    url.searchParams.set("search_profiles", "true");
-    url.searchParams.set("cache", "true");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    if (typeof raw !== "object" || raw === null) {
-      return { slugs: [], hasMore: false };
-    }
-
-    const response = raw as UnknownObject;
-    const events = Array.isArray(response.events) ? response.events : [];
-    const slugs: string[] = [];
-    const seen = new Set<string>();
-
-    for (const event of events) {
-      if (typeof event !== "object" || event === null) {
-        continue;
-      }
-
-      const eventRecord = event as UnknownObject;
-      const markets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
-      for (const market of markets) {
-        if (typeof market !== "object" || market === null) {
-          continue;
-        }
-
-        const marketRecord = market as UnknownObject;
-        const slug = typeof marketRecord.slug === "string" ? marketRecord.slug : null;
-        if (!slug || seen.has(slug)) {
-          continue;
-        }
-
-        seen.add(slug);
-        slugs.push(slug);
-      }
-    }
-
-    const pagination =
-      typeof response.pagination === "object" && response.pagination !== null
-        ? (response.pagination as UnknownObject)
-        : null;
-
-    return {
-      slugs,
-      hasMore: Boolean(pagination?.hasMore),
-    };
-  }
-
-  private async hydrateSearchAsset(slug: string): Promise<Asset | null> {
-    const cacheKey = `search-market:${slug}`;
-    const cached = this.cache.get<Asset | null>(cacheKey);
+  private async fetchMarketBySlug(slug: string): Promise<UnknownObject | null> {
+    const cacheKey = `market-by-slug:${slug}`;
+    const cached = this.cache.get<UnknownObject | null>(cacheKey);
     if (cached !== undefined) {
       return cached;
     }
@@ -294,52 +302,284 @@ export class PolymarketAdapter implements MarketAdapter {
     url.searchParams.set("limit", "1");
 
     const raw = await fetchJson<unknown>(url.toString());
-    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
-      this.cache.set(cacheKey, null, SEARCH_TTL_MS);
-      return null;
+    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+      ? (raw[0] as UnknownObject)
+      : null;
+
+    if (market) {
+      this.cacheMarketSymbolMappings(market);
     }
 
-    const market = raw[0] as UnknownObject;
-    if (market.active === false || market.closed === true || typeof market.conditionId !== "string") {
-      this.cache.set(cacheKey, null, SEARCH_TTL_MS);
-      return null;
-    }
-
-    const asset = this.marketToAsset(market);
-    this.cache.set(cacheKey, asset, SEARCH_TTL_MS);
-    return asset;
+    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
+    return market;
   }
 
-  private async searchMarketsByQuery(query: string, limit: number, offset: number): Promise<Asset[]> {
-    const desiredCount = limit + offset;
-    const slugs: string[] = [];
-    const seenSlugs = new Set<string>();
-    let hasMore = true;
+  private async fetchMarketByConditionId(conditionId: string): Promise<UnknownObject | null> {
+    const cacheKey = `market-by-condition:${conditionId}`;
+    const cached = this.cache.get<UnknownObject | null>(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
 
-    for (let page = 1; page <= SEARCH_V2_MAX_PAGES && hasMore && slugs.length < desiredCount; page += 1) {
-      const nextPage = await this.fetchSearchV2Page(query, page);
-      hasMore = nextPage.hasMore;
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("conditionId", conditionId);
+    url.searchParams.set("limit", "1");
 
-      for (const slug of nextPage.slugs) {
-        if (seenSlugs.has(slug)) {
+    const raw = await fetchJson<unknown>(url.toString());
+    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+      ? (raw[0] as UnknownObject)
+      : null;
+
+    if (market) {
+      this.cacheMarketSymbolMappings(market);
+    }
+
+    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
+    return market;
+  }
+
+  private async fetchMarketByTokenId(tokenId: string): Promise<UnknownObject | null> {
+    const cacheKey = `market-by-token:${tokenId}`;
+    const cached = this.cache.get<UnknownObject | null>(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("clob_token_ids", tokenId);
+    url.searchParams.set("limit", "1");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+      ? (raw[0] as UnknownObject)
+      : null;
+
+    if (market) {
+      this.cacheMarketSymbolMappings(market);
+    }
+
+    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
+    return market;
+  }
+
+  private async fetchSearchPreviewPage(query: string, page: number): Promise<BrowsePage> {
+    const cacheKey = `search-preview:${query.toLowerCase()}:${page}`;
+    const cached = this.cache.get<BrowsePage>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const url = new URL("/search-v2", this.gammaBaseUrl);
+    url.searchParams.set("q", query);
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("type", "events");
+    url.searchParams.set("optimized", "true");
+    url.searchParams.set("limit_per_type", String(SEARCH_PAGE_SIZE));
+    url.searchParams.set("search_tags", "true");
+    url.searchParams.set("search_profiles", "true");
+    url.searchParams.set("cache", "true");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (typeof raw !== "object" || raw === null) {
+      return { previews: [], hasMore: false };
+    }
+
+    const response = raw as UnknownObject;
+    const events = Array.isArray(response.events) ? response.events : [];
+    const previews: MarketReference[] = [];
+    const seen = new Set<string>();
+
+    for (const event of events) {
+      if (typeof event !== "object" || event === null) {
+        continue;
+      }
+
+      const eventRecord = event as UnknownObject;
+      const eventTitle = typeof eventRecord.title === "string" ? eventRecord.title : null;
+      const eventMarkets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
+      for (const market of eventMarkets) {
+        if (typeof market !== "object" || market === null) {
           continue;
         }
 
-        seenSlugs.add(slug);
-        slugs.push(slug);
+        const preview = this.marketToPreview(market as UnknownObject, { eventTitle });
+        if (!preview || seen.has(preview.reference)) {
+          continue;
+        }
+
+        seen.add(preview.reference);
+        previews.push(preview);
       }
     }
 
-    const results: Asset[] = [];
-    for (let i = 0; i < slugs.length && results.length < desiredCount; i += SEARCH_HYDRATION_CONCURRENCY) {
-      const chunk = slugs.slice(i, i + SEARCH_HYDRATION_CONCURRENCY);
-      const settled = await Promise.allSettled(chunk.map(async (slug) => this.hydrateSearchAsset(slug)));
-      for (const result of settled) {
-        if (result.status !== "fulfilled" || !result.value) {
+    const pagination =
+      typeof response.pagination === "object" && response.pagination !== null
+        ? (response.pagination as UnknownObject)
+        : null;
+
+    const result = { previews, hasMore: Boolean(pagination?.hasMore) };
+    this.cache.set(cacheKey, result, SEARCH_TTL_MS);
+    return result;
+  }
+
+  private async fetchBrowseEventPage(page: number): Promise<BrowsePage> {
+    const cacheKey = `browse-events:${page}`;
+    const cached = this.cache.get<BrowsePage>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const url = new URL("/events", this.gammaBaseUrl);
+    url.searchParams.set("limit", String(BROWSE_EVENTS_PAGE_SIZE));
+    url.searchParams.set("offset", String((page - 1) * BROWSE_EVENTS_PAGE_SIZE));
+    url.searchParams.set("active", "true");
+    url.searchParams.set("closed", "false");
+
+    const raw = await fetchJson<unknown>(url.toString());
+    if (!Array.isArray(raw)) {
+      return { previews: [], hasMore: false };
+    }
+
+    const previews: MarketReference[] = [];
+    const seen = new Set<string>();
+    for (const event of raw) {
+      if (typeof event !== "object" || event === null) {
+        continue;
+      }
+
+      const eventRecord = event as UnknownObject;
+      const liquidity = parseNumber(eventRecord.liquidity);
+      const endDate = typeof eventRecord.endDate === "string" ? eventRecord.endDate : null;
+      const createdAt = typeof eventRecord.createdAt === "string" ? eventRecord.createdAt : null;
+      const eventTitle = typeof eventRecord.title === "string" ? eventRecord.title : null;
+      const markets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
+      for (const market of markets) {
+        if (typeof market !== "object" || market === null) {
           continue;
         }
 
-        results.push(result.value);
+        const preview = this.marketToPreview(market as UnknownObject, {
+          liquidity,
+          endDate,
+          createdAt,
+          eventTitle,
+        });
+        if (!preview || seen.has(preview.reference)) {
+          continue;
+        }
+
+        seen.add(preview.reference);
+        previews.push(preview);
+      }
+    }
+
+    const result = {
+      previews,
+      hasMore: raw.length === BROWSE_EVENTS_PAGE_SIZE,
+    };
+    this.cache.set(cacheKey, result, SEARCH_TTL_MS);
+    return result;
+  }
+
+  private async resolveTokenId(reference: string): Promise<string> {
+    const trimmed = reference.trim();
+    if (TOKEN_ID_PATTERN.test(trimmed)) {
+      return trimmed;
+    }
+
+    if (CONDITION_ID_PATTERN.test(trimmed)) {
+      const cacheKey = `condition-token:${trimmed}`;
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const market = await this.fetchMarketByConditionId(trimmed);
+      if (!market) {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for reference: ${reference}`);
+      }
+
+      const tokenId = parseStringArray(market.clobTokenIds)[0];
+      if (!tokenId) {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for reference: ${reference}`);
+      }
+      return tokenId;
+    }
+
+    const cacheKey = `slug-token:${trimmed}`;
+    const cached = this.cache.get<string>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const market = await this.fetchMarketBySlug(trimmed);
+    if (!market) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for reference: ${reference}`);
+    }
+
+    const tokenId = parseStringArray(market.clobTokenIds)[0];
+    if (!tokenId) {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for reference: ${reference}`);
+    }
+
+    return tokenId;
+  }
+
+  private async resolveConditionId(reference: string): Promise<string> {
+    const trimmed = reference.trim();
+    if (CONDITION_ID_PATTERN.test(trimmed)) {
+      return trimmed;
+    }
+
+    if (TOKEN_ID_PATTERN.test(trimmed)) {
+      const cacheKey = `token-condition:${trimmed}`;
+      const cached = this.cache.get<string>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const market = await this.fetchMarketByTokenId(trimmed);
+      if (!market || typeof market.conditionId !== "string") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for reference: ${reference}`);
+      }
+      return market.conditionId;
+    }
+
+    const cacheKey = `slug-condition:${trimmed}`;
+    const cached = this.cache.get<string>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const market = await this.fetchMarketBySlug(trimmed);
+    if (!market || typeof market.conditionId !== "string") {
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for reference: ${reference}`);
+    }
+    return market.conditionId;
+  }
+
+  async search(query: string, options?: SearchOptions): Promise<MarketReference[]> {
+    const normalizedQuery = query.trim();
+    if (normalizedQuery.length === 0) {
+      return this.browse({ limit: options?.limit, offset: options?.offset });
+    }
+
+    const limit = options?.limit ?? 20;
+    const offset = options?.offset ?? 0;
+    const desiredCount = limit + offset;
+    const results: MarketReference[] = [];
+    const seen = new Set<string>();
+    let hasMore = true;
+
+    for (let page = 1; page <= SEARCH_MAX_PAGES && hasMore && results.length < desiredCount; page += 1) {
+      const nextPage = await this.fetchSearchPreviewPage(normalizedQuery, page);
+      hasMore = nextPage.hasMore;
+      for (const preview of nextPage.previews) {
+        if (seen.has(preview.reference)) {
+          continue;
+        }
+        seen.add(preview.reference);
+        results.push(preview);
         if (results.length >= desiredCount) {
           break;
         }
@@ -349,119 +589,61 @@ export class PolymarketAdapter implements MarketAdapter {
     return results.slice(offset, offset + limit);
   }
 
-  private async resolveTokenId(symbol: string): Promise<string> {
-    if (!CONDITION_ID_PATTERN.test(symbol)) {
-      return symbol;
-    }
-
-    const cacheKey = `condition-token:${symbol}`;
-    const cached = this.cache.get<string>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("conditionId", symbol);
-    url.searchParams.set("limit", "1");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for symbol: ${symbol}`);
-    }
-
-    const tokenIds = parseStringArray((raw[0] as UnknownObject).clobTokenIds);
-    const tokenId = tokenIds[0];
-    if (!tokenId) {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No token available for symbol: ${symbol}`);
-    }
-
-    for (const candidate of tokenIds) {
-      this.cache.set(`token-condition:${candidate}`, symbol, SEARCH_TTL_MS);
-    }
-    this.cache.set(cacheKey, tokenId, SEARCH_TTL_MS);
-    return tokenId;
-  }
-
-  private async resolveConditionId(symbol: string): Promise<string> {
-    if (CONDITION_ID_PATTERN.test(symbol)) {
-      return symbol;
-    }
-
-    const cacheKey = `token-condition:${symbol}`;
-    const cached = this.cache.get<string>(cacheKey);
-    if (cached) {
-      return cached;
-    }
-
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("clob_token_ids", symbol);
-    url.searchParams.set("limit", "1");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for symbol: ${symbol}`);
-    }
-
-    const market = raw[0] as UnknownObject;
-    const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
-    if (!conditionId) {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No market available for symbol: ${symbol}`);
-    }
-
-    this.cache.set(cacheKey, conditionId, SEARCH_TTL_MS);
-
-    const tokenIds = parseStringArray(market.clobTokenIds);
-    const tokenId = tokenIds[0];
-    if (tokenId) {
-      this.cache.set(`condition-token:${conditionId}`, tokenId, SEARCH_TTL_MS);
-    }
-    for (const token of tokenIds) {
-      this.cache.set(`token-condition:${token}`, conditionId, SEARCH_TTL_MS);
-    }
-
-    return conditionId;
-  }
-
-  async search(query: string, options?: SearchOptions): Promise<Asset[]> {
+  async browse(options?: BrowseOptions): Promise<MarketReference[]> {
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
-    const normalizedQuery = query.trim();
-    const cacheKey = `search:${normalizedQuery.toLowerCase()}:${limit}:${offset}`;
-    const cached = this.cache.get<Asset[]>(cacheKey);
-    if (cached) {
-      return cached;
+    const sort = normalizeBrowseSort(options?.sort);
+    const desiredCount = limit + offset;
+    const collected: MarketReference[] = [];
+    const seen = new Set<string>();
+    let hasMore = true;
+
+    for (let page = 1; page <= BROWSE_MAX_EVENT_PAGES && hasMore && collected.length < Math.max(desiredCount * 2, 100); page += 1) {
+      const nextPage = await this.fetchBrowseEventPage(page);
+      hasMore = nextPage.hasMore;
+      for (const preview of nextPage.previews) {
+        if (seen.has(preview.reference)) {
+          continue;
+        }
+        seen.add(preview.reference);
+        collected.push(preview);
+      }
     }
 
-    const results =
-      normalizedQuery.length > 0
-        ? await this.searchMarketsByQuery(normalizedQuery, limit, offset)
-        : await this.browseMarkets(limit, offset);
+    const sorted = [...collected].sort((left, right) => {
+      const leftRank = browseSortRank(sort, left);
+      const rightRank = browseSortRank(sort, right);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.name.localeCompare(right.name);
+    });
 
-    this.cache.set(cacheKey, results, SEARCH_TTL_MS);
-    return results;
+    return sorted.slice(offset, offset + limit);
   }
 
-  async normalizeSymbol(symbol: string): Promise<string> {
-    return this.resolveTokenId(symbol);
+  async normalizeReference(reference: string): Promise<string> {
+    return this.resolveTokenId(reference);
   }
 
-  async getTradingConstraints(_symbol: string): Promise<TradingConstraints> {
+  async getTradingConstraints(_reference: string): Promise<TradingConstraints> {
     return POLYMARKET_TRADING_CONSTRAINTS;
   }
 
-  async getQuote(symbol: string): Promise<Quote> {
-    const cacheKey = `quote:${symbol}`;
+  async getQuote(reference: string): Promise<Quote> {
+    const normalizedTokenId = await this.resolveTokenId(reference);
+    const cacheKey = `quote:${normalizedTokenId}`;
     const cached = this.cache.get<Quote>(cacheKey);
     if (cached) {
-      return cached;
+      return { ...cached, reference };
     }
 
-    const orderbook = await this.getOrderbook(symbol);
+    const orderbook = await this.getOrderbook(reference);
     const bestBid = orderbook.bids[0]?.price;
     const bestAsk = orderbook.asks[0]?.price;
 
     if (typeof bestBid !== "number" && typeof bestAsk !== "number") {
-      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No quote available for symbol: ${symbol}`);
+      throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No quote available for reference: ${reference}`);
     }
 
     const price =
@@ -470,7 +652,7 @@ export class PolymarketAdapter implements MarketAdapter {
         : (bestBid ?? bestAsk) as number;
 
     const quote: Quote = {
-      symbol,
+      reference,
       price: Number(price.toFixed(6)),
       bid: bestBid,
       ask: bestAsk,
@@ -481,14 +663,14 @@ export class PolymarketAdapter implements MarketAdapter {
     return quote;
   }
 
-  async getOrderbook(symbol: string): Promise<Orderbook> {
-    const cacheKey = `book:${symbol}`;
+  async getOrderbook(reference: string): Promise<Orderbook> {
+    const tokenId = await this.resolveTokenId(reference);
+    const cacheKey = `book:${tokenId}`;
     const cached = this.cache.get<Orderbook>(cacheKey);
     if (cached) {
-      return cached;
+      return { ...cached, reference };
     }
 
-    const tokenId = await this.resolveTokenId(symbol);
     const url = new URL("/book", this.clobBaseUrl);
     url.searchParams.set("token_id", tokenId);
 
@@ -497,17 +679,18 @@ export class PolymarketAdapter implements MarketAdapter {
       raw = await fetchJson<unknown>(url.toString());
     } catch (error) {
       if (error instanceof MarketAdapterError && error.code === "UPSTREAM_ERROR" && error.message.includes("(404)")) {
-        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No orderbook available for symbol: ${symbol}`);
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No orderbook available for reference: ${reference}`);
       }
       throw error;
     }
+
     if (typeof raw !== "object" || raw === null) {
       throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid orderbook response from Polymarket CLOB API");
     }
 
     const book = raw as UnknownObject;
     const orderbook: Orderbook = {
-      symbol,
+      reference,
       bids: parseOrderbookSide(book.bids).sort((a, b) => b.price - a.price),
       asks: parseOrderbookSide(book.asks).sort((a, b) => a.price - b.price),
       timestamp: new Date().toISOString(),
@@ -517,8 +700,8 @@ export class PolymarketAdapter implements MarketAdapter {
     return orderbook;
   }
 
-  async resolve(symbol: string): Promise<Resolution | null> {
-    const cacheKey = `resolve:${symbol}`;
+  async resolve(reference: string): Promise<Resolution | null> {
+    const cacheKey = `resolve:${reference}`;
     const cached = this.cache.get<Resolution | null>(cacheKey);
     if (cached !== undefined) {
       return cached;
@@ -526,7 +709,7 @@ export class PolymarketAdapter implements MarketAdapter {
 
     let conditionId: string;
     try {
-      conditionId = await this.resolveConditionId(symbol);
+      conditionId = await this.resolveConditionId(reference);
     } catch (error) {
       if (error instanceof MarketAdapterError && error.code === "SYMBOL_NOT_FOUND") {
         this.cache.set(cacheKey, null, RESOLVE_TTL_MS);
@@ -535,21 +718,16 @@ export class PolymarketAdapter implements MarketAdapter {
       throw error;
     }
 
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("conditionId", conditionId);
-    url.searchParams.set("limit", "1");
-
-    const raw = await fetchJson<unknown>(url.toString());
-    if (!Array.isArray(raw) || raw.length === 0 || typeof raw[0] !== "object" || raw[0] === null) {
+    const market = await this.fetchMarketByConditionId(conditionId);
+    if (!market) {
       this.cache.set(cacheKey, null, RESOLVE_TTL_MS);
       return null;
     }
 
-    const market = raw[0] as UnknownObject;
     const resolvedFlag = Boolean(market.resolved);
     if (!resolvedFlag) {
       const unresolved: Resolution = {
-        symbol,
+        reference,
         resolved: false,
         outcome: null,
         settlementPrice: null,
@@ -559,14 +737,11 @@ export class PolymarketAdapter implements MarketAdapter {
       return unresolved;
     }
 
-    const outcome = typeof market.outcome === "string" ? market.outcome : null;
-    const settlementPrice = parseNumber(market.settlementPrice);
-
     const resolved: Resolution = {
-      symbol,
+      reference,
       resolved: true,
-      outcome,
-      settlementPrice,
+      outcome: typeof market.outcome === "string" ? market.outcome : null,
+      settlementPrice: parseNumber(market.settlementPrice),
       timestamp: new Date().toISOString(),
     };
     this.cache.set(cacheKey, resolved, RESOLVE_TTL_MS);
@@ -590,6 +765,7 @@ export class PolymarketAdapter implements MarketAdapter {
     if (conditionIds.length === 0 && tokenIds.length === 0) return { names, outcomes };
 
     const processMarket = (market: UnknownObject) => {
+      this.cacheMarketSymbolMappings(market);
       const question = typeof market.question === "string" ? market.question : null;
       const condId = typeof market.conditionId === "string" ? market.conditionId : null;
 
@@ -606,13 +782,14 @@ export class PolymarketAdapter implements MarketAdapter {
         if (out) outcomes.set(tid, out);
       }
 
-      // Fallback: match clobTokenIds ↔ outcomes by index
       if (question) {
         const tids = parseStringArray(market.clobTokenIds);
         const outs = parseStringArray(market.outcomes);
         for (let i = 0; i < tids.length; i++) {
-          if (!names.has(tids[i]!)) names.set(tids[i]!, question);
-          if (!outcomes.has(tids[i]!) && outs[i]) outcomes.set(tids[i]!, outs[i]!);
+          const tid = tids[i];
+          if (!tid) continue;
+          if (!names.has(tid)) names.set(tid, question);
+          if (!outcomes.has(tid) && outs[i]) outcomes.set(tid, outs[i]!);
         }
       }
     };
@@ -625,8 +802,6 @@ export class PolymarketAdapter implements MarketAdapter {
           const settled = await Promise.allSettled(
             window.map(async (symbol) => {
               const url = new URL("/markets", this.gammaBaseUrl);
-              // Gamma's `clob_token_ids` validation is strict for multi-value payloads.
-              // Query one symbol at a time, but do it with bounded concurrency.
               url.searchParams.set(queryKey, symbol);
               url.searchParams.set("limit", "1");
               return fetchJson<unknown>(url.toString());

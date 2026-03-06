@@ -5,7 +5,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { formatCurrency } from "../../lib/admin";
-import type { AssetResult, QuoteData, TradingConstraints } from "../../lib/admin-api";
+import type { MarketReferenceResult, QuoteData, TradingConstraints } from "../../lib/admin-api";
 
 type OrderResult = { ok: boolean; message: string } | null;
 
@@ -32,7 +32,7 @@ export const TradeTicketCard = ({
   onSubmit,
   canSubmit,
 }: {
-  selectedAsset: AssetResult | null;
+  selectedAsset: MarketReferenceResult | null;
   quote: QuoteData | null;
   quoteLoading: boolean;
   constraints: TradingConstraints | null;
@@ -57,9 +57,14 @@ export const TradeTicketCard = ({
   if (!selectedAsset) {
     return (
       <Card className="border-border/40 bg-card/30">
-        <CardContent className="py-16 text-center">
-          <ArrowDownUp className="mx-auto mb-3 h-8 w-8 text-muted-foreground/50" />
-          <p className="text-sm text-muted-foreground">Select an asset from the search results to start trading.</p>
+        <CardContent className="flex items-center gap-3 py-6">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted/40">
+            <ArrowDownUp className="h-4 w-4 text-muted-foreground/50" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">No asset selected</p>
+            <p className="text-xs text-muted-foreground/50">Pick a market from the left to start trading.</p>
+          </div>
         </CardContent>
       </Card>
     );
@@ -80,7 +85,7 @@ export const TradeTicketCard = ({
         <div className="flex items-start justify-between">
           <div className="min-w-0 flex-1">
             <CardTitle className="truncate text-lg">{selectedAsset.name}</CardTitle>
-            <CardDescription className="truncate font-mono text-xs">{selectedAsset.symbol}</CardDescription>
+            <CardDescription className="truncate font-mono text-xs">{selectedAsset.reference}</CardDescription>
           </div>
           {quoteLoading ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
         </div>
@@ -252,11 +257,10 @@ export const TradeTicketCard = ({
 
           <Button
             id="btn-place-order"
-            className={`h-11 w-full gap-2 text-sm font-semibold ${
-              orderSide === "buy"
-                ? "bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
-                : "bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
-            }`}
+            className={`h-11 w-full gap-2 text-sm font-semibold ${orderSide === "buy"
+              ? "bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              : "bg-rose-600 hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
+              }`}
             disabled={!canSubmit}
             onClick={onSubmit}
           >
@@ -266,11 +270,10 @@ export const TradeTicketCard = ({
 
           {orderResult ? (
             <div
-              className={`rounded-lg border p-3 text-sm ${
-                orderResult.ok
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                  : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400"
-              }`}
+              className={`rounded-lg border p-3 text-sm ${orderResult.ok
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+                }`}
             >
               {orderResult.message}
             </div>

@@ -62,16 +62,27 @@ export type MarketInfo = {
   name: string;
   description: string;
   capabilities: string[];
+  referenceFormat: string;
+  browseOptions: BrowseOption[];
 };
 
-export type AssetResult = {
-  symbol: string;
+export type BrowseOption = {
+  value: string;
+  label: string;
+};
+
+export type MarketReferenceResult = {
+  reference: string;
   name: string;
+  price?: number;
+  volume?: number;
+  liquidity?: number;
+  endDate?: string | null;
   metadata?: Record<string, unknown>;
 };
 
 export type QuoteData = {
-  symbol: string;
+  reference: string;
   price: number;
   bid?: number;
   ask?: number;
@@ -181,7 +192,7 @@ export type TimelineResponse = {
 export type PlaceOrderInput = {
   accountId?: string;
   market: string;
-  symbol: string;
+  reference: string;
   side: "buy" | "sell";
   type: "market" | "limit";
   quantity: number;
@@ -291,15 +302,19 @@ export const createAdminApiClient = ({
     getUserPortfolio: (userId: string) => request<PortfolioData>(`/api/admin/users/${userId}/portfolio`),
     getUserTimeline: (userId: string, { limit, offset }: { limit: number; offset: number }) =>
       request<TimelineResponse>(`/api/admin/users/${userId}/timeline?limit=${limit}&offset=${offset}`),
-    searchAssets: (marketId: string, query: string, limit = 20) =>
-      request<{ results: AssetResult[] }>(
-        `/api/markets/${marketId}/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    searchMarketReferences: (marketId: string, query: string, limit = 20, offset = 0) =>
+      request<{ results: MarketReferenceResult[] }>(
+        `/api/markets/${marketId}/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`,
       ),
-    getQuote: (marketId: string, symbol: string) =>
-      request<QuoteData>(`/api/markets/${marketId}/quote?symbol=${encodeURIComponent(symbol)}`),
-    getTradingConstraints: (marketId: string, symbol: string) =>
-      request<{ symbol: string; constraints: TradingConstraints }>(
-        `/api/markets/${marketId}/trading-constraints?symbol=${encodeURIComponent(symbol)}`,
+    browseMarketReferences: (marketId: string, sort: string | undefined, limit = 20, offset = 0) =>
+      request<{ results: MarketReferenceResult[] }>(
+        `/api/markets/${marketId}/browse?limit=${limit}&offset=${offset}${sort ? `&sort=${encodeURIComponent(sort)}` : ""}`,
+      ),
+    getQuote: (marketId: string, reference: string) =>
+      request<QuoteData>(`/api/markets/${marketId}/quote?reference=${encodeURIComponent(reference)}`),
+    getTradingConstraints: (marketId: string, reference: string) =>
+      request<{ reference: string; constraints: TradingConstraints }>(
+        `/api/markets/${marketId}/trading-constraints?reference=${encodeURIComponent(reference)}`,
       ),
     createTrader: (userName: string) =>
       request<CreateTraderResponse>("/api/admin/traders", {

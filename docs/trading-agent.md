@@ -152,18 +152,23 @@ Pragmatic starting defaults:
 
 Use a repeatable sequence:
 1. `GET /api/markets`
-2. `GET /api/markets/:market/search`
-3. `GET /api/markets/:market/quotes`
-4. `GET /api/markets/:market/orderbooks`
-5. optional `funding` and `resolve` reads when the market supports them
-6. account, portfolio, positions, and order reads
-7. decision and journal write
+2. `GET /api/markets/:market/browse`
+3. optional `GET /api/markets/:market/search` when the agent has a concrete query
+4. keep the returned `reference` for the candidate you want to investigate
+5. `GET /api/markets/:market/quotes`
+6. `GET /api/markets/:market/orderbooks`
+7. optional `funding` and `resolve` reads when the market supports them
+8. account, portfolio, positions, and order reads
+9. decision and journal write
 
 ## What the Agent Should Know About the Platform
 
 A few design facts help agents make better decisions.
 
 - unimarket is simulation-first; it does not place real exchange trades in core flows
+- discovery surfaces return market `reference` values; execution endpoints accept the same reference and let adapters normalize it internally
+- the agent should treat `reference` as the only external market identifier it needs to persist between discovery and execution
+- on Polymarket, a discovery `reference` is usually a slug preview, not an already-resolved token id
 - markets without `funding` behave like spot inventory
 - prediction-market bearish views are expressed by buying the opposite outcome token, not by opening a naked short
 - markets with `funding` behave like perp markets with leverage, funding, and liquidation

@@ -1,15 +1,17 @@
-export type MarketCapability = "search" | "quote" | "orderbook" | "resolve" | "funding";
+export type MarketCapability = "search" | "browse" | "quote" | "orderbook" | "resolve" | "funding";
 
-export type Asset = {
-  symbol: string;
+export type MarketReference = {
+  reference: string;
   name: string;
   price?: number;
   volume?: number;
+  liquidity?: number;
+  endDate?: string | null;
   metadata?: Record<string, unknown>;
 };
 
 export type Quote = {
-  symbol: string;
+  reference: string;
   price: number;
   bid?: number;
   ask?: number;
@@ -23,14 +25,14 @@ export type OrderbookLevel = {
 };
 
 export type Orderbook = {
-  symbol: string;
+  reference: string;
   bids: OrderbookLevel[];
   asks: OrderbookLevel[];
   timestamp: string;
 };
 
 export type Resolution = {
-  symbol: string;
+  reference: string;
   resolved: boolean;
   outcome: string | null;
   settlementPrice: number | null;
@@ -38,7 +40,7 @@ export type Resolution = {
 };
 
 export type FundingRate = {
-  symbol: string;
+  reference: string;
   rate: number;
   nextFundingAt: string;
   timestamp: string;
@@ -48,14 +50,26 @@ export type MarketDescriptor = {
   id: string;
   name: string;
   description: string;
-  symbolFormat: string;
+  referenceFormat: string;
   priceRange: [number, number] | null;
   capabilities: readonly MarketCapability[];
+  browseOptions: readonly BrowseOption[];
 };
 
 export type SearchOptions = {
   limit?: number;
   offset?: number;
+};
+
+export type BrowseOption = {
+  value: string;
+  label: string;
+};
+
+export type BrowseOptions = {
+  limit?: number;
+  offset?: number;
+  sort?: string;
 };
 
 export type TradingConstraints = {
@@ -74,18 +88,20 @@ export interface MarketAdapter {
   readonly marketId: string;
   readonly displayName: string;
   readonly description: string;
-  readonly symbolFormat: string;
+  readonly referenceFormat: string;
   readonly priceRange: [number, number] | null;
   readonly capabilities: readonly MarketCapability[];
+  readonly browseOptions?: readonly BrowseOption[];
 
-  search(query: string, options?: SearchOptions): Promise<Asset[]>;
-  normalizeSymbol?(symbol: string): Promise<string>;
-  getQuote(symbol: string): Promise<Quote>;
-  getOrderbook?(symbol: string): Promise<Orderbook>;
-  resolve?(symbol: string): Promise<Resolution | null>;
+  search(query: string, options?: SearchOptions): Promise<MarketReference[]>;
+  browse?(options?: BrowseOptions): Promise<MarketReference[]>;
+  normalizeReference?(reference: string): Promise<string>;
+  getQuote(reference: string): Promise<Quote>;
+  getOrderbook?(reference: string): Promise<Orderbook>;
+  resolve?(reference: string): Promise<Resolution | null>;
   resolveSymbolNames?(symbols: Iterable<string>): Promise<SymbolResolution>;
-  getFundingRate?(symbol: string): Promise<FundingRate>;
-  getTradingConstraints?(symbol: string): Promise<TradingConstraints>;
+  getFundingRate?(reference: string): Promise<FundingRate>;
+  getTradingConstraints?(reference: string): Promise<TradingConstraints>;
 }
 
 export class MarketAdapterError extends Error {

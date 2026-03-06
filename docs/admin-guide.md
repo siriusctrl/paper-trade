@@ -49,7 +49,7 @@ A user detail view shows:
 The trade page allows an admin to:
 - create a new trader account
 - choose a market dynamically from runtime discovery
-- search assets
+- search and browse market references
 - inspect quotes and trading constraints
 - select a target user
 - place market or limit orders on that user's behalf
@@ -110,7 +110,7 @@ Important rules:
 - optional `accountId` must match the user's default account if supplied
 - `Idempotency-Key` is supported and should be used by the dashboard or scripts for retry-safe writes
 - `leverage` and `reduceOnly` are only valid for perp markets
-- symbol normalization and trading-constraint validation still apply
+- reference normalization and trading-constraint validation still apply
 - market orders fill immediately using directional executable prices
 - limit orders remain pending until the background reconciler fills or cancels them
 

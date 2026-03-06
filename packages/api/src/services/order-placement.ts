@@ -452,9 +452,9 @@ export const createOrderPlacementService = (registry: MarketRegistry) => {
     }
 
     const normalizedSymbol =
-      typeof adapter.normalizeSymbol === "function"
-        ? await adapter.normalizeSymbol(order.symbol)
-        : order.symbol;
+      typeof adapter.normalizeReference === "function"
+        ? await adapter.normalizeReference(order.reference)
+        : order.reference;
     const tradingConstraints = await resolveTradingConstraints(adapter, normalizedSymbol);
 
     if (order.quantity < tradingConstraints.minQuantity) {

@@ -101,9 +101,9 @@ export const createOrderRoutes = (registry: MarketRegistry) => {
         let symbolFilter = parsed.data.symbol;
         if (parsed.data.market) {
           const marketAdapter = registry.get(parsed.data.market);
-          if (marketAdapter?.normalizeSymbol) {
+          if (marketAdapter?.normalizeReference) {
             try {
-              symbolFilter = await marketAdapter.normalizeSymbol(parsed.data.symbol);
+              symbolFilter = await marketAdapter.normalizeReference(parsed.data.symbol);
             } catch {
               return c.json({ orders: [] });
             }

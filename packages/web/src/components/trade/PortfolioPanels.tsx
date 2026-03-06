@@ -16,16 +16,16 @@ export const PortfolioPanels = ({
 
   return (
     <>
-      <Card className="animate-in fade-in-0 border-border/60 bg-card/55 duration-200">
-        <CardContent className="py-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Trading as</p>
-              <p className="font-medium">{selectedAgent.userName}</p>
+      <Card className="animate-in fade-in-0 border-primary/20 bg-card/55 duration-200">
+        <CardContent className="py-3.5">
+          <div className="grid grid-cols-2">
+            <div className="pr-3">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">Trading as</p>
+              <p className="truncate text-sm font-semibold">{selectedAgent.userName}</p>
             </div>
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Balance</p>
-              <p className="font-mono text-lg font-semibold">{formatCurrency(portfolio?.balance ?? selectedAgent.balance)}</p>
+            <div className="border-l border-border/30 pl-3 text-right">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">Balance</p>
+              <p className="font-mono text-sm font-bold tabular-nums">{formatCurrency(portfolio?.balance ?? selectedAgent.balance)}</p>
             </div>
           </div>
         </CardContent>
@@ -79,11 +79,10 @@ export const PortfolioPanels = ({
                 <div className="flex min-w-0 items-center gap-2">
                   <Badge
                     variant="outline"
-                    className={`px-1.5 text-[10px] ${
-                      order.side === "buy"
-                        ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-                        : "border-rose-500/40 text-rose-600 dark:text-rose-400"
-                    }`}
+                    className={`px-1.5 text-[10px] ${order.side === "buy"
+                      ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                      : "border-rose-500/40 text-rose-600 dark:text-rose-400"
+                      }`}
                   >
                     {order.side.toUpperCase()}
                   </Badge>
@@ -115,11 +114,10 @@ export const PortfolioPanels = ({
                 <div className="flex min-w-0 items-center gap-2">
                   <Badge
                     variant="outline"
-                    className={`px-1.5 text-[10px] ${
-                      order.side === "buy"
-                        ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-                        : "border-rose-500/40 text-rose-600 dark:text-rose-400"
-                    }`}
+                    className={`px-1.5 text-[10px] ${order.side === "buy"
+                      ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                      : "border-rose-500/40 text-rose-600 dark:text-rose-400"
+                      }`}
                   >
                     {order.side.toUpperCase()}
                   </Badge>
