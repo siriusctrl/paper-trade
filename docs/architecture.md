@@ -2,112 +2,310 @@
 
 ## System Overview
 
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                           Single Node.js Process                     │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ Hono API Server (:3100)                                        │  │
+│  │                                                                │  │
+│  │ /api/*      REST endpoints                                     │  │
+│  │ /api/events Server-Sent Events                                 │  │
+│  │ /*          Optional static frontend hosting                    │  │
+│  └───────────────┬────────────────────────────────────────────────┘  │
+│                  │                                                   │
+│  ┌───────────────▼────────────────────────────────────────────────┐  │
+│  │ Application Layer                                              │  │
+│  │ auth · routes · validation · idempotency · event fan-out       │  │
+│  └───────────────┬────────────────────────────────────────────────┘  │
+│                  │                                                   │
+│  ┌───────────────▼────────────────────────────────────────────────┐  │
+│  │ Trading Domain                                                 │  │
+│  │ spot fills · perp fills · PnL · margin · liquidation math      │  │
+│  │ pure and market-agnostic                                        │  │
+│  └───────────────┬────────────────────────────────────────────────┘  │
+│                  │                                                   │
+│  ┌───────────────▼────────────────────────────────────────────────┐  │
+│  │ Market Registry                                                │  │
+│  │ Polymarket · Hyperliquid · future adapters                     │  │
+│  └───────────────┬────────────────────────────────────────────────┘  │
+│                  │                                                   │
+│  ┌───────────────▼────────────────────────────────────────────────┐  │
+│  │ SQLite + Drizzle                                               │  │
+│  │ accounts · orders · trades · positions · funding · liquidations│  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  Background workers: reconciler · settler · funding collector ·     │
+│  liquidator                                                         │
+└──────────────────────────────────────────────────────────────────────┘
 ```
-┌─────────────────────────────────────────────────┐
-│            Single Node.js Process                │
-│                                                  │
-│  ┌────────────────────────────────────────────┐  │
-│  │           Hono Server (:3100)              │  │
-│  │                                            │  │
-│  │  /api/*      → REST API                    │  │
-│  │  /api/events → SSE event stream            │  │
-│  │  /* (opt-in) → Static files (Vite build)   │  │
-│  └──────────────────┬─────────────────────────┘  │
-│                     │                            │
-│  ┌──────────────────▼─────────────────────────┐  │
-│  │          Trading Engine (core)             │  │
-│  │   account · orders · positions · P&L       │  │
-│  │   pure logic, market agnostic              │  │
-│  └──────────────────┬─────────────────────────┘  │
-│                     │                            │
-│  ┌──────────────────▼─────────────────────────┐  │
-│  │         Market Adapter Registry            │  │
-│  │  ┌─────────────┐  ┌─────────────┐         │  │
-│  │  │ Polymarket  │  │  (future)   │  ...    │  │
-│  │  └─────────────┘  └─────────────┘         │  │
-│  └────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
 
-**Key design decisions:**
-- API-first by default: Hono serves API/SSE on `:3100`, frontend runs on Vite dev server (`:5173`)
-- Optional single-process static hosting for built frontend via `SERVE_WEB_DIST=true`
-- `core` is pure logic with no I/O — Zod schemas shared across the entire stack
-- Market adapters implement a unified interface, registered at startup
-- Runtime discovery: `GET /api/markets` returns available markets + capabilities
-- Every write operation requires a `reasoning` field — full decision audit trail
-- Journal endpoint for freeform notes; timeline endpoint aggregates everything
-- Accounts get initial funds on creation; only admins can deposit/withdraw
-- API key auth: register → get key → trade
+## Design Goals
 
-## Tech Stack
+The codebase is shaped around a few durable goals.
 
-| Layer | Choice | Why |
-|-------|--------|-----|
-| Language | TypeScript (end-to-end) | Type safety, shared types front-to-back |
-| Runtime | Node.js | Single process serves everything |
-| API | [Hono](https://hono.dev) + [Zod](https://zod.dev) | Type-safe routes, SSE streaming, serves static files |
-| Database | SQLite via [Drizzle ORM](https://orm.drizzle.team) | Zero ops, single-file, perfect for paper trading |
-| Frontend | [Vite](https://vite.dev) + [React](https://react.dev) + [shadcn/ui](https://ui.shadcn.com) + [Tailwind](https://tailwindcss.com) + [Recharts](https://recharts.org) + [TanStack Table](https://tanstack.com/table) | Polished dashboard UI with fast iteration and strong data visualization/table primitives |
-| Monorepo | pnpm workspaces | Simple, fast |
-| Testing | [Vitest](https://vitest.dev) | Fast, native TS |
+- Simulation-first: never require real exchange keys for core paper trading.
+- Market agnostic: data-source differences stay inside adapters.
+- Deterministic domain logic: accounting and risk math stay testable.
+- Explicit audit trail: writes carry reasoning and surface in timeline/event feeds.
+- Runtime discoverability: clients inspect capabilities instead of hardcoding assumptions.
 
-## Project Structure
+## Package Layout
 
-```
+```text
 unimarket/
 ├── packages/
-│   ├── core/             # Trading engine — pure logic, no I/O
-│   │   ├── account.ts    # Account management, initial balance
-│   │   ├── order.ts      # Order types, validation, matching
-│   │   ├── position.ts   # Position tracking, average cost
-│   │   ├── pnl.ts        # P&L calculation (realized + unrealized)
-│   │   └── schemas.ts    # Zod schemas (shared front + back)
-│   ├── markets/          # Market adapters (unified interface)
-│   │   ├── types.ts      # MarketAdapter interface
-│   │   └── polymarket/   # Polymarket CLOB API + Gamma API
-│   ├── api/              # Hono server (API + static file serving)
-│   │   ├── routes/       # Route handlers by domain
-│   │   ├── middleware/    # Auth, error handling
-│   │   ├── db/           # Drizzle schema + migrations
-│   │   └── index.ts      # Entry point
-│   └── web/              # Vite + React dashboard
+│   ├── core/
+│   │   └── src/
+│   │       ├── engine.ts      # Spot fill logic
+│   │       ├── perp.ts        # Perp fill, margin, liquidation math
+│   │       ├── schemas.ts     # Shared Zod schemas
+│   │       └── index.ts
+│   ├── markets/
+│   │   └── src/
+│   │       ├── types.ts       # MarketAdapter contract
+│   │       ├── registry.ts    # Registry implementation
+│   │       ├── polymarket.ts  # Gamma + CLOB integration
+│   │       └── hyperliquid.ts # Perp market integration
+│   ├── api/
+│   │   └── src/
+│   │       ├── routes/        # HTTP entrypoints
+│   │       ├── services/      # Shared API orchestration (e.g. order placement)
+│   │       ├── db/            # Schema and SQLite setup
+│   │       ├── reconciler.ts  # Pending limit worker
+│   │       ├── settler.ts     # Resolution worker
+│   │       ├── funding-collector.ts
+│   │       ├── liquidator.ts
+│   │       ├── timeline.ts    # Unified audit timeline builder
+│   │       ├── events.ts      # SSE event bus + event types
+│   │       └── index.ts       # API bootstrap
+│   └── web/
+│       └── src/
+│           ├── pages/         # Admin pages
+│           ├── components/    # Shared UI + activity feed
+│           └── lib/           # API hooks and formatting helpers
+├── docs/
 ├── skills/
-│   └── unimarket/        # Agent integration skill
-│       ├── SKILL.md
-│       └── references/
-│           ├── api.md
-│           └── markets.md
 └── README.md
 ```
 
-## Market Adapter Interface
+## Separation of Responsibilities
 
-Adding a new market means implementing this interface:
+### `packages/core`
 
-```typescript
-interface MarketAdapter {
-  readonly marketId: string
-  readonly displayName: string
-  readonly description: string
-  readonly symbolFormat: string
-  readonly priceRange: [number, number] | null
-  readonly capabilities: readonly MarketCapability[]
+The `core` package owns the trading rules.
 
-  normalizeSymbol?(symbol: string): Promise<string>
-  getQuote(symbol: string): Promise<Quote>
-  search(query: string): Promise<Asset[]>
-  getOrderbook?(symbol: string): Promise<Orderbook>
-  getFundingRate?(symbol: string): Promise<FundingRate>
-  resolve?(symbol: string): Promise<Resolution | null>
-}
-```
+It should answer questions like:
+- how does a spot fill update balance and average cost?
+- how does a perp fill update signed quantity and isolated margin?
+- when should a reduce-only order be rejected?
+- how do unrealized PnL, maintenance margin, and liquidation price compute?
 
-## Agent Integration
+It should not know anything about:
+- HTTP
+- SQLite
+- SSE
+- specific exchanges
 
-Agents interact with unimarket through a skill document (`skills/unimarket/SKILL.md`) that serves as the API contract. Key features:
-- **Version-aware**: All responses include `X-API-Version` header. SSE connections start with a `system.ready` event containing the server version
-- **Self-healing**: When the server version changes, agents can reload the skill document to pick up API changes
-- **Real-time events**: `GET /api/events` streams order fills, cancellations, settlements, and funding applications via SSE
-- **Reasoning audit trail**: Every write operation requires a `reasoning` field for full decision transparency
-- **Helper scripts**: `skills/unimarket/scripts/unimarket-agent.sh` wraps common auth/market/trading/event operations for faster agent integration
+### `packages/markets`
+
+The `markets` package owns market-specific reads.
+
+Adapters expose a common interface so the rest of the system can ask for:
+- searchable assets
+- quotes
+- orderbooks
+- funding rates
+- resolution information
+- trading constraints
+- symbol normalization when needed
+
+Adapters do not execute trades. They are data providers for the simulation engine.
+
+### `packages/api`
+
+The `api` package wires everything together.
+
+It handles:
+- authentication and admin boundaries
+- request validation
+- idempotency
+- shared order-placement and order-cancellation orchestration for routes and workers
+- persistence
+- worker scheduling
+- SSE event emission
+- timeline aggregation
+
+This package is where pure domain logic meets side effects.
+
+### `packages/web`
+
+The `web` package is the operator dashboard.
+
+It is intentionally thin:
+- reads from REST endpoints
+- renders portfolio, market, and timeline state
+- writes through documented admin endpoints
+- does not reimplement trading logic in the browser
+
+## Market Capability Model
+
+The most important architectural choice is capability-driven branching.
+
+Examples:
+- markets with `funding` are treated as perp markets
+- markets with `resolve` support settlement checks
+- markets with `orderbook` can expose live depth
+- markets with `search` can drive browse/search UX
+
+This avoids hardcoding business logic around a market name such as `if market === "hyperliquid"`.
+
+The adapter contract currently centers around methods like:
+- `search(query)`
+- `getQuote(symbol)`
+- `getOrderbook(symbol)`
+- `getFundingRate(symbol)`
+- `resolve(symbol)`
+- `getTradingConstraints(symbol)`
+- `normalizeSymbol(symbol)`
+
+## Request Flow
+
+A typical order request follows this path.
+
+1. Route validates payload with shared schema.
+2. Route resolves the acting identity and target account.
+3. Route delegates to the shared order-placement service.
+4. The service loads the adapter from the registry.
+5. The service normalizes the symbol and validates trading constraints.
+6. The service fetches a quote.
+7. The service chooses spot or perp engine based on capabilities.
+8. The service performs transactional writes to accounts, orders, trades, and positions.
+9. The service emits SSE events and returns the new state.
+
+This split is intentional:
+- routes keep permission boundaries explicit
+- shared services keep filled and cancelled order lifecycles on one persistence path
+
+Limit orders stop after step 8 with `status = pending`. The reconciler later resumes the flow when the market becomes executable.
+
+## Persistence Model
+
+The storage model is intentionally direct and observable.
+
+Key tables:
+- `users`, `api_keys`, `accounts`
+- `orders`, `order_execution_params`, `trades`
+- `positions`, `perp_position_state`
+- `journal`
+- `funding_payments`
+- `liquidations`
+- `equity_snapshots`
+
+A few design choices matter here.
+
+- Spot and perp positions share the `positions` table.
+- Perp-only risk state lives in `perp_position_state`.
+- `order_execution_params` keeps optional per-order execution fields such as leverage and reduce-only.
+- `liquidations` stores structured liquidation audits instead of hiding everything inside generic order reasoning.
+
+## Background Workers
+
+The server process starts four workers after database migration.
+
+### Reconciler
+
+Purpose:
+- fill pending limit orders
+- auto-cancel invalid stale orders
+
+Why it exists:
+- keeps API writes simple
+- avoids a full exchange-style matching engine
+
+### Settler
+
+Purpose:
+- settle resolved spot positions through adapter resolution data
+
+Why it exists:
+- prediction markets often end through resolution, not a user sell order
+
+### Funding Collector
+
+Purpose:
+- apply periodic perp funding to open leveraged positions
+
+Why it exists:
+- funding is part of the holding-cost model for perp markets
+
+### Liquidator
+
+Purpose:
+- close unsafe perp positions when maintenance margin is breached
+- cancel orphaned reduce-only orders tied to the liquidated symbol
+- persist a dedicated liquidation audit record
+
+Why it exists:
+- keeps the risk model explicit and testable
+- surfaces liquidation as a first-class event instead of a hidden side effect
+
+## Timeline and Event Architecture
+
+The system exposes two audit surfaces.
+
+### Timeline
+
+The timeline is a merged historical feed built from persisted records.
+
+Current timeline event types:
+- `order`
+- `order.cancelled`
+- `journal`
+- `funding.applied`
+- `position.liquidated`
+
+The account timeline and admin timeline both use the same builder so operators and end users see consistent event semantics.
+
+### SSE
+
+SSE is the real-time feed.
+
+Current event types:
+- `system.ready`
+- `order.filled`
+- `order.cancelled`
+- `position.settled`
+- `funding.applied`
+- `position.liquidated`
+
+The event bus also supports replay via `Last-Event-ID` or `?since=`.
+
+## Risk Model Summary
+
+The current risk model is intentionally narrow.
+
+- Spot markets: long-only inventory, no naked shorts.
+- Perp markets: isolated margin, signed positions, leverage, funding, liquidation.
+- Liquidation trigger: `quote.price`.
+- Liquidation execution: directional `bid` or `ask`, with fallback to `price`.
+- Liquidation scope: full liquidation only.
+
+This is not a full exchange risk engine. It is a pragmatic paper-trading model that favors clarity and auditability over exchange-level completeness.
+
+## Extension Points
+
+If you add a new market, the preferred path is:
+
+1. implement a new adapter in `packages/markets`
+2. expose capabilities honestly
+3. add adapter tests with mocked upstream responses
+4. register it in the API bootstrap path
+5. document any special symbol semantics or constraints
+
+If you add a new domain feature, the preferred path is:
+
+1. keep math and state transitions in `packages/core` when possible
+2. keep database and HTTP concerns in `packages/api`
+3. update timeline/events when the feature affects observable state
+4. update docs and tests in the same change

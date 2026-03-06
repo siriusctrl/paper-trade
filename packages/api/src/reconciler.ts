@@ -1,23 +1,14 @@
-import { calculatePerpLiquidationPrice, executeFill, executePerpFill } from "@unimarket/core";
 import type { MarketRegistry, Quote } from "@unimarket/markets";
 import { and, asc, eq, inArray } from "drizzle-orm";
 
 import { db } from "./db/client.js";
-import { accounts, orderExecutionParams, orders, perpPositionState, positions, trades } from "./db/schema.js";
-import { eventBus } from "./events.js";
-import { getTakerFeeRate } from "./fees.js";
-import { makeId, nowIso } from "./utils.js";
-
-const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> => {
-  const rows = await query;
-  return rows[0];
-};
-
-const defaultMaintenanceMarginRatio = Number(process.env.MAINTENANCE_MARGIN_RATIO) || 0.05;
+import { accounts, orders } from "./db/schema.js";
+import { cancelPendingOrder } from "./services/order-cancellation.js";
+import { createOrderPlacementService } from "./services/order-placement.js";
+import { nowIso } from "./utils.js";
 
 export const reconcilePendingOrders = async (
   registry: MarketRegistry,
-  accountIds?: string[],
 ): Promise<{
   processed: number;
   filled: number;
@@ -29,7 +20,7 @@ export const reconcilePendingOrders = async (
   const pendingOrders = await db
     .select()
     .from(orders)
-    .where(accountIds && accountIds.length > 0 ? and(eq(orders.status, "pending"), inArray(orders.accountId, accountIds)) : eq(orders.status, "pending"))
+    .where(eq(orders.status, "pending"))
     .orderBy(asc(orders.createdAt))
     .all();
 
@@ -40,6 +31,7 @@ export const reconcilePendingOrders = async (
   const cancelledOrderIds: string[] = [];
   const cancelledOrderIdSet = new Set<string>();
   const pendingOrdersBySymbol = new Map<string, typeof pendingOrders>();
+  const { fillPendingOrder } = createOrderPlacementService(registry);
 
   for (const pendingOrder of pendingOrders) {
     const symbolKey = `${pendingOrder.market}:${pendingOrder.symbol}`;
@@ -94,45 +86,22 @@ export const reconcilePendingOrders = async (
 
         for (const order of groupedOrders) {
           const cancelledAt = nowIso();
-          const updated = await db
-            .update(orders)
-            .set({
-              status: "cancelled",
-              cancelReasoning:
-                errorCode === "SYMBOL_NOT_FOUND"
-                  ? "Auto-cancelled: symbol no longer available"
-                  : "Auto-cancelled: upstream contract no longer exists (404)",
-              cancelledAt,
-            })
-            .where(and(eq(orders.id, order.id), eq(orders.status, "pending")))
-            .run();
+          const reasoning =
+            errorCode === "SYMBOL_NOT_FOUND"
+              ? "Auto-cancelled: symbol no longer available"
+              : "Auto-cancelled: upstream contract no longer exists (404)";
+          const result = await cancelPendingOrder({
+            order,
+            reasoning,
+            cancelledAt,
+            userId: userIdsByAccountId.get(order.accountId),
+          });
 
-          if (updated.rowsAffected === 0) continue;
+          if (result.kind !== "cancelled") continue;
 
           cancelled += 1;
           cancelledOrderIds.push(order.id);
           cancelledOrderIdSet.add(order.id);
-
-          const userId = userIdsByAccountId.get(order.accountId);
-          if (userId) {
-            eventBus.emit({
-              type: "order.cancelled",
-              userId,
-              accountId: order.accountId,
-              orderId: order.id,
-              data: {
-                market: order.market,
-                symbol: order.symbol,
-                side: order.side,
-                quantity: order.quantity,
-                reasoning:
-                  errorCode === "SYMBOL_NOT_FOUND"
-                    ? "Auto-cancelled: symbol no longer available"
-                    : "Auto-cancelled: upstream contract no longer exists (404)",
-                cancelledAt,
-              },
-            });
-          }
         }
         console.warn(`[reconciler] auto-cancelled ${groupedOrders.length} orders for expired contract ${symbolKey}`);
       } else {
@@ -174,219 +143,16 @@ export const reconcilePendingOrders = async (
     }
 
     try {
-      const adapter = registry.get(pendingOrder.market);
-      const isPerp = Boolean(adapter?.capabilities.includes("funding"));
-      const filledAt = nowIso();
-      const persisted = await db.transaction(async (tx) => {
-        const account = await getFirst(tx.select().from(accounts).where(eq(accounts.id, pendingOrder.accountId)).limit(1).all());
-        if (!account) return null;
-
-        const existingPosition = await getFirst(
-          tx
-            .select()
-            .from(positions)
-            .where(
-              and(
-                eq(positions.accountId, account.id),
-                eq(positions.market, pendingOrder.market),
-                eq(positions.symbol, pendingOrder.symbol),
-              ),
-            )
-            .limit(1)
-            .all(),
-        );
-
-        const existingPerp = isPerp && existingPosition
-          ? await tx.select().from(perpPositionState).where(eq(perpPositionState.positionId, existingPosition.id)).get()
-          : null;
-        const persistedParams = await tx
-          .select()
-          .from(orderExecutionParams)
-          .where(eq(orderExecutionParams.orderId, pendingOrder.id))
-          .get();
-        const leverage = persistedParams?.leverage ?? 1;
-        const reduceOnly = persistedParams?.reduceOnly ?? false;
-        const takerFeeRate = persistedParams?.takerFeeRate ?? getTakerFeeRate(pendingOrder.market);
-
-        const spotFillResult = isPerp
-          ? null
-          : executeFill({
-              balance: account.balance,
-              position: existingPosition ? { quantity: existingPosition.quantity, avgCost: existingPosition.avgCost } : null,
-              side: pendingOrder.side as "buy" | "sell",
-              quantity: pendingOrder.quantity,
-              price: quotePrice,
-              allowShort: false,
-              takerFeeRate,
-            });
-        const perpFillResult = isPerp
-          ? executePerpFill({
-              balance: account.balance,
-              position: existingPosition
-                ? {
-                    quantity: existingPosition.quantity,
-                    avgCost: existingPosition.avgCost,
-                    margin:
-                      existingPerp?.margin ??
-                      Number((Math.abs(existingPosition.quantity * existingPosition.avgCost) / Math.max(existingPerp?.leverage ?? leverage, 1)).toFixed(6)),
-                    leverage: existingPerp?.leverage ?? leverage,
-                    maintenanceMarginRatio: existingPerp?.maintenanceMarginRatio ?? defaultMaintenanceMarginRatio,
-                  }
-                : null,
-              side: pendingOrder.side as "buy" | "sell",
-              quantity: pendingOrder.quantity,
-              price: quotePrice,
-              leverage,
-              maintenanceMarginRatio: existingPerp?.maintenanceMarginRatio ?? defaultMaintenanceMarginRatio,
-              reduceOnly,
-              takerFeeRate,
-            })
-          : null;
-        const fillResult = isPerp ? perpFillResult : spotFillResult;
-        if (!fillResult) {
-          throw new Error("Order fill result not generated during reconciliation");
-        }
-
-        const claimedOrder = await tx
-          .update(orders)
-          .set({ status: "filled", filledPrice: quotePrice, filledAt, cancelReasoning: null, cancelledAt: null })
-          .where(and(eq(orders.id, pendingOrder.id), eq(orders.status, "pending")))
-          .run();
-        if (claimedOrder.rowsAffected === 0) return null;
-
-        const updatedAccount = await tx.update(accounts).set({ balance: fillResult.nextBalance }).where(eq(accounts.id, account.id)).run();
-        if (updatedAccount.rowsAffected === 0) {
-          throw new Error("Account update failed during reconciliation");
-        }
-
-        if (!fillResult.nextPosition) {
-          if (existingPosition) {
-            const deletedPosition = await tx.delete(positions).where(eq(positions.id, existingPosition.id)).run();
-            if (deletedPosition.rowsAffected === 0) {
-              throw new Error("Position delete failed during reconciliation");
-            }
-
-            if (isPerp) {
-              await tx.delete(perpPositionState).where(eq(perpPositionState.positionId, existingPosition.id)).run();
-            }
-          }
-        } else if (existingPosition) {
-          const updatedPosition = await tx
-            .update(positions)
-            .set({ quantity: fillResult.nextPosition.quantity, avgCost: fillResult.nextPosition.avgCost })
-            .where(eq(positions.id, existingPosition.id))
-            .run();
-          if (updatedPosition.rowsAffected === 0) {
-            throw new Error("Position update failed during reconciliation");
-          }
-
-          if (isPerp) {
-            const perpNextPosition = perpFillResult?.nextPosition;
-            if (!perpNextPosition) {
-              throw new Error("Perp position state missing for reconciled fill");
-            }
-            const liquidationPrice = calculatePerpLiquidationPrice(perpNextPosition);
-            await tx
-              .insert(perpPositionState)
-              .values({
-                positionId: existingPosition.id,
-                accountId: account.id,
-                market: pendingOrder.market,
-                symbol: pendingOrder.symbol,
-                leverage: perpNextPosition.leverage,
-                margin: perpNextPosition.margin,
-                maintenanceMarginRatio: perpNextPosition.maintenanceMarginRatio,
-                liquidationPrice,
-                updatedAt: filledAt,
-              })
-              .onConflictDoUpdate({
-                target: perpPositionState.positionId,
-                set: {
-                  leverage: perpNextPosition.leverage,
-                  margin: perpNextPosition.margin,
-                  maintenanceMarginRatio: perpNextPosition.maintenanceMarginRatio,
-                  liquidationPrice,
-                  updatedAt: filledAt,
-                },
-              })
-              .run();
-          }
-        } else {
-          const newPositionId = makeId("pos");
-          await tx
-            .insert(positions)
-            .values({
-              id: newPositionId,
-              accountId: account.id,
-              market: pendingOrder.market,
-              symbol: pendingOrder.symbol,
-              quantity: fillResult.nextPosition.quantity,
-              avgCost: fillResult.nextPosition.avgCost,
-            })
-            .run();
-
-          if (isPerp) {
-            const perpNextPosition = perpFillResult?.nextPosition;
-            if (!perpNextPosition) {
-              throw new Error("Perp position state missing for reconciled fill");
-            }
-            const liquidationPrice = calculatePerpLiquidationPrice(perpNextPosition);
-            await tx
-              .insert(perpPositionState)
-              .values({
-                positionId: newPositionId,
-                accountId: account.id,
-                market: pendingOrder.market,
-                symbol: pendingOrder.symbol,
-                leverage: perpNextPosition.leverage,
-                margin: perpNextPosition.margin,
-                maintenanceMarginRatio: perpNextPosition.maintenanceMarginRatio,
-                liquidationPrice,
-                updatedAt: filledAt,
-              })
-              .run();
-          }
-        }
-
-        await tx
-          .insert(trades)
-          .values({
-            id: makeId("trd"),
-            orderId: pendingOrder.id,
-            accountId: account.id,
-            market: pendingOrder.market,
-            symbol: pendingOrder.symbol,
-            side: pendingOrder.side,
-            quantity: pendingOrder.quantity,
-            price: quotePrice,
-            fee: fillResult.feePaid,
-            createdAt: filledAt,
-          })
-          .run();
-
-        return { userId: account.userId, accountId: account.id };
+      const persisted = await fillPendingOrder({
+        pendingOrder,
+        executionPrice: quotePrice,
+        filledAt: nowIso(),
       });
 
-      if (!persisted) {
+      if (persisted.kind !== "filled") {
         skipped += 1;
         continue;
       }
-
-      eventBus.emit({
-        type: "order.filled",
-        userId: persisted.userId,
-        accountId: persisted.accountId,
-        orderId: pendingOrder.id,
-        data: {
-          market: pendingOrder.market,
-          symbol: pendingOrder.symbol,
-          side: pendingOrder.side as "buy" | "sell",
-          quantity: pendingOrder.quantity,
-          executionPrice: quotePrice,
-          filledAt,
-          limitPrice: pendingOrder.limitPrice,
-        },
-      });
 
       filled += 1;
       filledOrderIds.push(pendingOrder.id);

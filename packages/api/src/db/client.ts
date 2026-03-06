@@ -178,6 +178,34 @@ const migrationStatements = [
   `,
   `CREATE INDEX IF NOT EXISTS funding_payments_account_id_idx ON funding_payments(account_id)`,
   `CREATE INDEX IF NOT EXISTS funding_payments_market_symbol_idx ON funding_payments(market, symbol)`,
+  `
+  CREATE TABLE IF NOT EXISTS liquidations (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    market TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    leverage REAL NOT NULL,
+    margin REAL NOT NULL,
+    maintenance_margin_ratio REAL NOT NULL,
+    trigger_price REAL NOT NULL,
+    execution_price REAL NOT NULL,
+    trigger_position_equity REAL NOT NULL,
+    maintenance_margin REAL NOT NULL,
+    gross_payout REAL NOT NULL,
+    fee_charged REAL NOT NULL,
+    net_payout REAL NOT NULL,
+    reasoning TEXT NOT NULL,
+    cancelled_reduce_only_order_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )
+  `,
+  `CREATE INDEX IF NOT EXISTS liquidations_account_id_idx ON liquidations(account_id)`,
+  `CREATE INDEX IF NOT EXISTS liquidations_order_id_idx ON liquidations(order_id)`,
+  `CREATE INDEX IF NOT EXISTS liquidations_market_symbol_idx ON liquidations(market, symbol)`,
+  `CREATE INDEX IF NOT EXISTS liquidations_created_at_idx ON liquidations(created_at)`,
 ];
 
 const additiveMigrationStatements = [

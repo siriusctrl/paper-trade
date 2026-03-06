@@ -113,11 +113,12 @@ pnpm coverage   # Coverage with CI-enforced thresholds
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/architecture.md) | System design, tech stack, project structure, market adapter interface, agent integration |
-| [API Reference](docs/api-reference.md) | All REST API endpoints (auth, trading, market data, journal, events, meta) |
-| [Admin Guide](docs/admin-guide.md) | Dashboard usage, admin API, managing agents, reconciler |
-| [Trading Agent](docs/trading-agent.md) | How to build an autonomous trading agent on unimarket (give this to your coding agent) |
-| [Testing](docs/testing.md) | E2E black-box method, smoke playbook script, SSE validation |
+| [Trading Model](docs/trading-model.md) | Current simulation semantics for spot markets, perp markets, funding, settlement, and liquidation |
+| [Architecture](docs/architecture.md) | System design, package responsibilities, worker model, persistence, timeline and SSE architecture |
+| [API Reference](docs/api-reference.md) | Current REST and SSE surfaces, timeline event types, admin endpoints, and runtime configuration |
+| [Admin Guide](docs/admin-guide.md) | Dashboard workflows, admin order placement, timelines, liquidation monitoring, and operator APIs |
+| [Trading Agent](docs/trading-agent.md) | How to build an autonomous trading agent against the current API and event model |
+| [Testing](docs/testing.md) | Test strategy, smoke playbook, worker regression checklist, and SSE validation |
 
 ---
 

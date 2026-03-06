@@ -7,14 +7,15 @@ import {
   paginationQuerySchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../auth.js";
 import { db } from "../db/client.js";
-import { fundingPayments, journal, orders, perpPositionState, positions } from "../db/schema.js";
+import { fundingPayments, orders, perpPositionState, positions } from "../db/schema.js";
 import { jsonError } from "../errors.js";
-import { deserializeTags, getUserAccount, parseQuery, withErrorHandling } from "../helpers.js";
+import { getUserAccount, parseQuery, withErrorHandling } from "../helpers.js";
+import { buildTimelineEvents } from "../timeline.js";
 
 export const createAccountRoutes = (registry: MarketRegistry) => {
   const account = new Hono<{ Variables: AppVariables }>();
@@ -46,6 +47,12 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
       if (!acc) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
       const rows = await db.select().from(positions).where(eq(positions.accountId, acc.id)).all();
+      const openOrders = await db
+        .select()
+        .from(orders)
+        .where(and(eq(orders.accountId, acc.id), eq(orders.status, "pending")))
+        .orderBy(desc(orders.createdAt))
+        .all();
       const perpStates = await db
         .select()
         .from(perpPositionState)
@@ -148,6 +155,7 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
         accountId: acc.id,
         balance: acc.balance,
         positions: resultPositions,
+        openOrders,
         totalValue,
         totalPnl,
         totalFunding: Number(totalFunding.toFixed(6)),
@@ -169,64 +177,13 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
       const parsedQuery = parseQuery(c, paginationQuerySchema);
       if (!parsedQuery.success) return parsedQuery.response;
 
-      const orderRows = await db.select().from(orders).where(eq(orders.accountId, acc.id)).orderBy(desc(orders.createdAt)).all();
-      const journalRows = await db.select().from(journal).where(eq(journal.userId, acc.userId)).orderBy(desc(journal.createdAt)).all();
-      const fundingRows = await db
-        .select()
-        .from(fundingPayments)
-        .where(eq(fundingPayments.accountId, acc.id))
-        .orderBy(desc(fundingPayments.createdAt))
-        .all();
-
-      const events = [
-        ...orderRows.map((row) => ({
-          type: row.status === "cancelled" ? "order.cancelled" : "order",
-          data: {
-            id: row.id,
-            symbol: row.symbol,
-            market: row.market,
-            side: row.side,
-            quantity: row.quantity,
-            status: row.status,
-            filledPrice: row.filledPrice,
-            filledAt: row.filledAt,
-            cancelledAt: row.cancelledAt,
-          },
-          reasoning: row.status === "cancelled" ? row.cancelReasoning : row.reasoning,
-          createdAt:
-            row.status === "cancelled"
-              ? (row.cancelledAt ?? row.createdAt)
-              : row.status === "filled"
-                ? (row.filledAt ?? row.createdAt)
-                : row.createdAt,
-        })),
-        ...journalRows.map((row) => ({
-          type: "journal",
-          data: {
-            id: row.id,
-            content: row.content,
-            tags: deserializeTags(row.tags),
-          },
-          reasoning: null,
-          createdAt: row.createdAt,
-        })),
-        ...fundingRows.map((row) => ({
-          type: "funding.applied",
-          data: {
-            id: row.id,
-            market: row.market,
-            symbol: row.symbol,
-            quantity: row.quantity,
-            fundingRate: row.fundingRate,
-            payment: row.payment,
-            appliedAt: row.createdAt,
-          },
-          reasoning: `Funding applied from ${row.market}:${row.symbol} at rate ${row.fundingRate}`,
-          createdAt: row.createdAt,
-        })),
-      ]
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .slice(parsedQuery.data.offset, parsedQuery.data.offset + parsedQuery.data.limit);
+      const events = await buildTimelineEvents({
+        registry,
+        userId: acc.userId,
+        accountId: acc.id,
+        limit: parsedQuery.data.limit,
+        offset: parsedQuery.data.offset,
+      });
 
       return c.json({ events });
     }),

@@ -34,6 +34,8 @@ let app: AppLike;
 let db: DbModule["db"];
 let sqlite: DbModule["sqlite"];
 let tables: SchemaModule;
+let registry: MarketRegistry;
+let reconcilePendingOrders: (typeof import("../src/reconciler.js"))["reconcilePendingOrders"];
 
 const quoteBySymbol: Record<string, { price: number; bid: number; ask: number }> = {
   "0x-market-fill": { price: 0.52, bid: 0.51, ask: 0.52 },
@@ -145,6 +147,7 @@ const fundingAdapter: MarketAdapter = {
 
 const resetDatabase = async (): Promise<void> => {
   await sqlite.execute("DELETE FROM trades");
+  await sqlite.execute("DELETE FROM liquidations");
   await sqlite.execute("DELETE FROM order_execution_params");
   await sqlite.execute("DELETE FROM perp_position_state");
   await sqlite.execute("DELETE FROM orders");
@@ -219,10 +222,11 @@ const parseSseDataEvents = (chunk: Uint8Array): Array<Record<string, unknown>> =
 };
 
 beforeAll(async () => {
-  const [{ createApp }, dbModule, schemaModule] = await Promise.all([
+  const [{ createApp }, dbModule, schemaModule, reconcilerModule] = await Promise.all([
     import("../src/app.js"),
     import("../src/db/client.js"),
     import("../src/db/schema.js"),
+    import("../src/reconciler.js"),
   ]);
 
   await dbModule.migrate();
@@ -230,10 +234,11 @@ beforeAll(async () => {
   sqlite = dbModule.sqlite;
   tables = schemaModule;
 
-  const registry = new MarketRegistry();
+  registry = new MarketRegistry();
   registry.register(polymarketAdapter);
   registry.register(quoteOnlyAdapter);
   registry.register(fundingAdapter);
+  reconcilePendingOrders = reconcilerModule.reconcilePendingOrders;
 
   app = createApp({ registry });
 });
@@ -771,13 +776,7 @@ describe("api integration", () => {
       process.env.DEFAULT_TAKER_FEE_RATE = "0.05";
       quoteBySymbol["0x-fee-pending"] = { price: 7.5, bid: 7.4, ask: 7.5 };
 
-      const reconcileResponse = await authedJson("/api/orders/reconcile", user.apiKey, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reasoning: "fill pending order with persisted fee rate" }),
-      });
-      expect(reconcileResponse.status).toBe(200);
-      const reconcilePayload = await reconcileResponse.json();
+      const reconcilePayload = await reconcilePendingOrders(registry);
       expect(reconcilePayload.filledOrderIds).toContain(pendingOrderPayload.id);
 
       const pendingTrade = await db
@@ -1187,6 +1186,12 @@ describe("api integration", () => {
     const openOrdersResponse = await authedJson("/api/orders?view=open", user.apiKey);
     expect(openOrdersResponse.status).toBe(200);
     expect((await openOrdersResponse.json()).orders).toHaveLength(1);
+
+    const portfolioResponse = await authedJson("/api/account/portfolio", user.apiKey);
+    expect(portfolioResponse.status).toBe(200);
+    const portfolioPayload = await portfolioResponse.json();
+    expect(portfolioPayload.openOrders).toHaveLength(1);
+    expect(portfolioPayload.openOrders[0]?.id).toBe(pendingOrder.id);
 
     const listOrdersResponse = await authedJson(
       `/api/orders?status=pending&market=polymarket&symbol=0x-pending`,
@@ -1613,6 +1618,82 @@ describe("api integration", () => {
     expect(adminFundingEvent.data.payment).toBe(-1.25);
   });
 
+  it("surfaces liquidations as dedicated timeline events and hides the backing filled order", async () => {
+    const user = await registerUser("liquidation-timeline-user");
+
+    await db
+      .insert(tables.orders)
+      .values({
+        id: "ord_liq_timeline",
+        accountId: user.account.id,
+        market: "funding-only",
+        symbol: "BTC",
+        side: "sell",
+        type: "market",
+        quantity: 2,
+        limitPrice: null,
+        status: "filled",
+        filledPrice: 93_500,
+        reasoning: "Auto-liquidation: maintenance margin breached (...)",
+        cancelReasoning: null,
+        cancelledAt: null,
+        filledAt: "2026-01-01T02:00:00.000Z",
+        createdAt: "2026-01-01T02:00:00.000Z",
+      })
+      .run();
+
+    await db
+      .insert(tables.liquidations)
+      .values({
+        id: "liq_timeline",
+        orderId: "ord_liq_timeline",
+        accountId: user.account.id,
+        market: "funding-only",
+        symbol: "BTC",
+        side: "sell",
+        quantity: 2,
+        leverage: 10,
+        margin: 20,
+        maintenanceMarginRatio: 0.05,
+        triggerPrice: 94_500,
+        executionPrice: 93_500,
+        triggerPositionEquity: 9,
+        maintenanceMargin: 9.45,
+        grossPayout: 7,
+        feeCharged: 0,
+        netPayout: 7,
+        reasoning: "Auto-liquidation: maintenance margin breached (triggerPrice=94500, executionPrice=93500)",
+        cancelledReduceOnlyOrderIds: JSON.stringify(["ord_reduce_only"]),
+        createdAt: "2026-01-01T02:00:00.000Z",
+      })
+      .run();
+
+    const timelineResponse = await authedJson("/api/account/timeline?limit=20&offset=0", user.apiKey);
+    expect(timelineResponse.status).toBe(200);
+    const timelinePayload = await timelineResponse.json();
+    const liquidationEvent = timelinePayload.events.find(
+      (event: { type: string; data?: { id?: string; netPayout?: number; cancelledReduceOnlyOrderIds?: string[] } }) =>
+        event.type === "position.liquidated" && event.data?.id === "liq_timeline",
+    );
+    expect(liquidationEvent).toBeTruthy();
+    expect(liquidationEvent.data.netPayout).toBe(7);
+    expect(liquidationEvent.data.cancelledReduceOnlyOrderIds).toEqual(["ord_reduce_only"]);
+    expect(
+      timelinePayload.events.some(
+        (event: { type: string; data?: { id?: string } }) => event.type === "order" && event.data?.id === "ord_liq_timeline",
+      ),
+    ).toBe(false);
+
+    const adminTimelineResponse = await authedJson(`/api/admin/users/${user.userId}/timeline?limit=20&offset=0`, "admin_test_key");
+    expect(adminTimelineResponse.status).toBe(200);
+    const adminTimelinePayload = await adminTimelineResponse.json();
+    expect(
+      adminTimelinePayload.events.some(
+        (event: { type: string; data?: { id?: string } }) => event.type === "position.liquidated" && event.data?.id === "liq_timeline",
+      ),
+    ).toBe(true);
+  });
+
   it("covers portfolio adapter-missing branch and journal tag deserialization fallback", async () => {
     const user = await registerUser("portfolio-fallback-user");
 
@@ -1651,7 +1732,7 @@ describe("api integration", () => {
     expect(journalPayload.entries[0]?.tags).toEqual([]);
   });
 
-  it("covers reconcile endpoint for user scope and admin-wide scope", async () => {
+  it("reconciles pending limit orders globally across accounts", async () => {
     const userA = await registerUser("reconcile-a");
     const userB = await registerUser("reconcile-b");
 
@@ -1690,28 +1771,16 @@ describe("api integration", () => {
     });
     expect(pendingB.status).toBe(201);
 
-    const userScopeReconcile = await authedJson("/api/orders/reconcile", userA.apiKey, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reasoning: "Check marketability for my account" }),
-    });
-    expect(userScopeReconcile.status).toBe(200);
-    const userScopePayload = await userScopeReconcile.json();
-    expect(userScopePayload.filled).toBe(0);
+    const initialReconcile = await reconcilePendingOrders(registry);
+    expect(initialReconcile.filled).toBe(0);
 
     quoteBySymbol["0x-reconcile-a"] = { price: 0.45, bid: 0.44, ask: 0.45 };
     quoteBySymbol["0x-reconcile-b"] = { price: 0.46, bid: 0.45, ask: 0.46 };
 
-    const adminReconcile = await authedJson("/api/orders/reconcile", "admin_test_key", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reasoning: "Reconcile all marketable pending orders" }),
-    });
-    expect(adminReconcile.status).toBe(200);
-    const adminReconcilePayload = await adminReconcile.json();
-    expect(adminReconcilePayload.processed).toBeGreaterThanOrEqual(2);
-    expect(adminReconcilePayload.filled).toBe(2);
-    expect(adminReconcilePayload.filledOrderIds).toEqual(
+    const reconcileResult = await reconcilePendingOrders(registry);
+    expect(reconcileResult.processed).toBeGreaterThanOrEqual(2);
+    expect(reconcileResult.filled).toBe(2);
+    expect(reconcileResult.filledOrderIds).toEqual(
       expect.arrayContaining([pendingAPayload.id as string]),
     );
 
@@ -1764,13 +1833,7 @@ describe("api integration", () => {
     const originalGetQuote = polymarketAdapter.getQuote;
     const quoteSpy = vi.spyOn(polymarketAdapter, "getQuote").mockImplementation(async (symbol) => originalGetQuote(symbol));
 
-    const reconcileResponse = await authedJson("/api/orders/reconcile", "admin_test_key", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reasoning: "batch reconcile shared symbol" }),
-    });
-    expect(reconcileResponse.status).toBe(200);
-    const reconcilePayload = await reconcileResponse.json();
+    const reconcilePayload = await reconcilePendingOrders(registry);
     expect(reconcilePayload.filled).toBe(2);
 
     const batchSymbolCalls = quoteSpy.mock.calls.filter(([symbol]) => symbol === "0x-reconcile-batch");
@@ -1782,13 +1845,7 @@ describe("api integration", () => {
   });
 
   it("covers reconcile edge branches for skipped paths and empty targets", async () => {
-    const emptyAdminReconcile = await authedJson("/api/orders/reconcile", "admin_test_key", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reasoning: "nothing to reconcile yet" }),
-    });
-    expect(emptyAdminReconcile.status).toBe(200);
-    expect(await emptyAdminReconcile.json()).toMatchObject({
+    expect(await reconcilePendingOrders(registry)).toMatchObject({
       processed: 0,
       filled: 0,
       cancelled: 0,
@@ -1935,13 +1992,7 @@ describe("api integration", () => {
       return originalGetQuote(symbol);
     });
 
-    const reconcileResponse = await authedJson("/api/orders/reconcile", "admin_test_key", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reasoning: "exercise reconcile skip branches" }),
-    });
-    expect(reconcileResponse.status).toBe(200);
-    const reconcilePayload = await reconcileResponse.json();
+    const reconcilePayload = await reconcilePendingOrders(registry);
     expect(reconcilePayload.processed).toBeGreaterThanOrEqual(5);
     expect(reconcilePayload.filled).toBe(0);
     expect(reconcilePayload.skipped).toBeGreaterThanOrEqual(4);
@@ -2026,6 +2077,219 @@ describe("api integration", () => {
       return typed.name === "positions_unique_idx";
     });
     expect(hasUniqueIndex).toBe(true);
+  });
+
+  it("covers admin trader creation, portfolio views, and idempotent order placement", async () => {
+    const createTraderResponse = await authedJson("/api/admin/traders", "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userName: "dashboard-admin-trader" }),
+    });
+    expect(createTraderResponse.status).toBe(201);
+    const createdTrader = await createTraderResponse.json() as {
+      userId: string;
+      userName: string;
+      accountId: string;
+      balance: number;
+    };
+    expect(createdTrader.userName).toBe("dashboard-admin-trader");
+    expect(createdTrader.balance).toBe(INITIAL_BALANCE);
+
+    const createdUsers = await db.select().from(tables.users).where(eq(tables.users.id, createdTrader.userId)).all();
+    const createdAccounts = await db.select().from(tables.accounts).where(eq(tables.accounts.id, createdTrader.accountId)).all();
+    expect(createdUsers).toHaveLength(1);
+    expect(createdAccounts).toHaveLength(1);
+    expect(createdAccounts[0]?.balance).toBe(INITIAL_BALANCE);
+
+    const initialPortfolioResponse = await authedJson(
+      `/api/admin/users/${createdTrader.userId}/portfolio`,
+      "admin_test_key",
+    );
+    expect(initialPortfolioResponse.status).toBe(200);
+    const initialPortfolioPayload = await initialPortfolioResponse.json() as {
+      accountId: string;
+      openOrders: unknown[];
+      positions: unknown[];
+      recentOrders: unknown[];
+      balance: number;
+    };
+    expect(initialPortfolioPayload.accountId).toBe(createdTrader.accountId);
+    expect(initialPortfolioPayload.balance).toBe(INITIAL_BALANCE);
+    expect(initialPortfolioPayload.openOrders).toEqual([]);
+    expect(initialPortfolioPayload.positions).toEqual([]);
+    expect(initialPortfolioPayload.recentOrders).toEqual([]);
+
+    const mismatchedAccountOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: "acc_wrong_target",
+        market: "polymarket",
+        symbol: "0x-market-fill",
+        side: "buy",
+        type: "market",
+        quantity: 1,
+        reasoning: "mismatched account id should be rejected",
+      }),
+    });
+    expect(mismatchedAccountOrder.status).toBe(404);
+    expect((await mismatchedAccountOrder.json()).error.code).toBe("ACCOUNT_NOT_FOUND");
+
+    const initialAdminOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "admin-order-idem-1",
+      },
+      body: JSON.stringify({
+        accountId: createdTrader.accountId,
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "admin dashboard test order",
+      }),
+    });
+    expect(initialAdminOrder.status).toBe(201);
+    const initialAdminOrderPayload = await initialAdminOrder.json() as {
+      id: string;
+      symbol: string;
+      status: string;
+      filledPrice: number;
+    };
+    expect(initialAdminOrderPayload.symbol).toBe("0x-market-fill");
+    expect(initialAdminOrderPayload.status).toBe("filled");
+    expect(initialAdminOrderPayload.filledPrice).toBe(0.52);
+
+    const replayedAdminOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "admin-order-idem-1",
+      },
+      body: JSON.stringify({
+        accountId: createdTrader.accountId,
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 2,
+        reasoning: "admin dashboard test order",
+      }),
+    });
+    expect(replayedAdminOrder.status).toBe(201);
+    expect(replayedAdminOrder.headers.get("x-idempotent-replay")).toBe("true");
+    const replayedAdminOrderPayload = await replayedAdminOrder.json() as { id: string };
+    expect(replayedAdminOrderPayload.id).toBe(initialAdminOrderPayload.id);
+
+    const conflictingReplay = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "admin-order-idem-1",
+      },
+      body: JSON.stringify({
+        accountId: createdTrader.accountId,
+        market: "polymarket",
+        symbol: "alias-fill",
+        side: "buy",
+        type: "market",
+        quantity: 3,
+        reasoning: "same key different payload should conflict",
+      }),
+    });
+    expect(conflictingReplay.status).toBe(409);
+    expect((await conflictingReplay.json()).error.code).toBe("IDEMPOTENCY_KEY_CONFLICT");
+
+    const orderRows = await db
+      .select()
+      .from(tables.orders)
+      .where(eq(tables.orders.accountId, createdTrader.accountId))
+      .all();
+    const tradeRows = await db
+      .select()
+      .from(tables.trades)
+      .where(eq(tables.trades.accountId, createdTrader.accountId))
+      .all();
+    expect(orderRows).toHaveLength(1);
+    expect(tradeRows).toHaveLength(1);
+
+    const filledExecutionParams = await db
+      .select()
+      .from(tables.orderExecutionParams)
+      .where(eq(tables.orderExecutionParams.orderId, initialAdminOrderPayload.id))
+      .all();
+    expect(filledExecutionParams).toHaveLength(1);
+    expect(filledExecutionParams[0]?.leverage).toBe(1);
+    expect(filledExecutionParams[0]?.reduceOnly).toBe(false);
+
+    const updatedPortfolioResponse = await authedJson(
+      `/api/admin/users/${createdTrader.userId}/portfolio`,
+      "admin_test_key",
+    );
+    expect(updatedPortfolioResponse.status).toBe(200);
+    const updatedPortfolioPayload = await updatedPortfolioResponse.json() as {
+      openOrders: Array<{ id: string; symbol: string; status: string }>;
+      positions: Array<{ symbol: string; quantity: number; currentPrice: number | null }>;
+      recentOrders: Array<{ id: string; symbol: string; status: string }>;
+      balance: number;
+    };
+    expect(updatedPortfolioPayload.openOrders).toEqual([]);
+    expect(updatedPortfolioPayload.positions).toHaveLength(1);
+    expect(updatedPortfolioPayload.positions[0]).toMatchObject({
+      symbol: "0x-market-fill",
+      quantity: 2,
+      currentPrice: 0.52,
+    });
+    expect(updatedPortfolioPayload.recentOrders[0]).toMatchObject({
+      id: initialAdminOrderPayload.id,
+      symbol: "0x-market-fill",
+      status: "filled",
+    });
+    expect(updatedPortfolioPayload.balance).toBeCloseTo(INITIAL_BALANCE - 1.04, 6);
+
+    const pendingAdminOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        accountId: createdTrader.accountId,
+        market: "polymarket",
+        symbol: "0x-pending",
+        side: "buy",
+        type: "limit",
+        quantity: 1,
+        limitPrice: 0.5,
+        reasoning: "admin pending order should persist execution params",
+      }),
+    });
+    expect(pendingAdminOrder.status).toBe(201);
+    const pendingAdminOrderPayload = await pendingAdminOrder.json() as { id: string; status: string };
+    expect(pendingAdminOrderPayload.status).toBe("pending");
+
+    const pendingExecutionParams = await db
+      .select()
+      .from(tables.orderExecutionParams)
+      .where(eq(tables.orderExecutionParams.orderId, pendingAdminOrderPayload.id))
+      .all();
+    expect(pendingExecutionParams).toHaveLength(1);
+    expect(pendingExecutionParams[0]?.leverage).toBe(1);
+    expect(pendingExecutionParams[0]?.reduceOnly).toBe(false);
+
+    const pendingPortfolioResponse = await authedJson(
+      `/api/admin/users/${createdTrader.userId}/portfolio`,
+      "admin_test_key",
+    );
+    expect(pendingPortfolioResponse.status).toBe(200);
+    const pendingPortfolioPayload = await pendingPortfolioResponse.json() as {
+      openOrders: Array<{ id: string; symbol: string; status: string }>;
+    };
+    expect(pendingPortfolioPayload.openOrders).toHaveLength(1);
+    expect(pendingPortfolioPayload.openOrders[0]).toMatchObject({
+      id: pendingAdminOrderPayload.id,
+      symbol: "0x-pending",
+      status: "pending",
+    });
   });
 
   it("caches resolved symbol metadata for admin overview and timeline responses", async () => {

@@ -2,40 +2,38 @@
 
 ## TL;DR
 
-Give this document + `skills/unimarket/SKILL.md` to any coding agent (Codex, Claude Code, Gemini CLI, etc.) and ask it to:
+Give this document and `skills/unimarket/SKILL.md` to any coding agent and ask it to:
 
-> Set up a workspace and run autonomous paper-trading cycles against the unimarket API at `http://localhost:3100`. Use `skills/unimarket/SKILL.md` as the API contract and `skills/unimarket/scripts/unimarket-agent.sh` as the helper script. Register once, then loop: research markets → decide (trade or no-trade) → journal your reasoning → sleep → repeat.
+> Set up a workspace and run autonomous paper-trading cycles against the unimarket API at `http://localhost:3100`. Use `skills/unimarket/SKILL.md` as the API contract and `skills/unimarket/scripts/unimarket-agent.sh` as the helper script. Register once, then loop: research markets -> decide -> journal -> sleep -> repeat.
 
-That's it. The rest of this document explains _why_ this works and how to tune it.
-
----
+For the system behavior behind those APIs, also point the agent at [Trading Model](trading-model.md).
 
 ## Workspace Layout
 
-```
+```text
 my-agent-workspace/
-├── AGENTS.md              # Agent instructions (rules, constraints)
+├── AGENTS.md
 ├── prompts/
-│   └── trader.prompt.md   # The per-cycle prompt fed to `codex exec` (or equivalent)
+│   └── trader.prompt.md
 ├── .state/
-│   ├── agent.env          # API_KEY, USER_ID, ACCOUNT_ID (mode 600, never logged)
-│   ├── memory.md          # Persistent strategy memory across cycles
-│   └── next_sleep_secs    # Dynamic interval control (agent writes, runner reads)
+│   ├── agent.env
+│   ├── memory.md
+│   └── next_sleep_secs
 ├── logs/
-│   └── strategy-journal.md  # Local cycle history
+│   └── strategy-journal.md
 ├── skills/
-│   └── unimarket/         # Copied or symlinked from the main repo
-├── run.sh                 # Runner script (loop + codex exec)
-└── package.json           # Optional, for local tool deps
+│   └── unimarket/
+├── run.sh
+└── package.json
 ```
 
-**Key principle:** the workspace is a _throwaway sandbox_. The agent can create scratch files, build tools, and experiment freely. Durable state lives in two places: the **API journal** (server-side, source of truth) and **`.state/`** (local).
+Durable state should live in two places:
+- server-side API records such as orders, timeline, and journal
+- local `.state/` files for cycle memory and credentials
 
----
+## Step 1: AGENTS.md
 
-## Step 1: AGENTS.md — Ground Rules
-
-This file gives the coding agent its standing instructions. Keep it short:
+Keep the standing instructions short and explicit.
 
 ```markdown
 # Agent Worker Instructions
@@ -53,49 +51,44 @@ Rules:
 - Never print or log raw API keys.
 ```
 
----
+## Step 2: Cycle Prompt
 
-## Step 2: The Cycle Prompt
+A good per-cycle prompt has four parts.
 
-The prompt is what gets executed each cycle. A good cycle prompt has four sections:
+### Objective
 
-### 1. Objective
-```
+```text
 Run exactly ONE autonomous trading cycle against http://localhost:3100, then exit.
 Primary objective: maximize long-run paper-trading profitability.
 ```
 
-### 2. Autonomy scope
-- Agent chooses its own strategy, holding period, and market interpretation
-- May trade or choose no-trade if edge is weak
-- Prefer action over meta-work (don't spend cycles redesigning infrastructure)
+### Autonomy scope
 
-### 3. Cycle requirements
-Each cycle must:
-1. Read account + portfolio + current open orders + positions
-2. Research markets (search + quote/orderbook reads)
-3. Make one explicit decision: **trade** or **no-trade**
-4. If trading, keep size prudent and avoid duplicate pending orders
-5. Write one concise journal entry to the API (every cycle, no exceptions)
-6. Choose next trigger interval and write seconds to `.state/next_sleep_secs`
+- choose strategy, holding period, and market interpretation independently
+- trade only when there is a reasoned edge
+- prefer action over infrastructure redesign during a live cycle
 
-### 4. State handling
-- Reuse `.state/agent.env` if present
-- If missing, register one user and persist `BASE_URL`/`API_KEY`/`USER_ID`/`ACCOUNT_ID`
+### Cycle requirements
 
-### Journal entries
+Each cycle should:
+1. read account, portfolio, orders, and positions
+2. research markets through search, quotes, orderbooks, and optional funding/resolve endpoints
+3. decide explicitly between trade and no-trade
+4. avoid duplicate pending orders
+5. write one concise journal entry every cycle
+6. write the next sleep interval to `.state/next_sleep_secs`
 
-Each cycle's journal entry should cover these points (in any format):
-- What actions were taken (or why no action)
-- Key evidence and reasoning behind the decision
-- Current hypothesis and confidence level
-- Risks, invalidators, and what to watch for next
+### Journal checklist
 
----
+Every cycle journal entry should record:
+- actions taken, or why no action was taken
+- supporting evidence
+- current hypothesis and confidence
+- risks and invalidators
 
-## Step 3: The Runner Script
+## Step 3: Runner Script
 
-The runner is a simple shell loop that invokes the coding agent repeatedly:
+A minimal runner is enough.
 
 ```bash
 #!/usr/bin/env bash
@@ -104,7 +97,7 @@ set -euo pipefail
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_FILE="$WS_DIR/prompts/trader.prompt.md"
 SLEEP_HINT_FILE="$WS_DIR/.state/next_sleep_secs"
-DEFAULT_SLEEP=300  # 5 minutes
+DEFAULT_SLEEP=300
 MIN_SLEEP=60
 MAX_SLEEP=7200
 
@@ -121,9 +114,6 @@ resolve_sleep() {
 }
 
 while true; do
-  echo "[$(date -Is)] cycle start"
-
-  # Replace this with your coding agent's CLI
   codex exec \
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
@@ -131,21 +121,11 @@ while true; do
     "$(cat "$PROMPT_FILE")" || true
 
   sleep_secs="$(resolve_sleep)"
-  echo "[$(date -Is)] sleeping ${sleep_secs}s"
   sleep "$sleep_secs"
 done
 ```
 
-**Swap `codex exec` for any agent CLI.** The pattern is the same: feed the prompt, let the agent do one cycle, sleep, repeat.
-
-### Dynamic sleep
-
-The agent controls its own pacing by writing to `.state/next_sleep_secs`:
-- Quiet market, no active risk → `300–3600`
-- Active positions, pending orders, high volatility → `60–900`
-- The runner clamps to `[MIN_SLEEP, MAX_SLEEP]` for safety
-
----
+The exact CLI does not matter. The pattern does.
 
 ## Design Patterns
 
@@ -153,61 +133,58 @@ The agent controls its own pacing by writing to `.state/next_sleep_secs`:
 
 | What | Where | Why |
 |------|-------|-----|
-| Credentials | `.state/agent.env` | Survives restarts, mode 600 for safety |
-| Cycle decisions | API journal (`POST /api/journal`) | Server-side source of truth, queryable |
-| Strategy memory | `.state/memory.md` | Working hypotheses, lessons, invalidators |
-| Scratch data | `.state/cycle_*.json` | Disposable per-cycle data files |
-| Local history | `logs/strategy-journal.md` | Full local record of all cycle entries |
+| Credentials | `.state/agent.env` | Survives restarts, protect with mode `600` |
+| Cycle decisions | API journal | Durable server-side source of truth |
+| Strategy memory | `.state/memory.md` | Long-lived hypotheses and lessons |
+| Scratch data | `.state/cycle_*.json` | Disposable local working files |
+| Local history | `logs/strategy-journal.md` | Full local trace |
 
-### Risk management
+### Risk defaults
 
-Good defaults for a paper-trading agent:
-- Max 2 orders per cycle, max quantity 2 per order (conservative start)
-- Skip if account cash is too low
-- Avoid duplicate pending orders for same market+symbol+side
-- Keep directional exposure modest
-- All trades require `reasoning` and `Idempotency-Key`
+Pragmatic starting defaults:
+- no more than 2 orders per cycle
+- conservative size while the strategy is immature
+- skip when free balance is low
+- avoid duplicate pending orders on the same thesis
+- keep a clear written reason for every trade
 
-### Research pattern
+### Research flow
 
-Each cycle should follow: **discover → filter → evaluate → decide**:
+Use a repeatable sequence:
+1. `GET /api/markets`
+2. `GET /api/markets/:market/search`
+3. `GET /api/markets/:market/quotes`
+4. `GET /api/markets/:market/orderbooks`
+5. optional `funding` and `resolve` reads when the market supports them
+6. account, portfolio, positions, and order reads
+7. decision and journal write
 
-1. `GET /api/markets` — discover available markets
-2. `GET /api/markets/:market/search` — find candidates
-3. `GET /api/markets/:market/quotes` — batch price check
-4. `GET /api/markets/:market/orderbooks` — evaluate execution quality (spread, depth)
-5. Read account/positions/orders for current state
-6. Make decision with full context
+## What the Agent Should Know About the Platform
 
-### Memory across cycles
+A few design facts help agents make better decisions.
 
-The agent can maintain a `memory.md` file with:
-- Working hypotheses and what evidence supports them
-- What would invalidate current positions
-- Lessons learned from previous cycles
-- Market observations that persist across time
-
-This gives the agent continuity even though each `codex exec` invocation is stateless.
-
----
+- unimarket is simulation-first; it does not place real exchange trades in core flows
+- markets without `funding` behave like spot inventory
+- prediction-market bearish views are expressed by buying the opposite outcome token, not by opening a naked short
+- markets with `funding` behave like perp markets with leverage, funding, and liquidation
+- timeline and SSE now include funding and liquidation as first-class events
 
 ## Monitoring
 
-Once the runner is going, you can monitor from the admin dashboard:
-
-1. **Dashboard** (`http://localhost:5173`) — equity chart, agent cards, activity feed
-2. **API journal** — `GET /api/account/timeline` shows the agent's full decision history
-3. **Local logs** — `tail -f logs/strategy-journal.md`
-4. **Runner output** — cycle start/end timestamps and sleep intervals
-
----
+Useful operator views while an agent is running:
+- dashboard for balance, positions, and activity feed
+- `GET /api/account/timeline` for durable audit history
+- `GET /api/account/portfolio` for current exposure and PnL
+- SSE via `GET /api/events` for real-time fills, cancels, settlements, funding, and liquidation
+- local logs and `.state/` files for the agent's own memory
 
 ## Quick Start Checklist
 
-1. [ ] Clone or create a workspace directory
-2. [ ] Copy `skills/unimarket/` from the main repo (or symlink it)
-3. [ ] Write `AGENTS.md` with ground rules
-4. [ ] Write `prompts/trader.prompt.md` with cycle instructions
-5. [ ] Write `run.sh` with the runner loop
-6. [ ] Start the unimarket server (`ADMIN_API_KEY=xxx pnpm dev`)
-7. [ ] Run `bash run.sh` and watch it trade
+1. Create a dedicated workspace.
+2. Copy or symlink `skills/unimarket/`.
+3. Write `AGENTS.md`.
+4. Write the cycle prompt.
+5. Write the runner script.
+6. Start unimarket with `ADMIN_API_KEY` configured.
+7. Launch the runner.
+8. Monitor the dashboard, timeline, portfolio, and SSE stream.

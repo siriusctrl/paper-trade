@@ -1,73 +1,202 @@
 # API Reference
 
+This reference lists the current HTTP and SSE surfaces. For system behavior and accounting semantics, read [Trading Model](trading-model.md). For operator workflows, read [Admin Guide](admin-guide.md).
+
 ## Auth
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/auth/register` | — | Register (`userName`), get first API key + default account |
-| `POST` | `/api/auth/keys` | key | Generate additional API key |
-| `DELETE` | `/api/auth/keys/:id` | key | Revoke a key |
+| `POST` | `/api/auth/register` | — | Register a user with `{ "userName": "..." }`, create the default account, and return the first API key |
+| `POST` | `/api/auth/keys` | key | Create an additional API key for the current user |
+| `DELETE` | `/api/auth/keys/:id` | key | Revoke an API key |
 
 ## Accounts
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/account` | key | Get current user's default account details |
-| `GET` | `/api/account/portfolio` | key | Current user's portfolio summary with P&L and accumulated funding |
-| `GET` | `/api/account/timeline` | key | Current user's timeline (orders + journal + funding events) |
+| `GET` | `/api/account` | key | Get the current user's default account |
+| `GET` | `/api/account/portfolio` | key | Get balances, open positions, open orders, unrealized PnL, funding totals, and perp risk fields |
+| `GET` | `/api/account/timeline` | key | Get the user's unified audit feed |
+
+### `GET /api/account/timeline`
+
+Query params:
+- `limit`, default pagination behavior from shared schema
+- `offset`
+
+Current timeline event types:
+- `order`
+- `order.cancelled`
+- `journal`
+- `funding.applied`
+- `position.liquidated`
+
+Notes:
+- liquidation timeline entries are sourced from the dedicated `liquidations` audit table
+- the backing filled liquidation order is hidden from timeline results to avoid duplicate entries
+- Polymarket timeline items try to resolve human-readable market names and outcomes
 
 ## Trading
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/orders` | key | Place an order (requires `reasoning`; supports `Idempotency-Key`; `quantity` is validated per market/symbol constraints) |
+| `POST` | `/api/orders` | key | Place an order |
 | `GET` | `/api/orders` | key | List orders (`view=open|history|all`) |
-| `GET` | `/api/orders/:id` | key | Get a single order by id |
-| `POST` | `/api/orders/reconcile` | key/admin | Optional manual reconcile trigger for pending limit orders (requires `reasoning`) |
-| `DELETE` | `/api/orders/:id` | key | Cancel an order (requires `reasoning`; supports `Idempotency-Key`) |
+| `GET` | `/api/orders/:id` | key | Fetch a single order |
+| `DELETE` | `/api/orders/:id` | key | Cancel a pending order |
 
-Order sizing behavior:
-- `quantity` accepts decimal values at schema layer.
-- Markets enforce final rules per symbol: `minQuantity`, `quantityStep`, `supportsFractional`, and optional `maxLeverage`.
-- If a market does not provide custom constraints, defaults are `minQuantity=1`, `quantityStep=1`, `supportsFractional=false`, `maxLeverage=null`.
+### Order payload notes
 
-## Real-Time Events
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `GET` | `/api/events` | key | Subscribe to SSE events; supports replay via `Last-Event-ID` or `?since=` |
+Required fields:
+- `market`
+- `symbol`
+- `side`
+- `type`
+- `quantity`
+- `reasoning`
+
+Optional fields:
+- `limitPrice`
+- `leverage`
+- `reduceOnly`
+
+Rules:
+- `reasoning` is required for state-changing writes
+- `leverage` and `reduceOnly` are valid only for perp markets
+- quantity is validated against per-symbol trading constraints
+- normal market-order execution uses directional executable prices: `buy -> ask`, `sell -> bid`
+- limit orders remain `pending` until the background reconciler fills or cancels them
 
 ## Positions
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/positions` | key | List open positions |
 
 ## Journal
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/journal` | key | Write a journal entry (supports `Idempotency-Key`) |
-| `GET` | `/api/journal` | key | List entries (`?limit=5&offset=0&q=&tags=`) |
+| `POST` | `/api/journal` | key | Create a journal entry |
+| `GET` | `/api/journal` | key | List journal entries (`limit`, `offset`, optional filters) |
 
 ## Market Data
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/markets` | key | List markets + capabilities |
-| `GET` | `/api/markets/:market/search` | key | Search or browse assets (`?q=&limit=20&offset=0`, default 20, max 100) |
-| `GET` | `/api/markets/:market/trading-constraints` | key | Get symbol-level order constraints (`?symbol=`) including `minQuantity`, `quantityStep`, `supportsFractional`, `maxLeverage` |
-| `GET` | `/api/markets/:market/quote` | key | Get quote (`?symbol=`) |
-| `GET` | `/api/markets/:market/quotes` | key | Get quotes in batch (`?symbols=s1,s2,...`, up to 50) |
-| `GET` | `/api/markets/:market/orderbook` | key | Get orderbook (`?symbol=`) |
-| `GET` | `/api/markets/:market/orderbooks` | key | Get orderbooks in batch (`?symbols=s1,s2,...`, up to 50) |
-| `GET` | `/api/markets/:market/funding` | key | Get funding rate (`?symbol=`) for markets with `funding` capability |
-| `GET` | `/api/markets/:market/fundings` | key | Get funding rates in batch (`?symbols=s1,s2,...`, up to 50) |
-| `GET` | `/api/markets/:market/resolve` | key | Check settlement (`?symbol=`) |
+| `GET` | `/api/markets` | key or admin | Discover registered markets and capabilities |
+| `GET` | `/api/markets/:market/search` | key or admin | Search or browse assets |
+| `GET` | `/api/markets/:market/trading-constraints` | key or admin | Get symbol-level quantity and leverage constraints |
+| `GET` | `/api/markets/:market/quote` | key or admin | Get one quote |
+| `GET` | `/api/markets/:market/quotes` | key or admin | Get quotes in batch |
+| `GET` | `/api/markets/:market/orderbook` | key or admin | Get one orderbook |
+| `GET` | `/api/markets/:market/orderbooks` | key or admin | Get orderbooks in batch |
+| `GET` | `/api/markets/:market/funding` | key or admin | Get one funding rate for funding-capable markets |
+| `GET` | `/api/markets/:market/fundings` | key or admin | Get funding rates in batch |
+| `GET` | `/api/markets/:market/resolve` | key or admin | Get settlement or resolution status |
 
-Hyperliquid notes:
-- Fractional quantity support is symbol-specific and derived from `szDecimals`.
-- Per-symbol `maxLeverage` is enforced for leveraged perp orders.
+### Trading constraints response
+
+Example:
+
+```json
+{
+  "symbol": "BTC",
+  "constraints": {
+    "minQuantity": 0.00001,
+    "quantityStep": 0.00001,
+    "supportsFractional": true,
+    "maxLeverage": 50
+  }
+}
+```
+
+Fallback behavior when a market does not implement custom constraints:
+- `minQuantity = 1`
+- `quantityStep = 1`
+- `supportsFractional = false`
+- `maxLeverage = null`
+
+## Real-Time Events
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/events` | key | Subscribe to the user's SSE event stream |
+
+The SSE stream starts with:
+- `system.ready`
+
+Current user-scoped event types:
+- `order.filled`
+- `order.cancelled`
+- `position.settled`
+- `funding.applied`
+- `position.liquidated`
+
+Replay is supported through:
+- `Last-Event-ID`
+- `?since=<event_id>`
+
+### `position.liquidated` event data
+
+The structured liquidation event includes:
+- `liquidationId`
+- `market`
+- `symbol`
+- `side`
+- `quantity`
+- `triggerPrice`
+- `executionPrice`
+- `triggerPositionEquity`
+- `maintenanceMargin`
+- `grossPayout`
+- `feeCharged`
+- `netPayout`
+- `cancelledReduceOnlyOrderIds`
+- `liquidatedAt`
+
+## Admin API
+
+The full operator workflow is documented in [Admin Guide](admin-guide.md). The main admin-only endpoints are:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/admin/users/:id/deposit` | Add funds to a user's default account |
+| `POST` | `/api/admin/users/:id/withdraw` | Remove funds from a user's default account |
+| `POST` | `/api/admin/traders` | Create a dedicated trader user + default account |
+| `GET` | `/api/admin/overview` | Get cross-user portfolio and market summary |
+| `GET` | `/api/admin/users/:id/portfolio` | Get one user's current balance, positions, open orders, and recent orders |
+| `GET` | `/api/admin/users/:id/timeline` | Get one user's unified audit feed |
+| `POST` | `/api/admin/users/:id/orders` | Place an order on behalf of a user |
+| `GET` | `/api/admin/equity-history` | Get historical equity snapshots by user |
+
+All admin endpoints require `Authorization: Bearer <ADMIN_API_KEY>`.
+
+Admin order-placement notes:
+- `POST /api/admin/users/:id/orders` accepts the same payload shape as `POST /api/orders`
+- optional `accountId` must match the target user's default account
+- `Idempotency-Key` replay protection is supported for retry-safe admin writes
 
 ## Meta
+
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/health` | — | Health check (includes API version) |
+| `GET` | `/health` | — | Health check including API version |
 
-Runtime env loading:
-- API loads repo-root `.env.local` first, then `.env`.
-- Existing process environment variables keep highest priority.
-- Fee configuration uses `DEFAULT_TAKER_FEE_RATE` with optional `${MARKET}_TAKER_FEE_RATE` overrides (for example `HYPERLIQUID_TAKER_FEE_RATE`).
+## Runtime Configuration
+
+The API loads environment variables from repo root in this order:
+- `.env.local`
+- `.env`
+
+Existing process environment variables keep highest priority.
+
+Relevant runtime settings:
+- `RECONCILE_INTERVAL_MS`
+- `SETTLE_INTERVAL_MS`
+- `FUNDING_INTERVAL_MS`
+- `LIQUIDATION_INTERVAL_MS`
+- `MAINTENANCE_MARGIN_RATIO`
+- `DEFAULT_TAKER_FEE_RATE`
+- `${MARKET}_TAKER_FEE_RATE`
+- `SERVE_WEB_DIST`

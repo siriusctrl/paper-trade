@@ -9,7 +9,6 @@ import {
   paginationQuerySchema,
   placeOrderSchema,
   registerSchema,
-  reconcileOrdersSchema,
   reasoningSchema,
 } from "../src/schemas.js";
 
@@ -91,13 +90,7 @@ describe("schemas", () => {
     expect(multiQuoteQuerySchema.safeParse({ symbols: "x".repeat(1) }).success).toBe(true);
   });
 
-  it("validates reconcile, journal, and admin amount payloads", () => {
-    expect(
-      reconcileOrdersSchema.safeParse({
-        reasoning: "Re-evaluate pending orders after quote update",
-      }).success,
-    ).toBe(true);
-
+  it("validates journal and admin amount payloads", () => {
     expect(
       createJournalSchema.safeParse({
         content: "Observed spread compression in correlated contracts",

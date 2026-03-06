@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type TimelineEvent = {
-    type: "order" | "order.cancelled" | "journal";
+    type: "order" | "order.cancelled" | "journal" | "funding.applied" | "position.liquidated";
     data: {
         id: string;
         symbol?: string;
@@ -14,6 +14,18 @@ export type TimelineEvent = {
         cancelledAt?: string | null;
         content?: string;
         tags?: string[];
+        fundingRate?: number;
+        payment?: number;
+        appliedAt?: string;
+        triggerPrice?: number;
+        executionPrice?: number;
+        triggerPositionEquity?: number;
+        maintenanceMargin?: number;
+        grossPayout?: number;
+        feeCharged?: number;
+        netPayout?: number;
+        liquidatedAt?: string;
+        cancelledReduceOnlyOrderIds?: string[];
         symbolName?: string | null;
     };
     reasoning: string | null;

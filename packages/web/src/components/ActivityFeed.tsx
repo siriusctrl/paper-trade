@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import {
+    AlertTriangle,
     ArrowDownRight,
     ArrowUpRight,
     BookOpen,
     ChevronLeft,
     ChevronRight,
+    Coins,
     XCircle,
 } from "lucide-react";
 
@@ -18,12 +20,16 @@ const EVENT_TYPES = [
     { value: "all", label: "All" },
     { value: "order", label: "Orders" },
     { value: "order.cancelled", label: "Cancelled" },
+    { value: "position.liquidated", label: "Liquidations" },
+    { value: "funding.applied", label: "Funding" },
     { value: "journal", label: "Journal" },
 ] as const;
 
 const eventIcon = (event: TimelineEvent) => {
     if (event.type === "journal") return <BookOpen className="h-4 w-4 text-blue-500" />;
     if (event.type === "order.cancelled") return <XCircle className="h-4 w-4 text-amber-500" />;
+    if (event.type === "position.liquidated") return <AlertTriangle className="h-4 w-4 text-rose-500" />;
+    if (event.type === "funding.applied") return <Coins className="h-4 w-4 text-cyan-500" />;
     if (event.data.side === "buy") return <ArrowUpRight className="h-4 w-4 text-emerald-500" />;
     return <ArrowDownRight className="h-4 w-4 text-rose-500" />;
 };
@@ -31,12 +37,16 @@ const eventIcon = (event: TimelineEvent) => {
 const eventLabel = (event: TimelineEvent) => {
     if (event.type === "journal") return "Journal";
     if (event.type === "order.cancelled") return "Cancelled";
+    if (event.type === "position.liquidated") return "Liquidated";
+    if (event.type === "funding.applied") return "Funding";
     return event.data.side === "buy" ? "Buy" : "Sell";
 };
 
 const badgeVariant = (event: TimelineEvent): "default" | "secondary" | "outline" | "success" | "danger" => {
     if (event.type === "journal") return "secondary";
     if (event.type === "order.cancelled") return "outline";
+    if (event.type === "position.liquidated") return "danger";
+    if (event.type === "funding.applied") return "secondary";
     if (event.data.side === "buy") return "success";
     return "danger";
 };
@@ -86,7 +96,7 @@ export const ActivityFeed = ({
             <CardHeader className="gap-3 md:flex-row md:items-center md:justify-between md:space-y-0">
                 <div>
                     <CardTitle>Recent Activity</CardTitle>
-                    <CardDescription>Orders, cancellations, and journal entries.</CardDescription>
+                    <CardDescription>Orders, liquidations, funding, and journal entries.</CardDescription>
                 </div>
                 <div className="flex rounded-lg border border-border/50 p-0.5">
                     {EVENT_TYPES.map((t) => (
@@ -143,6 +153,16 @@ export const ActivityFeed = ({
                                                 @ {formatCurrency(event.data.filledPrice)}
                                             </span>
                                         ) : null}
+                                        {event.type === "position.liquidated" && event.data.executionPrice != null ? (
+                                            <span className="text-xs font-medium">
+                                                @ {formatCurrency(event.data.executionPrice)}
+                                            </span>
+                                        ) : null}
+                                        {event.type === "funding.applied" && typeof event.data.payment === "number" ? (
+                                            <span className="text-xs font-medium">
+                                                {event.data.payment >= 0 ? "+" : ""}{formatCurrency(event.data.payment)}
+                                            </span>
+                                        ) : null}
                                         <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                                             {formatTime(event.createdAt)}
                                         </span>
@@ -162,6 +182,18 @@ export const ActivityFeed = ({
                                                 </Badge>
                                             ))}
                                         </div>
+                                    ) : null}
+
+                                    {event.type === "funding.applied" ? (
+                                        <p className="text-xs leading-relaxed text-foreground/75">
+                                            Funding rate {event.data.fundingRate?.toFixed(6) ?? "—"} applied to {event.data.market}:{event.data.symbol}.
+                                        </p>
+                                    ) : null}
+
+                                    {event.type === "position.liquidated" ? (
+                                        <p className="text-xs leading-relaxed text-foreground/75">
+                                            Trigger {formatCurrency(event.data.triggerPrice ?? 0)}, execution {formatCurrency(event.data.executionPrice ?? 0)}, payout {formatCurrency(event.data.netPayout ?? 0)}.
+                                        </p>
                                     ) : null}
 
                                     {event.reasoning ? (

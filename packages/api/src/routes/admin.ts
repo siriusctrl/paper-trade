@@ -5,7 +5,10 @@ import {
   calculatePerpPositionEquity,
   calculatePerpUnrealizedPnl,
   calculateUnrealizedPnl,
+  INITIAL_BALANCE,
   paginationQuerySchema,
+  placeOrderSchema,
+  registerSchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
@@ -15,12 +18,16 @@ import type { AppVariables } from "../auth.js";
 import { db } from "../db/client.js";
 import { accounts, equitySnapshots, fundingPayments, journal, orders, perpPositionState, positions, users } from "../db/schema.js";
 import { jsonError } from "../errors.js";
-import { deserializeTags, getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
+import { getUserAccount, parseJson, parseQuery, withErrorHandling } from "../helpers.js";
+import { checkIdempotency, storeIdempotencyResponse } from "../idempotency.js";
+import { createOrderPlacementService } from "../services/order-placement.js";
 import { resolveSymbolsWithCache } from "../symbol-metadata.js";
+import { buildTimelineEvents } from "../timeline.js";
 import { makeId, nowIso } from "../utils.js";
 
 export const createAdminRoutes = (registry: MarketRegistry) => {
   const router = new Hono<{ Variables: AppVariables }>();
+  const { placeOrderForAccount } = createOrderPlacementService(registry);
 
   const adjustUserBalance = async (
     userId: string,
@@ -161,9 +168,9 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
           ? null
           : isPerp && perpState
             ? calculatePerpMaintenanceMargin(
-                { quantity: row.quantity, maintenanceMarginRatio: perpState.maintenanceMarginRatio },
-                currentPrice,
-              )
+              { quantity: row.quantity, maintenanceMarginRatio: perpState.maintenanceMarginRatio },
+              currentPrice,
+            )
             : null;
 
         if (!positionsByAccount.has(row.accountId)) positionsByAccount.set(row.accountId, []);
@@ -289,91 +296,13 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       if (!parsedQuery.success) return parsedQuery.response;
 
       const acc = await getUserAccount(userId);
-
-      const orderRows = acc
-        ? await db.select().from(orders).where(eq(orders.accountId, acc.id)).orderBy(desc(orders.createdAt)).all()
-        : [];
-      const fundingRows = acc
-        ? await db
-          .select()
-          .from(fundingPayments)
-          .where(eq(fundingPayments.accountId, acc.id))
-          .orderBy(desc(fundingPayments.createdAt))
-          .all()
-        : [];
-      const journalRows = await db.select().from(journal).where(eq(journal.userId, userId)).orderBy(desc(journal.createdAt)).all();
-
-      const events = [
-        ...orderRows.map((row) => ({
-          type: row.status === "cancelled" ? "order.cancelled" : "order",
-          data: {
-            id: row.id,
-            symbol: row.symbol,
-            market: row.market,
-            side: row.side,
-            quantity: row.quantity,
-            status: row.status,
-            filledPrice: row.filledPrice,
-            filledAt: row.filledAt,
-            cancelledAt: row.cancelledAt,
-            symbolName: null as string | null,
-          },
-          reasoning: row.status === "cancelled" ? row.cancelReasoning : row.reasoning,
-          createdAt:
-            row.status === "cancelled"
-              ? (row.cancelledAt ?? row.createdAt)
-              : row.status === "filled"
-                ? (row.filledAt ?? row.createdAt)
-                : row.createdAt,
-        })),
-        ...journalRows.map((row) => ({
-          type: "journal",
-          data: {
-            id: row.id,
-            content: row.content,
-            tags: deserializeTags(row.tags),
-            symbolName: null as string | null,
-          },
-          reasoning: null,
-          createdAt: row.createdAt,
-        })),
-        ...fundingRows.map((row) => ({
-          type: "funding.applied",
-          data: {
-            id: row.id,
-            market: row.market,
-            symbol: row.symbol,
-            quantity: row.quantity,
-            fundingRate: row.fundingRate,
-            payment: row.payment,
-            appliedAt: row.createdAt,
-            symbolName: null as string | null,
-          },
-          reasoning: `Funding applied from ${row.market}:${row.symbol} at rate ${row.fundingRate}`,
-          createdAt: row.createdAt,
-        })),
-      ]
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .slice(parsedQuery.data.offset, parsedQuery.data.offset + parsedQuery.data.limit);
-
-      // Resolve Polymarket symbol names via Gamma API
-      const pmSymbols = new Set<string>();
-      for (const event of events) {
-        if ("market" in event.data && event.data.market === "polymarket" && event.data.symbol) {
-          pmSymbols.add(event.data.symbol);
-        }
-      }
-
-      const symbolResolution = await resolveSymbolsWithCache(registry, "polymarket", pmSymbols);
-
-      // Attach resolved names
-      for (const event of events) {
-        if ("symbol" in event.data && event.data.symbol) {
-          const name = symbolResolution.names.get(event.data.symbol);
-          const outcome = symbolResolution.outcomes.get(event.data.symbol);
-          if (name) event.data.symbolName = outcome ? `${name} — ${outcome}` : name;
-        }
-      }
+      const events = await buildTimelineEvents({
+        registry,
+        userId,
+        accountId: acc?.id ?? null,
+        limit: parsedQuery.data.limit,
+        offset: parsedQuery.data.offset,
+      });
 
       return c.json({ events });
     }),
@@ -431,6 +360,167 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       }));
 
       return c.json({ range, series });
+    }),
+  );
+
+  // ─── POST /traders — Create a dedicated trader account ─────────────────────
+
+  router.post(
+    "/traders",
+    withErrorHandling(async (c) => {
+      const parsed = await parseJson(c, registerSchema);
+      if (!parsed.success) return parsed.response;
+
+      const createdAt = nowIso();
+      const userId = makeId("usr");
+      const accountId = makeId("acc");
+      const userName = parsed.data.userName;
+
+      await db.insert(users).values({ id: userId, name: userName, createdAt }).run();
+      await db
+        .insert(accounts)
+        .values({
+          id: accountId,
+          userId,
+          balance: INITIAL_BALANCE,
+          name: `${userName}-main`,
+          reasoning: "Trader account created by admin",
+          createdAt,
+        })
+        .run();
+
+      return c.json({ userId, userName, accountId, balance: INITIAL_BALANCE }, 201);
+    }),
+  );
+
+  // ─── GET /users/:id/portfolio — Single-user portfolio view ─────────────────
+
+  router.get(
+    "/users/:id/portfolio",
+    withErrorHandling(async (c) => {
+      const userId = c.req.param("id");
+      const user = await db.select().from(users).where(eq(users.id, userId)).get();
+      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+
+      const account = await getUserAccount(userId);
+      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+
+      const positionRows = await db
+        .select()
+        .from(positions)
+        .where(eq(positions.accountId, account.id))
+        .all();
+      const perpStateRows = await db
+        .select()
+        .from(perpPositionState)
+        .where(eq(perpPositionState.accountId, account.id))
+        .all();
+      const perpStateByPositionId = new Map(perpStateRows.map((row) => [row.positionId, row]));
+
+      const enrichedPositions = [];
+      for (const row of positionRows) {
+        const adapter = registry.get(row.market);
+        let currentPrice: number | null = null;
+        try {
+          if (adapter) {
+            const quote = await adapter.getQuote(row.symbol);
+            currentPrice = quote.price;
+          }
+        } catch {
+          // ignore quote failures
+        }
+        const perpState = perpStateByPositionId.get(row.id);
+        const isPerp = Boolean(adapter?.capabilities.includes("funding") && perpState);
+
+        const unrealizedPnl = currentPrice === null
+          ? null
+          : isPerp
+            ? calculatePerpUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice)
+            : calculateUnrealizedPnl({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
+        const marketValue = currentPrice === null
+          ? null
+          : isPerp && perpState
+            ? calculatePerpPositionEquity({ quantity: row.quantity, avgCost: row.avgCost, margin: perpState.margin }, currentPrice)
+            : calculateMarketValue({ quantity: row.quantity, avgCost: row.avgCost }, currentPrice);
+
+        enrichedPositions.push({
+          market: row.market,
+          symbol: row.symbol,
+          quantity: row.quantity,
+          avgCost: row.avgCost,
+          currentPrice,
+          marketValue,
+          unrealizedPnl,
+          leverage: perpState?.leverage ?? null,
+          margin: perpState?.margin ?? null,
+          liquidationPrice: perpState?.liquidationPrice ?? null,
+        });
+      }
+
+      const recentOrders = await db
+        .select()
+        .from(orders)
+        .where(eq(orders.accountId, account.id))
+        .orderBy(desc(orders.createdAt))
+        .limit(20)
+        .all();
+      const openOrders = await db
+        .select()
+        .from(orders)
+        .where(and(eq(orders.accountId, account.id), eq(orders.status, "pending")))
+        .orderBy(desc(orders.createdAt))
+        .all();
+
+      return c.json({
+        userId: user.id,
+        userName: user.name,
+        accountId: account.id,
+        balance: account.balance,
+        positions: enrichedPositions,
+        openOrders,
+        recentOrders,
+      });
+    }),
+  );
+
+  // ─── POST /users/:id/orders — Admin places order on behalf of a user ───────
+
+  router.post(
+    "/users/:id/orders",
+    withErrorHandling(async (c) => {
+      const userId = c.req.param("id");
+      const user = await db.select().from(users).where(eq(users.id, userId)).get();
+      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+
+      const parsed = await parseJson(c, placeOrderSchema);
+      if (!parsed.success) return parsed.response;
+
+      const account = await getUserAccount(userId);
+      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      if (parsed.data.accountId && parsed.data.accountId !== account.id) {
+        return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      }
+
+      const adminUserId = c.get("userId");
+      const idempotencyResult = await checkIdempotency(c, adminUserId, { targetUserId: userId, ...parsed.data });
+      if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
+        return idempotencyResult.response;
+      }
+      const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
+      const maybeStoreResponse = async (response: Response): Promise<void> => {
+        if (!idempotencyCandidate) return;
+        const clone = response.clone();
+        const body = await clone.json();
+        await storeIdempotencyResponse(idempotencyCandidate, clone.status, body);
+      };
+      const placement = await placeOrderForAccount({ account, order: parsed.data });
+      if (placement.kind === "error") {
+        return jsonError(c, placement.status, placement.code, placement.message);
+      }
+
+      const response = c.json(placement.order, 201);
+      await maybeStoreResponse(response);
+      return response;
     }),
   );
 

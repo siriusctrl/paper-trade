@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { LogOut, Menu, Moon, Shield, Sun, X } from "lucide-react";
-import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { ArrowDownUp, LayoutDashboard, LogOut, Menu, Moon, Shield, Sun, X } from "lucide-react";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
@@ -45,6 +45,33 @@ export const Layout = () => {
             </div>
           </div>
 
+          <nav className="hidden items-center gap-1 sm:flex">
+            <Link
+              to="/dashboard"
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent/60",
+                location.pathname === "/dashboard" || location.pathname.startsWith("/agents")
+                  ? "bg-accent/50 text-accent-foreground"
+                  : "text-muted-foreground",
+              )}
+            >
+              <LayoutDashboard className="h-3.5 w-3.5" />
+              Dashboard
+            </Link>
+            <Link
+              to="/trade"
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent/60",
+                location.pathname === "/trade"
+                  ? "bg-accent/50 text-accent-foreground"
+                  : "text-muted-foreground",
+              )}
+            >
+              <ArrowDownUp className="h-3.5 w-3.5" />
+              Trade
+            </Link>
+          </nav>
+
           <div className="hidden items-center gap-2 sm:flex">
             <Button variant="outline" size="icon" onClick={handleThemeToggle} aria-label="Toggle theme">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
@@ -67,17 +94,45 @@ export const Layout = () => {
 
           <div
             className={cn(
-              "w-full items-center justify-end gap-2 border-t border-border/60 pt-3 sm:hidden",
-              mobileMenuOpen ? "flex animate-in fade-in-0 slide-in-from-top-1 duration-200" : "hidden",
+              "w-full border-t border-border/60 pt-3 sm:hidden",
+              mobileMenuOpen ? "block animate-in fade-in-0 slide-in-from-top-1 duration-200" : "hidden",
             )}
           >
-            <Button variant="outline" size="icon" onClick={handleThemeToggle} aria-label="Toggle theme">
-              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
-            <Button variant="outline" onClick={handleLogout} className="gap-2">
-              <LogOut className="h-4 w-4" />
-              Logout
-            </Button>
+            <div className="grid gap-2">
+              <Link
+                to="/dashboard"
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-accent/60",
+                  location.pathname === "/dashboard" || location.pathname.startsWith("/agents")
+                    ? "bg-accent/50 text-accent-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                <LayoutDashboard className="h-4 w-4" />
+                Dashboard
+              </Link>
+              <Link
+                to="/trade"
+                className={cn(
+                  "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors hover:bg-accent/60",
+                  location.pathname === "/trade"
+                    ? "bg-accent/50 text-accent-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                <ArrowDownUp className="h-4 w-4" />
+                Trade
+              </Link>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <Button variant="outline" size="icon" onClick={handleThemeToggle} aria-label="Toggle theme">
+                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                </Button>
+                <Button variant="outline" onClick={handleLogout} className="gap-2">
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       </header>

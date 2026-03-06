@@ -3,39 +3,64 @@
 ## Running Tests
 
 ```bash
-pnpm test       # Run all tests
-pnpm coverage   # Coverage with CI-enforced thresholds
+pnpm test
+pnpm coverage
 ```
 
-## Agent Endpoint E2E Method (Black-Box)
+Package-focused validation is often faster while iterating:
 
-This is the agent-side method used to validate the full API surface without reading server code first.
+```bash
+corepack pnpm --filter @unimarket/api test
+corepack pnpm --filter @unimarket/api exec tsc --noEmit
+corepack pnpm --filter @unimarket/web exec tsc --noEmit
+```
 
-1. Use `skills/unimarket/SKILL.md` as the contract source.
-2. Start from `POST /api/auth/register`.
-3. Discover markets dynamically via `GET /api/markets` (no hardcoded market IDs).
-4. Execute the full trade lifecycle (quote -> place -> list -> cancel -> audit).
+## Testing Strategy
+
+The repository follows a few testing layers.
+
+- Core business behavior: deterministic unit tests for fills, PnL, leverage, and liquidation math
+- Market adapters: mocked upstream responses and normalization behavior
+- API contract tests: status codes, payloads, auth boundaries, and persistence side effects
+- Integration workers: reconciliation, settlement, funding, and liquidation flows
+
+High-severity regressions include:
+- balance/accounting drift
+- wrong position math
+- liquidation mis-accounting
+- auth boundary mistakes
+- timeline and SSE inconsistency
+
+## Agent Endpoint E2E Method
+
+This is the preferred black-box method for validating the public API without reading the server code first.
+
+1. Use `skills/unimarket/SKILL.md` as the contract.
+2. Register via `POST /api/auth/register`.
+3. Discover markets dynamically via `GET /api/markets`.
+4. Exercise the full trade lifecycle.
 5. Validate consistency across `orders`, `timeline`, `portfolio`, and `SSE`.
-6. Run negative-path checks (invalid payloads, missing reasoning, unauthorized/removed routes).
-7. Only inspect code after reproducing an unexpected behavior.
+6. Run negative-path checks.
+7. Only inspect implementation code after reproducing unexpected behavior.
 
 Coverage targets:
-- Auth: register, create/revoke key, unauthorized behavior
-- Market data: search/quote/orderbook/funding/resolve for every discovered market capability
-- Trading: market order fill, pending limit order, cancel, optional manual reconcile check
-- Account data: account, positions, portfolio, timeline, journal
-- Realtime: SSE `system.ready` and trading events
-- Admin (optional): deposit/withdraw/timeline/overview/equity-history + removed legacy route checks
+- auth: register, create/revoke key, unauthorized behavior
+- market data: search, quote, orderbook, funding, resolve, constraints
+- trading: market fill, pending limit order, cancel, automatic reconciliation
+- account data: account, positions, portfolio, timeline, journal
+- workers: settlement, funding, liquidation
+- admin: deposit, withdraw, overview, portfolio, timeline, order placement
+- real-time: `system.ready`, fills, cancels, settlements, funding, liquidation
 
-### One-Command Smoke Playbook
+## One-Command Smoke Playbook
 
-Requirements: `curl`, `jq`, running API at `http://localhost:3100`.
+Requirements: `curl`, `jq`, API at `http://localhost:3100`.
 
 ```bash
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:3100}"
-ADMIN_API_KEY="${ADMIN_API_KEY:-}" # optional, enables admin checks
+ADMIN_API_KEY="${ADMIN_API_KEY:-}"
 
 need() { command -v "$1" >/dev/null || { echo "missing required command: $1"; exit 1; }; }
 need curl
@@ -59,6 +84,10 @@ auth_delete() {
     -d "$2"
 }
 
+admin_get() {
+  curl -sS "$BASE_URL$1" -H "Authorization: Bearer $ADMIN_API_KEY"
+}
+
 admin_post() {
   curl -sS -X POST "$BASE_URL$1" \
     -H "Authorization: Bearer $ADMIN_API_KEY" \
@@ -80,7 +109,7 @@ ACCOUNT_ID="$(jq -r '.account.id // empty' <<<"$REGISTER_PAYLOAD")"
   exit 1
 }
 
-echo "[2/8] Discover markets + exercise capability endpoints"
+echo "[2/8] Discover markets + capability endpoints"
 MARKETS_PAYLOAD="$(auth_get "/api/markets")"
 jq -e '.markets | length > 0' <<<"$MARKETS_PAYLOAD" >/dev/null
 
@@ -114,11 +143,11 @@ while read -r MARKET_ID; do
 done < <(jq -r '.markets[].id' <<<"$MARKETS_PAYLOAD")
 
 [[ -n "$TRADE_MARKET" && -n "$TRADE_SYMBOL" ]] || {
-  echo "no tradeable symbol found from discovered markets"
+  echo "no tradeable symbol found"
   exit 1
 }
 
-echo "[3/8] Place market order (filled path)"
+echo "[3/8] Place market order"
 MARKET_ORDER_PAYLOAD="$(auth_post "/api/orders" "$(jq -nc \
   --arg m "$TRADE_MARKET" \
   --arg s "$TRADE_SYMBOL" \
@@ -127,7 +156,7 @@ MARKET_ORDER_PAYLOAD="$(auth_post "/api/orders" "$(jq -nc \
 MARKET_ORDER_ID="$(jq -r '.id // empty' <<<"$MARKET_ORDER_PAYLOAD")"
 [[ -n "$MARKET_ORDER_ID" ]] || { echo "market order failed: $MARKET_ORDER_PAYLOAD"; exit 1; }
 
-echo "[4/8] Place/cancel pending limit order (cancel path)"
+echo "[4/8] Place and cancel pending limit order"
 LIMIT_ORDER_PAYLOAD="$(auth_post "/api/orders" "$(jq -nc \
   --arg m "$TRADE_MARKET" \
   --arg s "$TRADE_SYMBOL" \
@@ -153,60 +182,82 @@ auth_get "/api/positions" >/dev/null
 TIMELINE_PAYLOAD="$(auth_get "/api/account/timeline?limit=50&offset=0")"
 jq -e '.events | any(.type == "order.cancelled")' <<<"$TIMELINE_PAYLOAD" >/dev/null
 
-if [[ "${RUN_MANUAL_RECONCILE_CHECK:-0}" == "1" ]]; then
-  echo "[6/8] Optional reconcile endpoint check (user scope)"
-  auth_post "/api/orders/reconcile" '{"reasoning":"e2e smoke: manual reconcile check"}' >/dev/null
-else
-  echo "[6/8] Skip optional reconcile check (set RUN_MANUAL_RECONCILE_CHECK=1 to enable)"
-fi
+echo "[6/8] Reconciler is background-only"
 
-echo "[7/8] Negative checks (strict boundary behavior)"
+echo "[7/8] Negative checks"
 LEGACY_REGISTER_CODE="$(curl -sS -o /tmp/unimarket-legacy-register.out -w "%{http_code}" \
   -X POST "$BASE_URL/api/auth/register" \
   -H "Content-Type: application/json" \
   -d '{"name":"legacy-field-should-fail"}')"
-[[ "$LEGACY_REGISTER_CODE" == "400" ]] || { echo "expected 400 for legacy register field, got $LEGACY_REGISTER_CODE"; exit 1; }
+[[ "$LEGACY_REGISTER_CODE" == "400" ]] || { echo "expected 400 for legacy register field"; exit 1; }
 
 MISSING_REASONING_CODE="$(curl -sS -o /tmp/unimarket-missing-reasoning.out -w "%{http_code}" \
   -X POST "$BASE_URL/api/orders" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"market\":\"$TRADE_MARKET\",\"symbol\":\"$TRADE_SYMBOL\",\"side\":\"buy\",\"type\":\"market\",\"quantity\":1}")"
-[[ "$MISSING_REASONING_CODE" == "400" ]] || { echo "expected 400 for missing reasoning, got $MISSING_REASONING_CODE"; exit 1; }
+[[ "$MISSING_REASONING_CODE" == "400" ]] || { echo "expected 400 for missing reasoning"; exit 1; }
 
 echo "[8/8] Optional admin checks"
 if [[ -n "$ADMIN_API_KEY" ]]; then
   admin_post "/api/admin/users/$USER_ID/deposit" '{"amount":100}' >/dev/null
   admin_post "/api/admin/users/$USER_ID/withdraw" '{"amount":100}' >/dev/null
-  curl -sS "$BASE_URL/api/admin/users/$USER_ID/timeline?limit=20&offset=0" \
-    -H "Authorization: Bearer $ADMIN_API_KEY" >/dev/null
-  curl -sS "$BASE_URL/api/admin/overview" -H "Authorization: Bearer $ADMIN_API_KEY" >/dev/null
-  curl -sS "$BASE_URL/api/admin/equity-history?range=1w" -H "Authorization: Bearer $ADMIN_API_KEY" >/dev/null
-
-  REMOVED_ADMIN_ROUTE_CODE="$(curl -sS -o /tmp/unimarket-removed-admin-route.out -w "%{http_code}" \
-    -X POST "$BASE_URL/api/admin/accounts/$ACCOUNT_ID/deposit" \
-    -H "Authorization: Bearer $ADMIN_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"amount":100}')"
-  [[ "$REMOVED_ADMIN_ROUTE_CODE" == "404" ]] || {
-    echo "expected 404 for removed /api/admin/accounts route, got $REMOVED_ADMIN_ROUTE_CODE"
-    exit 1
-  }
+  admin_get "/api/admin/users/$USER_ID/timeline?limit=20&offset=0" >/dev/null
+  admin_get "/api/admin/users/$USER_ID/portfolio" >/dev/null
+  admin_get "/api/admin/overview" >/dev/null
+  admin_get "/api/admin/equity-history?range=1w" >/dev/null
 fi
 
 echo "E2E smoke passed."
 ```
 
-### SSE Check (Recommended)
+## SSE Check
 
-Open a second terminal and keep an SSE connection running while you place/cancel orders:
+Keep an SSE connection open while placing or cancelling orders:
 
 ```bash
 curl -N -H "Authorization: Bearer <api_key>" http://localhost:3100/api/events
 ```
 
-Expected event sequence:
-- first message: `system.ready`
-- then trading events like `order.filled`, `order.cancelled`, `position.settled`
+Expected behavior:
+- first event: `system.ready`
+- later events depend on activity and may include:
+  - `order.filled`
+  - `order.cancelled`
+  - `position.settled`
+  - `funding.applied`
+  - `position.liquidated`
 
-If timeline shows an event but SSE does not (or vice versa), treat it as a consistency bug.
+If timeline shows an event that SSE never emitted, or SSE emits a state-changing event that never appears in durable reads, treat it as a consistency bug.
+
+## Worker-Focused Regression Checklist
+
+These regressions are worth testing directly when worker logic changes.
+
+### Reconciler
+
+- fills pending limit orders when quotes cross
+- leaves non-executable orders pending
+- cancels stale orders for symbols that disappear upstream
+
+### Settler
+
+- credits settlement proceeds correctly
+- removes the settled position
+- emits settlement events
+
+### Funding collector
+
+- applies signed funding payments in the correct direction
+- persists `funding_payments`
+- updates portfolio and timeline views
+
+### Liquidator
+
+- triggers when `positionEquity <= maintenanceMargin`
+- uses directional execution prices, not just midpoint quotes
+- caps liquidation fees to isolated remaining payout
+- deletes the position and perp state
+- auto-cancels linked pending `reduceOnly` orders
+- writes a `liquidations` audit row
+- emits `position.liquidated`

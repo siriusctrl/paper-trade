@@ -220,3 +220,35 @@ export const fundingPayments = sqliteTable(
     index("funding_payments_market_symbol_idx").on(table.market, table.symbol),
   ],
 );
+
+export const liquidations = sqliteTable(
+  "liquidations",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id").notNull(),
+    accountId: text("account_id").notNull(),
+    market: text("market").notNull(),
+    symbol: text("symbol").notNull(),
+    side: text("side").notNull(),
+    quantity: real("quantity").notNull(),
+    leverage: real("leverage").notNull(),
+    margin: real("margin").notNull(),
+    maintenanceMarginRatio: real("maintenance_margin_ratio").notNull(),
+    triggerPrice: real("trigger_price").notNull(),
+    executionPrice: real("execution_price").notNull(),
+    triggerPositionEquity: real("trigger_position_equity").notNull(),
+    maintenanceMargin: real("maintenance_margin").notNull(),
+    grossPayout: real("gross_payout").notNull(),
+    feeCharged: real("fee_charged").notNull(),
+    netPayout: real("net_payout").notNull(),
+    reasoning: text("reasoning").notNull(),
+    cancelledReduceOnlyOrderIds: text("cancelled_reduce_only_order_ids").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("liquidations_account_id_idx").on(table.accountId),
+    index("liquidations_order_id_idx").on(table.orderId),
+    index("liquidations_market_symbol_idx").on(table.market, table.symbol),
+    index("liquidations_created_at_idx").on(table.createdAt),
+  ],
+);

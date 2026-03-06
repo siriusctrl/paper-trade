@@ -6,6 +6,7 @@ import { readStoredAdminKey } from "./lib/admin";
 import { AgentDetailPage } from "./pages/AgentDetailPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LoginPage } from "./pages/LoginPage";
+import { TradePage } from "./pages/TradePage";
 
 const RequireAdmin = ({ children }: { children: ReactNode }) => {
   const adminKey = readStoredAdminKey();
@@ -31,6 +32,7 @@ export const App = () => {
           }
         >
           <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/trade" element={<TradePage />} />
           <Route path="/agents/:id" element={<AgentDetailPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/dashboard" replace />} />

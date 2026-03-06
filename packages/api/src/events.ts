@@ -1,4 +1,10 @@
-export type EventType = "system.ready" | "order.filled" | "order.cancelled" | "position.settled" | "funding.applied";
+export type EventType =
+  | "system.ready"
+  | "order.filled"
+  | "order.cancelled"
+  | "position.settled"
+  | "funding.applied"
+  | "position.liquidated";
 
 type UserScopedEventType = Exclude<EventType, "system.ready">;
 
@@ -59,12 +65,38 @@ export type FundingAppliedEvent = BaseEvent<
   }
 >;
 
+export type PositionLiquidatedEvent = BaseEvent<
+  "position.liquidated",
+  {
+    liquidationId: string;
+    market: string;
+    symbol: string;
+    side: "buy" | "sell";
+    quantity: number;
+    triggerPrice: number;
+    executionPrice: number;
+    triggerPositionEquity: number;
+    maintenanceMargin: number;
+    grossPayout: number;
+    feeCharged: number;
+    netPayout: number;
+    cancelledReduceOnlyOrderIds: string[];
+    liquidatedAt: string;
+  }
+>;
+
 export type SystemReadyEvent = {
   type: "system.ready";
   data: { version: string; connectedAt: string };
 };
 
-export type TradingEvent = SystemReadyEvent | OrderFilledEvent | OrderCancelledEvent | PositionSettledEvent | FundingAppliedEvent;
+export type TradingEvent =
+  | SystemReadyEvent
+  | OrderFilledEvent
+  | OrderCancelledEvent
+  | PositionSettledEvent
+  | FundingAppliedEvent
+  | PositionLiquidatedEvent;
 export type EmittedTradingEvent = Exclude<TradingEvent, SystemReadyEvent>;
 export type SequencedTradingEvent = EmittedTradingEvent & { id: string; emittedAt: string };
 export type TradingEventListener = (event: SequencedTradingEvent) => void;
