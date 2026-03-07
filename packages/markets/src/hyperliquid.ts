@@ -18,6 +18,7 @@ const ORDERBOOK_TTL_MS = 5_000;
 const META_TTL_MS = 300_000;
 const FUNDING_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
 const HYPERLIQUID_BROWSE_OPTIONS: readonly BrowseOption[] = [
     { value: "price", label: "Price" },
 ];
@@ -63,6 +64,7 @@ const postInfo = async <T>(apiUrl: string, body: Record<string, unknown>, timeou
 export type HyperliquidAdapterOptions = {
     apiUrl?: string;
     requestTimeoutMs?: number;
+    browseCacheTtlMs?: number;
 };
 
 type MetaUniverse = {
@@ -158,10 +160,12 @@ export class HyperliquidAdapter implements MarketAdapter {
     private readonly apiUrl: string;
     private readonly cache = new TtlCache();
     private readonly requestTimeoutMs: number;
+    private readonly browseCacheTtlMs: number;
 
     constructor(options: HyperliquidAdapterOptions = {}) {
         this.apiUrl = options.apiUrl ?? DEFAULT_API_URL;
         this.requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+        this.browseCacheTtlMs = options.browseCacheTtlMs ?? DEFAULT_BROWSE_CACHE_TTL_MS;
     }
 
     private buildTradingConstraints(asset: MetaUniverse): TradingConstraints {
@@ -186,35 +190,37 @@ export class HyperliquidAdapter implements MarketAdapter {
     }
 
     private async getMeta(): Promise<MetaUniverse[]> {
-        const cached = this.cache.get<MetaUniverse[]>("meta");
-        if (cached) return cached;
+        return this.cache.remember("meta", {
+            ttlMs: META_TTL_MS,
+            load: async () => {
+                const data = await postInfo<MetaResponse>(this.apiUrl, { type: "meta" }, this.requestTimeoutMs);
 
-        const data = await postInfo<MetaResponse>(this.apiUrl, { type: "meta" }, this.requestTimeoutMs);
+                if (!data || !Array.isArray(data.universe)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid meta response from Hyperliquid");
+                }
 
-        if (!data || !Array.isArray(data.universe)) {
-            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid meta response from Hyperliquid");
-        }
-
-        this.cache.set("meta", data.universe, META_TTL_MS);
-        return data.universe;
+                return data.universe;
+            },
+        });
     }
 
     private async getL2Book(symbol: string): Promise<L2BookResponse> {
         const cacheKey = `l2:${symbol}`;
-        const cached = this.cache.get<L2BookResponse>(cacheKey);
-        if (cached) return cached;
+        return this.cache.remember(cacheKey, {
+            ttlMs: ORDERBOOK_TTL_MS,
+            load: async () => {
+                const data = await postInfo<L2BookResponse>(this.apiUrl, {
+                    type: "l2Book",
+                    coin: symbol,
+                }, this.requestTimeoutMs);
 
-        const data = await postInfo<L2BookResponse>(this.apiUrl, {
-            type: "l2Book",
-            coin: symbol,
-        }, this.requestTimeoutMs);
+                if (!data || !Array.isArray(data.levels)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid l2Book response from Hyperliquid");
+                }
 
-        if (!data || !Array.isArray(data.levels)) {
-            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid l2Book response from Hyperliquid");
-        }
-
-        this.cache.set(cacheKey, data, ORDERBOOK_TTL_MS);
-        return data;
+                return data;
+            },
+        });
     }
 
     async normalizeReference(reference: string): Promise<string> {
@@ -231,6 +237,59 @@ export class HyperliquidAdapter implements MarketAdapter {
         return this.buildTradingConstraints(matched);
     }
 
+    private async listReferences({ query, sort }: { query?: string; sort: string }): Promise<{
+        results: MarketReference[];
+        midsAvailable: boolean;
+    }> {
+        const universe = await this.getMeta();
+        const lowerQuery = query?.toLowerCase().trim() ?? "";
+        const listed = universe.filter((asset) => !asset.isDelisted);
+
+        const filtered = lowerQuery
+            ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
+            : listed;
+
+        // Fetch mid prices for the page to include current price
+        let midPrices: Record<string, string> = {};
+        let midsAvailable = false;
+        try {
+            midPrices = await this.getAllMids();
+            midsAvailable = true;
+        } catch {
+            // mid prices are optional enrichment; proceed without them
+        }
+
+        const sorted = filtered.map((asset, index) => ({ asset, index }));
+        if (!lowerQuery && sort === "price") {
+            sorted.sort((left, right) => {
+                const leftPrice = parseNumber(midPrices[left.asset.name]);
+                const rightPrice = parseNumber(midPrices[right.asset.name]);
+                if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
+                    return rightPrice - leftPrice;
+                }
+                return left.index - right.index;
+            });
+        } else {
+            sorted.sort((left, right) => left.asset.name.localeCompare(right.asset.name));
+        }
+
+        const toReference = (asset: MetaUniverse): MarketReference => ({
+            reference: asset.name,
+            name: `${asset.name}-PERP`,
+            price: parseNumber(midPrices[asset.name]) ?? undefined,
+            metadata: {
+                szDecimals: asset.szDecimals,
+                maxLeverage: asset.maxLeverage,
+                ...this.buildTradingConstraints(asset),
+            },
+        });
+
+        return {
+            results: sorted.map((entry) => toReference(entry.asset)),
+            midsAvailable,
+        };
+    }
+
     private async buildReferences(
         {
             query,
@@ -244,48 +303,29 @@ export class HyperliquidAdapter implements MarketAdapter {
             offset?: number;
         },
     ): Promise<MarketReference[]> {
-        const universe = await this.getMeta();
-        const lowerQuery = query?.toLowerCase().trim() ?? "";
-        const listed = universe.filter((asset) => !asset.isDelisted);
+        const isBrowse = !query || query.trim().length === 0;
+        const normalizedSort = sort ?? "price";
 
-        const filtered = lowerQuery
-            ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
-            : listed;
-
-        // Fetch mid prices for the page to include current price
-        let midPrices: Record<string, string> = {};
-        try {
-            midPrices = await this.getAllMids();
-        } catch {
-            // mid prices are optional enrichment; proceed without them
-        }
-
-        const sorted = filtered.map((asset, index) => ({ asset, index }));
-        if (!lowerQuery && (sort ?? "price") === "price") {
-            sorted.sort((left, right) => {
-                const leftPrice = parseNumber(midPrices[left.asset.name]);
-                const rightPrice = parseNumber(midPrices[right.asset.name]);
-                if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
-                    return rightPrice - leftPrice;
-                }
-                return left.index - right.index;
+        if (isBrowse) {
+            const cacheKey = `browse-result:${normalizedSort}`;
+            // Browse cache is only valid when mids are available. Without mids we
+            // intentionally fall back to universe order and omit prices, so that
+            // degraded snapshot must not be reused across later browse requests.
+            let cacheable = true;
+            const fullResults = await this.cache.remember(cacheKey, {
+                ttlMs: this.browseCacheTtlMs,
+                load: async () => {
+                    const { results, midsAvailable } = await this.listReferences({ sort: normalizedSort });
+                    cacheable = midsAvailable;
+                    return results;
+                },
+                shouldCache: () => cacheable,
             });
-        } else {
-            sorted.sort((left, right) => left.asset.name.localeCompare(right.asset.name));
+            return fullResults.slice(offset, offset + limit);
         }
 
-        const page = sorted.slice(offset, offset + limit).map((entry) => entry.asset);
-
-        return page.map((asset) => ({
-            reference: asset.name,
-            name: `${asset.name}-PERP`,
-            price: parseNumber(midPrices[asset.name]) ?? undefined,
-            metadata: {
-                szDecimals: asset.szDecimals,
-                maxLeverage: asset.maxLeverage,
-                ...this.buildTradingConstraints(asset),
-            },
-        }));
+        const { results } = await this.listReferences({ query, sort: normalizedSort });
+        return results.slice(offset, offset + limit);
     }
 
     async search(query: string, options?: SearchOptions): Promise<MarketReference[]> {
@@ -305,28 +345,27 @@ export class HyperliquidAdapter implements MarketAdapter {
     }
 
     private async getAllMids(): Promise<Record<string, string>> {
-        const cached = this.cache.get<Record<string, string>>("allMids");
-        if (cached) return cached;
-
-        const data = await postInfo<Record<string, string>>(this.apiUrl, { type: "allMids" }, this.requestTimeoutMs);
-        this.cache.set("allMids", data, QUOTE_TTL_MS);
-        return data;
+        return this.cache.remember("allMids", {
+            ttlMs: QUOTE_TTL_MS,
+            load: () => postInfo<Record<string, string>>(this.apiUrl, { type: "allMids" }, this.requestTimeoutMs),
+        });
     }
 
     private async getPredictedFundings(): Promise<unknown[]> {
-        const cached = this.cache.get<unknown[]>("predictedFundings");
-        if (cached) return cached;
+        return this.cache.remember("predictedFundings", {
+            ttlMs: FUNDING_TTL_MS,
+            load: async () => {
+                const data = await postInfo<unknown>(this.apiUrl, {
+                    type: "predictedFundings",
+                }, this.requestTimeoutMs);
 
-        const data = await postInfo<unknown>(this.apiUrl, {
-            type: "predictedFundings",
-        }, this.requestTimeoutMs);
+                if (!Array.isArray(data)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid predictedFundings response from Hyperliquid");
+                }
 
-        if (!Array.isArray(data)) {
-            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid predictedFundings response from Hyperliquid");
-        }
-
-        this.cache.set("predictedFundings", data, FUNDING_TTL_MS);
-        return data;
+                return data;
+            },
+        });
     }
 
     async getQuote(reference: string): Promise<Quote> {

@@ -348,4 +348,66 @@ describe("HyperliquidAdapter", () => {
       code: "UPSTREAM_ERROR",
     });
   });
+
+  it("serves browse results from cache on repeated calls", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    const first = await adapter.browse?.({ limit: 10, offset: 0 });
+    const second = await adapter.browse?.({ limit: 10, offset: 0 });
+
+    expect(first).toEqual(second);
+    // meta is cached so only 1 call, allMids is cached for 5s so only 1 call — total 2 for first browse
+    // second browse is served entirely from browse cache — 0 additional calls
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies limit and offset from browse cache without re-fetching", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    const page1 = await adapter.browse?.({ limit: 2, offset: 0 });
+    const page2 = await adapter.browse?.({ limit: 2, offset: 2 });
+
+    // Price descending: BTC (95000.5), ETH (3200.1), SOL (180.5), DOGE (0.25)
+    expect(page1?.map((r) => r.reference)).toEqual(["BTC", "ETH"]);
+    expect(page2?.map((r) => r.reference)).toEqual(["SOL", "DOGE"]);
+    // Second browse uses browse cache — only meta + allMids calls from first browse
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache browse results when allMids fails transiently", async () => {
+    let midsCallCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "allMids") {
+        midsCallCount += 1;
+        if (midsCallCount === 1) throw new Error("transient mids failure");
+        return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      }
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+
+    // First call: mids fail, results have no prices and should not be cached
+    const degraded = await adapter.browse?.({ limit: 4, offset: 0 });
+    expect(degraded?.every((r) => r.price === undefined)).toBe(true);
+
+    // Second call: mids succeed, should re-fetch (not serve from cache)
+    const recovered = await adapter.browse?.({ limit: 4, offset: 0 });
+    expect(recovered?.find((r) => r.reference === "BTC")?.price).toBe(95000.5);
+    expect(midsCallCount).toBe(2);
+  });
 });

@@ -3,6 +3,12 @@ type CacheValue<T> = {
   expiresAt: number;
 };
 
+type CacheLoadOptions<T> = {
+  ttlMs: number;
+  load: () => T | Promise<T>;
+  shouldCache?: (value: T) => boolean;
+};
+
 export class TtlCache {
   private readonly store = new Map<string, CacheValue<unknown>>();
   private readonly maxEntries: number;
@@ -45,6 +51,19 @@ export class TtlCache {
       if (!oldestKey) break;
       this.store.delete(oldestKey);
     }
+  }
+
+  async remember<T>(key: string, options: CacheLoadOptions<T>): Promise<T> {
+    const cached = this.get<T>(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const value = await options.load();
+    if (options.shouldCache?.(value) ?? true) {
+      this.set(key, value, options.ttlMs);
+    }
+    return value;
   }
 
   private pruneExpired(): void {

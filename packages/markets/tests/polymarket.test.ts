@@ -765,4 +765,141 @@ describe("PolymarketAdapter", () => {
     expect(resolution.outcomes.get("13")).toBe("Maybe");
   });
 
+  it("serves browse results from cache on repeated calls", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/events")) {
+        return jsonResponse([
+          {
+            title: "Macro",
+            liquidity: "8000",
+            endDate: "2026-03-10T00:00:00.000Z",
+            createdAt: "2026-03-01T00:00:00.000Z",
+            markets: [
+              { slug: "market-a", question: "Market A", volume24hr: "5000", lastTradePrice: "0.50" },
+              { slug: "market-b", question: "Market B", volume24hr: "2000", lastTradePrice: "0.40" },
+            ],
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const first = await adapter.browse?.({ sort: "volume", limit: 10, offset: 0 });
+    const second = await adapter.browse?.({ sort: "volume", limit: 10, offset: 0 });
+
+    expect(first).toEqual(second);
+    // Only one set of upstream fetches for the first call; second is served from cache
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("maintains independent browse cache entries per sort key", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/events")) {
+        return jsonResponse([
+          {
+            title: "Mixed",
+            liquidity: "8000",
+            endDate: "2026-03-10T00:00:00.000Z",
+            createdAt: "2026-03-01T00:00:00.000Z",
+            markets: [
+              { slug: "alpha", question: "Alpha", volume24hr: "1000", liquidity: "5000", lastTradePrice: "0.50" },
+              { slug: "beta", question: "Beta", volume24hr: "3000", liquidity: "2000", lastTradePrice: "0.60" },
+            ],
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const byVolume = await adapter.browse?.({ sort: "volume", limit: 10, offset: 0 });
+    const byLiquidity = await adapter.browse?.({ sort: "liquidity", limit: 10, offset: 0 });
+
+    expect(byVolume?.map((r) => r.reference)).toEqual(["beta", "alpha"]);
+    expect(byLiquidity?.map((r) => r.reference)).toEqual(["alpha", "beta"]);
+    // The underlying event pages are cached from the first browse, but each sort
+    // key maintains its own browse-result cache entry with independent ordering
+  });
+
+  it("applies limit and offset from browse cache without re-fetching", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/events")) {
+        return jsonResponse([
+          {
+            title: "Macro",
+            liquidity: "8000",
+            markets: [
+              { slug: "first", question: "First", volume24hr: "5000", lastTradePrice: "0.50" },
+              { slug: "second", question: "Second", volume24hr: "3000", lastTradePrice: "0.40" },
+              { slug: "third", question: "Third", volume24hr: "1000", lastTradePrice: "0.30" },
+            ],
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const page1 = await adapter.browse?.({ sort: "volume", limit: 2, offset: 0 });
+    const page2 = await adapter.browse?.({ sort: "volume", limit: 2, offset: 1 });
+
+    expect(page1?.map((r) => r.reference)).toEqual(["first", "second"]);
+    expect(page2?.map((r) => r.reference)).toEqual(["second", "third"]);
+    // Second call served from cache
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills browse cache with the full result set before serving deeper offsets", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.origin === "https://gamma.example" && url.pathname === "/events") {
+        const offset = Number(url.searchParams.get("offset") ?? "0");
+        if (offset === 0) {
+          return jsonResponse(
+            Array.from({ length: 50 }, (_, index) => ({
+              title: `Event ${index + 1}`,
+              liquidity: "1000",
+              markets: [
+                {
+                  slug: `market-${index + 1}`,
+                  question: `Market ${index + 1}`,
+                  volume24hr: String(1_000 - index),
+                  lastTradePrice: "0.50",
+                },
+              ],
+            })),
+          );
+        }
+        if (offset === 50) {
+          return jsonResponse([
+            {
+              title: "Event 51",
+              liquidity: "1000",
+              markets: [{ slug: "market-51", question: "Market 51", volume24hr: "50", lastTradePrice: "0.50" }],
+            },
+            {
+              title: "Event 52",
+              liquidity: "1000",
+              markets: [{ slug: "market-52", question: "Market 52", volume24hr: "49", lastTradePrice: "0.50" }],
+            },
+          ]);
+        }
+      }
+      throw new Error(`Unexpected fetch url: ${String(input)}`);
+    });
+
+    const adapter = makeAdapter();
+
+    const firstPage = await adapter.browse?.({ sort: "volume", limit: 20, offset: 0 });
+    const deeperPage = await adapter.browse?.({ sort: "volume", limit: 5, offset: 50 });
+
+    expect(firstPage).toHaveLength(20);
+    expect(deeperPage?.map((row) => row.reference)).toEqual(["market-51", "market-52"]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
 });

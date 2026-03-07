@@ -26,6 +26,7 @@ const QUOTE_TTL_MS = 10_000;
 const ORDERBOOK_TTL_MS = 10_000;
 const SEARCH_TTL_MS = 300_000;
 const RESOLVE_TTL_MS = 60_000;
+const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
 const RESOLVE_NAMES_CONCURRENCY = 8;
 const SEARCH_PAGE_SIZE = 20;
 const SEARCH_MAX_PAGES = 10;
@@ -184,6 +185,7 @@ const browseSortRank = (sort: string, preview: MarketReference): number => {
 export type PolymarketAdapterOptions = {
   gammaBaseUrl?: string;
   clobBaseUrl?: string;
+  browseCacheTtlMs?: number;
 };
 
 export class PolymarketAdapter implements MarketAdapter {
@@ -198,10 +200,12 @@ export class PolymarketAdapter implements MarketAdapter {
   private readonly cache = new TtlCache();
   private readonly gammaBaseUrl: string;
   private readonly clobBaseUrl: string;
+  private readonly browseCacheTtlMs: number;
 
   constructor(options: PolymarketAdapterOptions = {}) {
     this.gammaBaseUrl = options.gammaBaseUrl ?? DEFAULT_GAMMA_BASE_URL;
     this.clobBaseUrl = options.clobBaseUrl ?? DEFAULT_CLOB_BASE_URL;
+    this.browseCacheTtlMs = options.browseCacheTtlMs ?? DEFAULT_BROWSE_CACHE_TTL_MS;
   }
 
   private cacheMarketSymbolMappings(market: UnknownObject): void {
@@ -279,87 +283,81 @@ export class PolymarketAdapter implements MarketAdapter {
       metadata:
         conditionId || outcomes.length > 0 || outcomePrices.length > 0 || extras.createdAt || extras.eventTitle
           ? {
-              conditionId,
-              outcomes,
-              outcomePrices,
-              defaultOutcome,
-              eventTitle: extras.eventTitle ?? null,
-              createdAt: extras.createdAt ?? null,
-            }
+            conditionId,
+            outcomes,
+            outcomePrices,
+            defaultOutcome,
+            eventTitle: extras.eventTitle ?? null,
+            createdAt: extras.createdAt ?? null,
+          }
           : undefined,
     };
   }
 
   private async fetchMarketBySlug(slug: string): Promise<UnknownObject | null> {
-    const cacheKey = `market-by-slug:${slug}`;
-    const cached = this.cache.get<UnknownObject | null>(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
+    return this.cache.remember(`market-by-slug:${slug}`, {
+      ttlMs: SEARCH_TTL_MS,
+      load: async () => {
+        const url = new URL("/markets", this.gammaBaseUrl);
+        url.searchParams.set("slug", slug);
+        url.searchParams.set("limit", "1");
 
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("slug", slug);
-    url.searchParams.set("limit", "1");
+        const raw = await fetchJson<unknown>(url.toString());
+        const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+          ? (raw[0] as UnknownObject)
+          : null;
 
-    const raw = await fetchJson<unknown>(url.toString());
-    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
-      ? (raw[0] as UnknownObject)
-      : null;
+        if (market) {
+          this.cacheMarketSymbolMappings(market);
+        }
 
-    if (market) {
-      this.cacheMarketSymbolMappings(market);
-    }
-
-    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
-    return market;
+        return market;
+      },
+    });
   }
 
   private async fetchMarketByConditionId(conditionId: string): Promise<UnknownObject | null> {
-    const cacheKey = `market-by-condition:${conditionId}`;
-    const cached = this.cache.get<UnknownObject | null>(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
+    return this.cache.remember(`market-by-condition:${conditionId}`, {
+      ttlMs: SEARCH_TTL_MS,
+      load: async () => {
+        const url = new URL("/markets", this.gammaBaseUrl);
+        url.searchParams.set("conditionId", conditionId);
+        url.searchParams.set("limit", "1");
 
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("conditionId", conditionId);
-    url.searchParams.set("limit", "1");
+        const raw = await fetchJson<unknown>(url.toString());
+        const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+          ? (raw[0] as UnknownObject)
+          : null;
 
-    const raw = await fetchJson<unknown>(url.toString());
-    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
-      ? (raw[0] as UnknownObject)
-      : null;
+        if (market) {
+          this.cacheMarketSymbolMappings(market);
+        }
 
-    if (market) {
-      this.cacheMarketSymbolMappings(market);
-    }
-
-    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
-    return market;
+        return market;
+      },
+    });
   }
 
   private async fetchMarketByTokenId(tokenId: string): Promise<UnknownObject | null> {
-    const cacheKey = `market-by-token:${tokenId}`;
-    const cached = this.cache.get<UnknownObject | null>(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
+    return this.cache.remember(`market-by-token:${tokenId}`, {
+      ttlMs: SEARCH_TTL_MS,
+      load: async () => {
+        const url = new URL("/markets", this.gammaBaseUrl);
+        url.searchParams.set("clob_token_ids", tokenId);
+        url.searchParams.set("limit", "1");
 
-    const url = new URL("/markets", this.gammaBaseUrl);
-    url.searchParams.set("clob_token_ids", tokenId);
-    url.searchParams.set("limit", "1");
+        const raw = await fetchJson<unknown>(url.toString());
+        const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
+          ? (raw[0] as UnknownObject)
+          : null;
 
-    const raw = await fetchJson<unknown>(url.toString());
-    const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
-      ? (raw[0] as UnknownObject)
-      : null;
+        if (market) {
+          this.cacheMarketSymbolMappings(market);
+        }
 
-    if (market) {
-      this.cacheMarketSymbolMappings(market);
-    }
-
-    this.cache.set(cacheKey, market, SEARCH_TTL_MS);
-    return market;
+        return market;
+      },
+    });
   }
 
   private async fetchSearchPreviewPage(query: string, page: number): Promise<BrowsePage> {
@@ -593,30 +591,38 @@ export class PolymarketAdapter implements MarketAdapter {
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
     const sort = normalizeBrowseSort(options?.sort);
-    const desiredCount = limit + offset;
-    const collected: MarketReference[] = [];
-    const seen = new Set<string>();
-    let hasMore = true;
 
-    for (let page = 1; page <= BROWSE_MAX_EVENT_PAGES && hasMore && collected.length < Math.max(desiredCount * 2, 100); page += 1) {
-      const nextPage = await this.fetchBrowseEventPage(page);
-      hasMore = nextPage.hasMore;
-      for (const preview of nextPage.previews) {
-        if (seen.has(preview.reference)) {
-          continue;
+    const cacheKey = `browse-result:${sort}`;
+    // This cache stores the full sorted browse universe for a sort key, not the
+    // requested page slice. Deeper offsets rely on reusing that complete snapshot.
+    const sorted = await this.cache.remember(cacheKey, {
+      ttlMs: this.browseCacheTtlMs,
+      load: async () => {
+        const collected: MarketReference[] = [];
+        const seen = new Set<string>();
+        let hasMore = true;
+
+        for (let page = 1; page <= BROWSE_MAX_EVENT_PAGES && hasMore; page += 1) {
+          const nextPage = await this.fetchBrowseEventPage(page);
+          hasMore = nextPage.hasMore;
+          for (const preview of nextPage.previews) {
+            if (seen.has(preview.reference)) {
+              continue;
+            }
+            seen.add(preview.reference);
+            collected.push(preview);
+          }
         }
-        seen.add(preview.reference);
-        collected.push(preview);
-      }
-    }
 
-    const sorted = [...collected].sort((left, right) => {
-      const leftRank = browseSortRank(sort, left);
-      const rightRank = browseSortRank(sort, right);
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
-      }
-      return left.name.localeCompare(right.name);
+        return [...collected].sort((left, right) => {
+          const leftRank = browseSortRank(sort, left);
+          const rightRank = browseSortRank(sort, right);
+          if (leftRank !== rightRank) {
+            return leftRank - rightRank;
+          }
+          return left.name.localeCompare(right.name);
+        });
+      },
     });
 
     return sorted.slice(offset, offset + limit);

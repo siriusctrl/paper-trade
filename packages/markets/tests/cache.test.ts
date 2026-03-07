@@ -24,6 +24,35 @@ describe("TtlCache", () => {
     expect(cache.get("missing")).toBeUndefined();
   });
 
+  it("loads through remember and reuses cached values including null", async () => {
+    const cache = new TtlCache();
+    const loader = vi.fn(async () => null);
+
+    await expect(cache.remember("missing", { ttlMs: 1_000, load: loader })).resolves.toBeNull();
+    await expect(cache.remember("missing", { ttlMs: 1_000, load: loader })).resolves.toBeNull();
+
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips remember writes when shouldCache returns false", async () => {
+    const cache = new TtlCache();
+    const loader = vi.fn(async () => ({ degraded: true }));
+
+    await cache.remember("conditional", {
+      ttlMs: 1_000,
+      load: loader,
+      shouldCache: (value) => !value.degraded,
+    });
+    await cache.remember("conditional", {
+      ttlMs: 1_000,
+      load: loader,
+      shouldCache: (value) => !value.degraded,
+    });
+
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(cache.get("conditional")).toBeUndefined();
+  });
+
   it("evicts oldest entries when max size is reached", () => {
     const cache = new TtlCache(2);
     cache.set("a", 1, 10_000);

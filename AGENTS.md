@@ -65,6 +65,12 @@ Build a reliable, market-agnostic paper trading platform that:
 - Keep integration instructions machine-readable and implementation-ready.
 - When behavior changes, update docs in the same PR/commit.
 
+## Collaboration Preferences
+
+- Prefer direct engineering judgment over repeated "do you want me to..." prompts.
+- Clearly state what is necessary, optional, or unnecessary, and explain the tradeoff briefly.
+- Ask follow-up questions only when blocked, when a decision materially changes scope/risk, or when user intent cannot be inferred from context.
+
 ## Delegating Work to Codex
 
 You can delegate implementation tasks to OpenAI Codex via bash. This is useful for large, well-scoped changes where you can describe the task clearly upfront.

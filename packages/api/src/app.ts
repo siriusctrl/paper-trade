@@ -22,8 +22,9 @@ export type CreateAppOptions = {
 
 export const createDefaultRegistry = (): MarketRegistry => {
   const registry = new MarketRegistry();
-  registry.register(new PolymarketAdapter());
-  registry.register(new HyperliquidAdapter());
+  const browseCacheTtlMs = Number(process.env.BROWSE_CACHE_TTL_MS) || undefined;
+  registry.register(new PolymarketAdapter({ browseCacheTtlMs }));
+  registry.register(new HyperliquidAdapter({ browseCacheTtlMs }));
   return registry;
 };
 
