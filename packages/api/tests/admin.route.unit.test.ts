@@ -1,0 +1,180 @@
+import { Hono } from "hono";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const loadRoutes = async (options?: {
+  user?: { id: string; name: string } | null;
+  account?: { id: string; userId: string; balance: number } | null;
+  snapshots?: Array<{
+    userId: string;
+    snapshotAt: string;
+    equity: number;
+    balance: number;
+    marketValue: number;
+    unrealizedPnl: number;
+  }>;
+  allUsers?: Array<{ id: string; name: string }>;
+  parseJsonResult?: { success: true; data: Record<string, unknown> } | { success: false; response: Response };
+  idempotencyResult?: { kind: "none" } | { kind: "store"; candidate: Record<string, unknown> } | { kind: "invalid" | "replay"; response: Response };
+  placement?:
+    | { kind: "filled" | "pending"; order: Record<string, unknown> }
+    | { kind: "error"; status: 400 | 404; code: string; message: string };
+}) => {
+  vi.resetModules();
+
+  const tables = {
+    users: { __name: "users" },
+    equitySnapshots: { __name: "equitySnapshots" },
+    accounts: { __name: "accounts" },
+    journal: { __name: "journal" },
+  };
+
+  const getUserAccount = vi.fn().mockResolvedValue(options?.account ?? null);
+  const parseJson = vi.fn().mockResolvedValue(
+    options?.parseJsonResult ?? {
+      success: true,
+      data: { market: "spot", reference: "YES", side: "buy", type: "market", quantity: 1, reasoning: "admin" },
+    },
+  );
+  const parseQuery = vi.fn(() => ({ success: true, data: { limit: 20, offset: 0 } }));
+  const checkIdempotency = vi.fn().mockResolvedValue(options?.idempotencyResult ?? { kind: "store", candidate: { id: "idem_1" } });
+  const storeIdempotencyResponse = vi.fn().mockResolvedValue(undefined);
+  const placeOrderForAccount = vi.fn().mockResolvedValue(
+    options?.placement ?? { kind: "error", status: 400, code: "INVALID_INPUT", message: "bad order" },
+  );
+
+  vi.doMock("../src/db/client.js", () => ({
+    db: {
+      select: () => ({
+        from: (table: { __name: string }) => ({
+          where: () => ({
+            get: async () => {
+              if (table === tables.users) return options?.user ?? null;
+              return null;
+            },
+            orderBy: () => ({ all: async () => (table === tables.equitySnapshots ? (options?.snapshots ?? []) : []) }),
+            all: async () => [],
+          }),
+          all: async () => (table === tables.users ? (options?.allUsers ?? []) : []),
+        }),
+      }),
+      insert: () => ({ values: () => ({ run: async () => ({ rowsAffected: 1 }) }) }),
+      update: () => ({ set: () => ({ where: () => ({ run: async () => ({ rowsAffected: 1 }) }) }) }),
+    },
+  }));
+  vi.doMock("../src/db/schema.js", () => tables);
+  vi.doMock("../src/platform/helpers.js", () => ({
+    getUserAccount,
+    parseJson,
+    parseQuery,
+    withErrorHandling: (fn: (c: unknown) => Promise<Response>) => fn,
+  }));
+  vi.doMock("../src/platform/errors.js", () => ({
+    jsonError: (_c: unknown, status: number, code: string, message: string) =>
+      new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } }),
+  }));
+  vi.doMock("../src/platform/idempotency.js", () => ({ checkIdempotency, storeIdempotencyResponse }));
+  vi.doMock("../src/services/admin-overview.js", () => ({ buildAdminOverviewModel: vi.fn().mockResolvedValue({}) }));
+  vi.doMock("../src/services/order-placement.js", () => ({ createOrderPlacementService: vi.fn(() => ({ placeOrderForAccount })) }));
+  vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel: vi.fn().mockResolvedValue({}) }));
+  vi.doMock("../src/timeline.js", () => ({ buildTimelineEvents: vi.fn().mockResolvedValue([]) }));
+  vi.doMock("../src/utils.js", () => ({ makeId: (prefix: string) => `${prefix}_1`, nowIso: () => "2026-03-07T00:00:00.000Z" }));
+
+  const { createAdminRoutes } = await import("../src/routes/admin.js");
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("userId", "admin_1" as never);
+    await next();
+  });
+  app.route("/admin", createAdminRoutes({} as never));
+
+  return { app, getUserAccount, parseJson, checkIdempotency, storeIdempotencyResponse, placeOrderForAccount };
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("admin routes", () => {
+  it("groups equity history by user and falls back to user ids for missing names", async () => {
+    const routes = await loadRoutes({
+      snapshots: [
+        {
+          userId: "usr_1",
+          snapshotAt: "2026-03-01T00:00:00.000Z",
+          equity: 110,
+          balance: 100,
+          marketValue: 10,
+          unrealizedPnl: 5,
+        },
+        {
+          userId: "usr_2",
+          snapshotAt: "2026-03-02T00:00:00.000Z",
+          equity: 90,
+          balance: 95,
+          marketValue: -5,
+          unrealizedPnl: -2,
+        },
+      ],
+      allUsers: [{ id: "usr_1", name: "Alice" }],
+    });
+
+    const res = await routes.app.request("/admin/equity-history?range=bad");
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      range: "bad",
+      series: [
+        {
+          userId: "usr_1",
+          userName: "Alice",
+          snapshots: [
+            {
+              snapshotAt: "2026-03-01T00:00:00.000Z",
+              equity: 110,
+              balance: 100,
+              marketValue: 10,
+              unrealizedPnl: 5,
+            },
+          ],
+        },
+        {
+          userId: "usr_2",
+          userName: "usr_2",
+          snapshots: [
+            {
+              snapshotAt: "2026-03-02T00:00:00.000Z",
+              equity: 90,
+              balance: 95,
+              marketValue: -5,
+              unrealizedPnl: -2,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("returns stable placement errors without storing idempotency responses", async () => {
+    const routes = await loadRoutes({
+      user: { id: "usr_1", name: "Alice" },
+      account: { id: "acct_1", userId: "usr_1", balance: 100 },
+      placement: { kind: "error", status: 400, code: "INVALID_INPUT", message: "quantity must align with step 1" },
+      idempotencyResult: { kind: "store", candidate: { id: "idem_1" } },
+    });
+
+    const res = await routes.app.request("/admin/users/usr_1/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ market: "spot", reference: "YES", side: "buy", type: "market", quantity: 1, reasoning: "admin" }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      error: { code: "INVALID_INPUT", message: "quantity must align with step 1" },
+    });
+    expect(routes.checkIdempotency).toHaveBeenCalled();
+    expect(routes.placeOrderForAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ account: expect.objectContaining({ id: "acct_1" }) }),
+    );
+    expect(routes.storeIdempotencyResponse).not.toHaveBeenCalled();
+  });
+});

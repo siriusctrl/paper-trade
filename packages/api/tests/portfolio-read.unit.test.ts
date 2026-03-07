@@ -1,0 +1,285 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+type AccountRow = { id: string; userId: string; balance: number };
+type PositionRow = { id: string; accountId: string; market: string; symbol: string; quantity: number; avgCost: number };
+type OrderRow = { id: string; accountId: string; status: string; createdAt: string };
+type PerpStateRow = {
+  positionId: string;
+  accountId: string;
+  market: string;
+  symbol: string;
+  leverage: number;
+  margin: number;
+  maintenanceMarginRatio: number;
+  liquidationPrice: number | null;
+};
+
+type LoadOptions = {
+  positionRows?: PositionRow[];
+  openOrders?: OrderRow[];
+  recentOrders?: OrderRow[];
+  perpStateRows?: PerpStateRow[];
+  fundingRows?: Array<{ accountId: string; market: string; symbol: string; total: number }>;
+};
+
+const loadModule = async (options: LoadOptions = {}) => {
+  vi.resetModules();
+
+  const tables = {
+    positions: { __name: "positions" },
+    orders: { __name: "orders" },
+    perpPositionState: { __name: "perpPositionState" },
+    fundingPayments: { __name: "fundingPayments" },
+  };
+
+  const makeQuery = (table: { __name: string }) => ({
+    where: () => ({
+      orderBy: () => ({
+        all: async () => {
+          if (table === tables.orders) return options.openOrders ?? [];
+          return [];
+        },
+        limit: () => ({ all: async () => options.recentOrders ?? [] }),
+      }),
+      groupBy: () => ({ all: async () => options.fundingRows ?? [] }),
+      all: async () => {
+        if (table === tables.positions) return options.positionRows ?? [];
+        if (table === tables.perpPositionState) return options.perpStateRows ?? [];
+        if (table === tables.fundingPayments) return options.fundingRows ?? [];
+        return [];
+      },
+      limit: () => ({ all: async () => options.recentOrders ?? [] }),
+    }),
+    orderBy: () => ({ limit: () => ({ all: async () => options.recentOrders ?? [] }) }),
+    all: async () => {
+      if (table === tables.positions) return options.positionRows ?? [];
+      if (table === tables.perpPositionState) return options.perpStateRows ?? [];
+      if (table === tables.fundingPayments) return options.fundingRows ?? [];
+      return [];
+    },
+  });
+
+  vi.doMock("../src/db/client.js", () => ({
+    db: {
+      select: () => ({
+        from: (table: { __name: string }) => makeQuery(table),
+      }),
+    },
+  }));
+  vi.doMock("../src/db/schema.js", () => ({
+    accounts: { id: "accounts.id" },
+    positions: tables.positions,
+    orders: tables.orders,
+    perpPositionState: tables.perpPositionState,
+    fundingPayments: tables.fundingPayments,
+  }));
+
+  const mod = await import("../src/services/portfolio-read.js");
+  return mod;
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("portfolio-read", () => {
+  it("computes spot and perp position metrics, funding totals, and recent orders", async () => {
+    const { buildAccountPortfolioModel } = await loadModule({
+      positionRows: [
+        { id: "pos_spot", accountId: "acct_1", market: "polymarket", symbol: "YES", quantity: 3, avgCost: 10 },
+        { id: "pos_perp", accountId: "acct_1", market: "hyperliquid", symbol: "BTC", quantity: 2, avgCost: 100 },
+      ],
+      openOrders: [{ id: "ord_open", accountId: "acct_1", status: "pending", createdAt: "2026-03-07T00:00:00.000Z" }],
+      recentOrders: [{ id: "ord_recent", accountId: "acct_1", status: "filled", createdAt: "2026-03-07T01:00:00.000Z" }],
+      perpStateRows: [
+        {
+          positionId: "pos_perp",
+          accountId: "acct_1",
+          market: "hyperliquid",
+          symbol: "BTC",
+          leverage: 5,
+          margin: 20,
+          maintenanceMarginRatio: 0.1,
+          liquidationPrice: 80,
+        },
+      ],
+      fundingRows: [
+        { accountId: "acct_1", market: "hyperliquid", symbol: "BTC", total: -1.2345678 },
+        { accountId: "acct_1", market: "polymarket", symbol: "YES", total: 2.5 },
+      ],
+    });
+
+    const registry = {
+      get: vi.fn((market: string) => {
+        if (market === "polymarket") {
+          return {
+            capabilities: ["quote"],
+            getQuote: vi.fn().mockResolvedValue({ price: 12, timestamp: "2026-03-07T02:00:00.000Z" }),
+          };
+        }
+        if (market === "hyperliquid") {
+          return {
+            capabilities: ["funding", "quote"],
+            getQuote: vi.fn().mockResolvedValue({ price: 90, timestamp: "2026-03-07T02:00:00.000Z" }),
+          };
+        }
+        return undefined;
+      }),
+    };
+
+    const result = await buildAccountPortfolioModel({
+      account: { id: "acct_1", userId: "usr_1", balance: 50 },
+      registry: registry as never,
+      includeRecentOrders: true,
+    });
+
+    expect(result.openOrders).toEqual([{ id: "ord_open", accountId: "acct_1", status: "pending", createdAt: "2026-03-07T00:00:00.000Z" }]);
+    expect(result.recentOrders).toEqual([{ id: "ord_recent", accountId: "acct_1", status: "filled", createdAt: "2026-03-07T01:00:00.000Z" }]);
+    expect(result.totalValue).toBe(86);
+    expect(result.totalPnl).toBe(-14);
+    expect(result.totalFunding).toBe(1.265432);
+    expect(result.positions).toEqual([
+      expect.objectContaining({
+        market: "polymarket",
+        symbol: "YES",
+        currentPrice: 12,
+        unrealizedPnl: 6,
+        marketValue: 36,
+        accumulatedFunding: 2.5,
+        notional: null,
+        positionEquity: null,
+        leverage: null,
+        margin: null,
+        maintenanceMargin: null,
+        liquidationPrice: null,
+      }),
+      expect.objectContaining({
+        market: "hyperliquid",
+        symbol: "BTC",
+        currentPrice: 90,
+        unrealizedPnl: -20,
+        marketValue: 0,
+        accumulatedFunding: -1.234568,
+        notional: 180,
+        positionEquity: 0,
+        leverage: 5,
+        margin: 20,
+        maintenanceMargin: 18,
+        liquidationPrice: 80,
+      }),
+    ]);
+  });
+
+  it("treats missing adapters and quote failures as unpriced only when configured", async () => {
+    const options: LoadOptions = {
+      positionRows: [
+        { id: "pos_missing", accountId: "acct_1", market: "missing", symbol: "ABC", quantity: 1, avgCost: 10 },
+        { id: "pos_quote", accountId: "acct_1", market: "quoted", symbol: "XYZ", quantity: 2, avgCost: 5 },
+      ],
+    };
+
+    const strict = await loadModule(options);
+    const tolerant = await loadModule(options);
+    const registry = {
+      get: vi.fn((market: string) => {
+        if (market === "quoted") {
+          return {
+            capabilities: ["quote"],
+            getQuote: vi.fn().mockRejectedValue(new Error("quote unavailable")),
+          };
+        }
+        return undefined;
+      }),
+    };
+
+    await expect(
+      strict.buildAccountPortfolioModel({
+        account: { id: "acct_1", userId: "usr_1", balance: 20 },
+        registry: registry as never,
+      }),
+    ).rejects.toThrow("Quote lookup failed for quoted:XYZ");
+
+    await expect(
+      tolerant.buildAccountPortfolioModel({
+        account: { id: "acct_1", userId: "usr_1", balance: 20 },
+        registry: registry as never,
+        tolerateQuoteFailures: true,
+        includeMissingAdapterAsUnpriced: true,
+      }),
+    ).resolves.toMatchObject({
+      totalValue: 20,
+      totalPnl: 0,
+      positions: [
+        expect.objectContaining({ market: "missing", symbol: "ABC", currentPrice: null, marketValue: null, unrealizedPnl: null }),
+        expect.objectContaining({ market: "quoted", symbol: "XYZ", currentPrice: null, marketValue: null, unrealizedPnl: null }),
+      ],
+    });
+  });
+
+  it("groups multi-account portfolios and returns an empty map when no accounts exist", async () => {
+    const { buildAccountPortfolioModelsByAccount } = await loadModule({
+      positionRows: [
+        { id: "pos_1", accountId: "acct_1", market: "spot", symbol: "YES", quantity: 1, avgCost: 10 },
+        { id: "pos_2", accountId: "acct_2", market: "perp", symbol: "BTC", quantity: -2, avgCost: 100 },
+      ],
+      perpStateRows: [
+        {
+          positionId: "pos_2",
+          accountId: "acct_2",
+          market: "perp",
+          symbol: "BTC",
+          leverage: 4,
+          margin: 30,
+          maintenanceMarginRatio: 0.05,
+          liquidationPrice: 130,
+        },
+      ],
+      fundingRows: [{ accountId: "acct_2", market: "perp", symbol: "BTC", total: 3.25 }],
+    });
+
+    await expect(
+      buildAccountPortfolioModelsByAccount({ accounts: [], registry: { get: vi.fn() } as never }),
+    ).resolves.toEqual(new Map());
+
+    const registry = {
+      get: vi.fn((market: string) => {
+        if (market === "spot") return { capabilities: ["quote"], getQuote: vi.fn().mockResolvedValue({ price: 14 }) };
+        if (market === "perp") return { capabilities: ["funding", "quote"], getQuote: vi.fn().mockResolvedValue({ price: 80 }) };
+        return undefined;
+      }),
+    };
+
+    const result = await buildAccountPortfolioModelsByAccount({
+      accounts: [
+        { id: "acct_1", userId: "usr_1", balance: 5 },
+        { id: "acct_2", userId: "usr_2", balance: 40 },
+      ],
+      registry: registry as never,
+    });
+
+    expect(result.get("acct_1")).toMatchObject({
+      accountId: "acct_1",
+      totalValue: 19,
+      totalPnl: 4,
+      totalFunding: 0,
+      positions: [expect.objectContaining({ symbol: "YES", marketValue: 14, unrealizedPnl: 4 })],
+    });
+    expect(result.get("acct_2")).toMatchObject({
+      accountId: "acct_2",
+      totalValue: 110,
+      totalPnl: 40,
+      totalFunding: 3.25,
+      positions: [
+        expect.objectContaining({
+          symbol: "BTC",
+          marketValue: 70,
+          unrealizedPnl: 40,
+          notional: 160,
+          positionEquity: 70,
+          maintenanceMargin: 8,
+          accumulatedFunding: 3.25,
+        }),
+      ],
+    });
+  });
+});
