@@ -1,80 +1,70 @@
 ---
 name: unimarket
-description: Simulated multi-market paper trading workflow for agents. Use when an agent needs to register, discover markets dynamically, fetch quotes/orderbooks/funding rates (single or batch), place/cancel orders, review account state (orders/positions/portfolio/timeline/journal), and consume SSE events with reconnect cursors. Apply strict write semantics (`reasoning` required; idempotency keys for safe retries). Manual reconcile is optional and mainly for immediate consistency checks.
+description: Multi-market paper trading workflow for agents using the Unimarket REST API. Use when Codex needs to register a user, discover markets dynamically, inspect quotes, orderbooks, price history, funding, or resolution data, place or cancel paper orders, review account state, write journal entries, or consume SSE events against Unimarket.
 ---
 
 # Unimarket
-
-## Use This Skill
-
-Execute agent trading flows against the Unimarket REST API.
 
 Base URL:
 - `http://<host>:3100/api`
 
 Authentication:
-- Send `Authorization: Bearer <api_key>` for all endpoints except register and health.
+- Send `Authorization: Bearer <api_key>` on every endpoint except register and health.
 
 ## Fast Path
 
-1. Register:
-   - `POST /api/auth/register` with `{ "userName": "..." }`.
-2. Discover markets:
-   - `GET /api/markets`.
-3. Search assets:
-   - `GET /api/markets/{market}/search`.
-4. Fetch trading constraints for the symbol you plan to trade:
-   - `GET /api/markets/{market}/trading-constraints?symbol=...`
-5. Fetch market data:
-   - Single: `quote`, `orderbook`, `funding`, `resolve`
-   - Batch: `quotes`, `orderbooks`, `fundings`
-6. Trade:
-   - `POST /api/orders` (market or limit).
-   - `DELETE /api/orders/:id` for pending cancel.
-7. Audit:
-   - `GET /api/orders`, `GET /api/positions`, `GET /api/account/portfolio`, `GET /api/account/timeline`, `GET /api/journal`.
-8. Optional manual reconcile:
-   - `POST /api/orders/reconcile` only when immediate state convergence is required.
+1. Register once with `POST /api/auth/register`.
+2. Discover market IDs, capabilities, browse sorts, and price-history defaults with `GET /api/markets`.
+3. Browse or search candidates:
+   - `GET /api/markets/{market}/browse`
+   - `GET /api/markets/{market}/search?q=...`
+4. Persist the returned `reference`; treat it as the only external market identifier.
+5. Read execution and sizing context before trading:
+   - `GET /api/markets/{market}/trading-constraints?reference=...`
+   - `GET /api/markets/{market}/quote?reference=...`
+   - optional `orderbook`, `price-history`, `funding`, `resolve`
+6. Place or cancel orders with non-empty `reasoning`.
+7. Audit with `orders`, `positions`, `portfolio`, `timeline`, `journal`, and `events`.
 
 ## Operating Rules
 
-- Discover market IDs via `GET /api/markets`; do not hardcode market assumptions.
-- Include non-empty `reasoning` in state-changing operations.
-- `quantity` is decimal-capable in schema validation, but final order acceptance is market/symbol specific.
-- Before `POST /api/orders`, read `/api/markets/{market}/trading-constraints?symbol=...` and satisfy:
-  - `minQuantity`
-  - `quantityStep`
-  - `supportsFractional` (if false, send integer quantity)
-  - `maxLeverage` (for perp markets)
-- Hyperliquid: quantity precision follows `szDecimals`; leverage must be `<= maxLeverage` for that symbol.
-- Background reconciler already runs server-side. Do not call manual reconcile every cycle.
-- Use `POST /api/orders/reconcile` only when you need deterministic immediate updates for pending limit orders.
-- Send `Idempotency-Key` for retryable writes:
+- Discover `market`, `browseOptions`, and `priceHistory` support from `GET /api/markets`; do not hardcode markets, references, or intervals.
+- Prefer `browse` for blank exploration; use `search` only with a concrete non-empty query.
+- Use `reference` everywhere in public market-data and order endpoints.
+- Read `priceHistory.supportedIntervals`, `defaultInterval`, `defaultLookbacks`, and `supportsResampling` before requesting candles.
+- Prefer `interval + lookback` for routine trend checks.
+- Use `asOf` only when you need reproducible historical analysis.
+- Use `startTime + endTime` only for custom ranges.
+- Treat quote fields as:
+  - `price`: execution-facing reference price
+  - `mid`: midpoint when both `bid` and `ask` exist, otherwise `price`
+  - `spreadAbs` and `spreadBps`: only meaningful when both sides exist
+- Satisfy `minQuantity`, `quantityStep`, `supportsFractional`, and `maxLeverage` before `POST /api/orders`.
+- Include `Idempotency-Key` on retryable writes:
   - `POST /api/orders`
   - `DELETE /api/orders/:id`
   - `POST /api/journal`
-- Track SSE event IDs and reconnect with cursor:
-  - `GET /api/events?since=<event_id>`
-  - or `Last-Event-ID: <event_id>`
-- If `system.ready.data.version` changes, reload this skill and references.
+- Avoid `POST /api/orders/reconcile` in routine cycles; the background reconciler already runs.
+- Reload this skill and its references if `system.ready.data.version` changes.
 
 ## Helper Script
 
-Use `skills/unimarket/scripts/unimarket-agent.sh` for repetitive operations.
+Use `skills/unimarket/scripts/unimarket-agent.sh` for repetitive calls.
 
 Common commands:
-- `register`, `markets`, `search`
-- `quote`, `quotes`, `orderbook`, `orderbooks`, `resolve`
-- `buy`, `sell`, `cancel`, `orders`, `reconcile`
-- `account`, `portfolio`, `positions`, `timeline`, `journal-add`, `journal-list`
-- `events [since_event_id]`
+- `register`, `markets`, `browse`, `search`
+- `constraints`, `quote`, `quotes`, `orderbook`, `orderbooks`, `funding`, `fundings`, `resolve`
+- `history`, `history-range`
+- `buy`, `sell`, `cancel`, `orders`
+- `account`, `portfolio`, `positions`, `timeline`, `journal-add`, `journal-list`, `events`
 
-`trading-constraints` is not wrapped by the helper script; call it directly:
-- `GET /api/markets/{market}/trading-constraints?symbol=...`
+Use `history` for the common agent flow:
+- `history <market> <reference> [interval] [lookback] [as_of]`
+
+Use `history-range` only when an exact time window is required:
+- `history-range <market> <reference> <interval> <start_time> <end_time>`
 
 ## Read References On Demand
 
-- API contract and request/response details:
-  - [references/api.md](references/api.md)
-- Market-specific behavior and adapter notes:
-  - [references/markets.md](references/markets.md)
+- Read `references/api.md` when you need exact request/response shapes, batch-query syntax, or price-history query examples.
+- Read `references/markets.md` when you need market-specific discovery behavior, execution semantics, or history nuances.

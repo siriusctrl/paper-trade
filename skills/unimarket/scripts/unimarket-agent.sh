@@ -14,6 +14,10 @@ need() {
 need curl
 need jq
 
+encode() {
+  jq -rn --arg value "$1" '$value|@uri'
+}
+
 auth_arg() {
   if [[ -z "${API_KEY:-}" ]]; then
     echo "API_KEY is required for this command" >&2
@@ -64,7 +68,7 @@ json_delete() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 unimarket-agent.sh - endpoint helper for agents
 
 Environment:
@@ -74,14 +78,20 @@ Environment:
 Commands:
   register [user_name]
   markets
+  browse <market> [sort] [limit] [offset]
   search <market> [query] [limit] [offset]
-  quote <market> <symbol>
-  quotes <market> <symbols_csv>
-  orderbook <market> <symbol>
-  orderbooks <market> <symbols_csv>
-  resolve <market> <symbol>
-  buy <market> <symbol> <quantity> <reasoning> [limit_price] [idempotency_key]
-  sell <market> <symbol> <quantity> <reasoning> [limit_price] [idempotency_key]
+  constraints <market> <reference>
+  quote <market> <reference>
+  quotes <market> <references_csv>
+  orderbook <market> <reference>
+  orderbooks <market> <references_csv>
+  funding <market> <reference>
+  fundings <market> <references_csv>
+  resolve <market> <reference>
+  history <market> <reference> [interval] [lookback] [as_of]
+  history-range <market> <reference> <interval> <start_time> <end_time>
+  buy <market> <reference> <quantity> <reasoning> [limit_price] [idempotency_key]
+  sell <market> <reference> <quantity> <reasoning> [limit_price] [idempotency_key]
   cancel <order_id> <reasoning> [idempotency_key]
   orders [query_string]
   account
@@ -92,7 +102,7 @@ Commands:
   journal-list [query_string]
   reconcile <reasoning>
   events [since_event_id]
-EOF
+USAGE
 }
 
 cmd="${1:-help}"
@@ -109,57 +119,95 @@ case "$cmd" in
     user_id="$(echo "$response" | jq -r '.userId // empty')"
     account_id="$(echo "$response" | jq -r '.account.id // empty')"
     if [[ -n "$api_key" ]]; then
-      cat <<EOF
+      cat <<EXPORTS
 
 # export for current shell:
 export API_KEY=${api_key}
 export USER_ID=${user_id}
 export ACCOUNT_ID=${account_id}
-EOF
+EXPORTS
     fi
     ;;
   markets)
     json_get "/markets"
+    ;;
+  browse)
+    market="${1:?market required}"
+    sort="${2:-}"
+    limit="${3:-20}"
+    offset="${4:-0}"
+    json_get "/markets/${market}/browse?limit=${limit}&offset=${offset}${sort:+&sort=$(encode "$sort")}" 
     ;;
   search)
     market="${1:?market required}"
     query="${2:-}"
     limit="${3:-20}"
     offset="${4:-0}"
-    if [[ -n "$query" ]]; then
-      json_get "/markets/${market}/search?q=$(printf '%s' "$query" | jq -sRr @uri)&limit=${limit}&offset=${offset}"
+    if [[ -z "$query" ]]; then
+      json_get "/markets/${market}/browse?limit=${limit}&offset=${offset}"
     else
-      json_get "/markets/${market}/search?limit=${limit}&offset=${offset}"
+      json_get "/markets/${market}/search?q=$(encode "$query")&limit=${limit}&offset=${offset}"
     fi
+    ;;
+  constraints)
+    market="${1:?market required}"
+    reference="${2:?reference required}"
+    json_get "/markets/${market}/trading-constraints?reference=$(encode "$reference")"
     ;;
   quote)
     market="${1:?market required}"
-    symbol="${2:?symbol required}"
-    json_get "/markets/${market}/quote?symbol=${symbol}"
+    reference="${2:?reference required}"
+    json_get "/markets/${market}/quote?reference=$(encode "$reference")"
     ;;
   quotes)
     market="${1:?market required}"
-    symbols="${2:?symbols csv required}"
-    json_get "/markets/${market}/quotes?symbols=${symbols}"
+    references="${2:?references csv required}"
+    json_get "/markets/${market}/quotes?references=$(encode "$references")"
     ;;
   orderbook)
     market="${1:?market required}"
-    symbol="${2:?symbol required}"
-    json_get "/markets/${market}/orderbook?symbol=${symbol}"
+    reference="${2:?reference required}"
+    json_get "/markets/${market}/orderbook?reference=$(encode "$reference")"
     ;;
   orderbooks)
     market="${1:?market required}"
-    symbols="${2:?symbols csv required}"
-    json_get "/markets/${market}/orderbooks?symbols=${symbols}"
+    references="${2:?references csv required}"
+    json_get "/markets/${market}/orderbooks?references=$(encode "$references")"
+    ;;
+  funding)
+    market="${1:?market required}"
+    reference="${2:?reference required}"
+    json_get "/markets/${market}/funding?reference=$(encode "$reference")"
+    ;;
+  fundings)
+    market="${1:?market required}"
+    references="${2:?references csv required}"
+    json_get "/markets/${market}/fundings?references=$(encode "$references")"
     ;;
   resolve)
     market="${1:?market required}"
-    symbol="${2:?symbol required}"
-    json_get "/markets/${market}/resolve?symbol=${symbol}"
+    reference="${2:?reference required}"
+    json_get "/markets/${market}/resolve?reference=$(encode "$reference")"
+    ;;
+  history)
+    market="${1:?market required}"
+    reference="${2:?reference required}"
+    interval="${3:-1h}"
+    lookback="${4:-7d}"
+    as_of="${5:-}"
+    json_get "/markets/${market}/price-history?reference=$(encode "$reference")&interval=$(encode "$interval")&lookback=$(encode "$lookback")${as_of:+&asOf=$(encode "$as_of")}" 
+    ;;
+  history-range)
+    market="${1:?market required}"
+    reference="${2:?reference required}"
+    interval="${3:?interval required}"
+    start_time="${4:?start_time required}"
+    end_time="${5:?end_time required}"
+    json_get "/markets/${market}/price-history?reference=$(encode "$reference")&interval=$(encode "$interval")&startTime=$(encode "$start_time")&endTime=$(encode "$end_time")"
     ;;
   buy|sell)
     market="${1:?market required}"
-    symbol="${2:?symbol required}"
+    reference="${2:?reference required}"
     quantity="${3:?quantity required}"
     reasoning="${4:?reasoning required}"
     limit_price="${5:-}"
@@ -168,20 +216,20 @@ EOF
     if [[ -n "$limit_price" ]]; then
       payload="$(jq -nc \
         --arg market "$market" \
-        --arg symbol "$symbol" \
+        --arg reference "$reference" \
         --arg side "$side" \
         --arg reasoning "$reasoning" \
         --argjson quantity "$quantity" \
         --argjson limitPrice "$limit_price" \
-        '{market:$market,symbol:$symbol,side:$side,type:"limit",quantity:$quantity,limitPrice:$limitPrice,reasoning:$reasoning}')"
+        '{market:$market,reference:$reference,side:$side,type:"limit",quantity:$quantity,limitPrice:$limitPrice,reasoning:$reasoning}')"
     else
       payload="$(jq -nc \
         --arg market "$market" \
-        --arg symbol "$symbol" \
+        --arg reference "$reference" \
         --arg side "$side" \
         --arg reasoning "$reasoning" \
         --argjson quantity "$quantity" \
-        '{market:$market,symbol:$symbol,side:$side,type:"market",quantity:$quantity,reasoning:$reasoning}')"
+        '{market:$market,reference:$reference,side:$side,type:"market",quantity:$quantity,reasoning:$reasoning}')"
     fi
     json_post "/orders" "$payload" "$idem_key"
     ;;
@@ -243,7 +291,7 @@ EOF
   events)
     since="${1:-}"
     if [[ -n "$since" ]]; then
-      curl -sS -N "${API_BASE}/events?since=${since}" -H "$(auth_arg)"
+      curl -sS -N "${API_BASE}/events?since=$(encode "$since")" -H "$(auth_arg)"
     else
       curl -sS -N "${API_BASE}/events" -H "$(auth_arg)"
     fi
@@ -257,4 +305,3 @@ EOF
     exit 1
     ;;
 esac
-

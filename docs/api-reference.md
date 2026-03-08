@@ -85,16 +85,17 @@ Rules:
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/markets` | key or admin | Discover registered markets and capabilities |
+| `GET` | `/api/markets` | key or admin | Discover registered markets, capabilities, browse options, and price-history defaults |
 | `GET` | `/api/markets/:market/search` | key or admin | Search market references |
 | `GET` | `/api/markets/:market/browse` | key or admin | Browse active market references |
 | `GET` | `/api/markets/:market/trading-constraints` | key or admin | Get reference-level quantity and leverage constraints |
-| `GET` | `/api/markets/:market/quote` | key or admin | Get one quote |
-| `GET` | `/api/markets/:market/quotes` | key or admin | Get quotes in batch |
+| `GET` | `/api/markets/:market/quote` | key or admin | Get one enriched quote |
+| `GET` | `/api/markets/:market/quotes` | key or admin | Get enriched quotes in batch |
 | `GET` | `/api/markets/:market/orderbook` | key or admin | Get one orderbook |
 | `GET` | `/api/markets/:market/orderbooks` | key or admin | Get orderbooks in batch |
 | `GET` | `/api/markets/:market/funding` | key or admin | Get one funding rate for funding-capable markets |
 | `GET` | `/api/markets/:market/fundings` | key or admin | Get funding rates in batch |
+| `GET` | `/api/markets/:market/price-history` | key or admin | Get historical candles, resolved range, and summary metrics |
 | `GET` | `/api/markets/:market/resolve` | key or admin | Get settlement or resolution status |
 
 ### Search and browse contract
@@ -102,9 +103,6 @@ Rules:
 - `search` requires a non-empty `q`
 - `browse` is explicit and accepts a market-specific `sort` string
 - browse options are discoverable from `GET /api/markets`
-- current defaults:
-  - Polymarket: `volume`, `liquidity`, `endingSoon`, `newest`
-  - Hyperliquid: `price`
 - both endpoints return lightweight discovery records shaped like:
 
 ```json
@@ -120,7 +118,24 @@ Rules:
 ```
 
 - discovery results are not required to be execution-ready exchange ids
-- adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, or order placement is called
+- adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, `price-history`, or order placement is called
+
+### Market descriptor notes
+
+`GET /api/markets` returns per-market discovery metadata, including:
+- `capabilities`
+- `browseOptions`
+- `priceHistory` or `null`
+
+When present, `priceHistory` includes:
+- `nativeIntervals`
+- `supportedIntervals`
+- `defaultInterval`
+- `supportedLookbacks`
+- `defaultLookbacks`
+- `maxCandles`
+- `supportsCustomRange`
+- `supportsResampling`
 
 ### Trading constraints response
 
@@ -143,6 +158,76 @@ Fallback behavior when a market does not implement custom constraints:
 - `quantityStep = 1`
 - `supportsFractional = false`
 - `maxLeverage = null`
+
+### Quote response
+
+Example:
+
+```json
+{
+  "reference": "BTC",
+  "price": 94321.1,
+  "bid": 94320.9,
+  "ask": 94321.3,
+  "mid": 94321.1,
+  "spreadAbs": 0.4,
+  "spreadBps": 0.042408309301,
+  "timestamp": "2026-03-08T00:00:00.000Z"
+}
+```
+
+Notes:
+- `price` is the execution-facing reference price
+- `mid` falls back to `price` when either side is missing
+- `spreadAbs` and `spreadBps` are `null` when both sides are not available
+
+### Price history response
+
+Preferred query:
+
+```http
+GET /api/markets/:market/price-history?reference=BTC&interval=1h&lookback=7d
+```
+
+Advanced custom range:
+
+```http
+GET /api/markets/:market/price-history?reference=BTC&interval=1h&startTime=2026-03-01T00:00:00.000Z&endTime=2026-03-08T00:00:00.000Z
+```
+
+Rules:
+- use `lookback` for the common case
+- use `asOf` only to anchor reproducible historical analysis
+- use either `lookback` or `startTime + endTime`
+- read supported intervals and defaults from `GET /api/markets` before requesting candles
+
+Example response shape:
+
+```json
+{
+  "reference": "iran-hormuz",
+  "interval": "4h",
+  "resampledFrom": "1h",
+  "range": {
+    "mode": "lookback",
+    "lookback": "30d",
+    "asOf": "2026-03-08T00:00:00.000Z",
+    "startTime": "2026-02-06T00:00:00.000Z",
+    "endTime": "2026-03-08T00:00:00.000Z"
+  },
+  "candles": [],
+  "summary": {
+    "open": null,
+    "close": null,
+    "change": null,
+    "changePct": null,
+    "high": null,
+    "low": null,
+    "volume": null,
+    "candleCount": 0
+  }
+}
+```
 
 ## Real-Time Events
 

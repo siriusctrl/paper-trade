@@ -1,560 +1,244 @@
-# API Reference
+# Unimarket API Reference
 
-## Table of Contents
-
-- [Auth](#auth)
-- [Accounts](#accounts)
-- [Orders](#orders)
-- [Positions](#positions)
-- [Journal](#journal)
-- [Market Data](#market-data)
-- [Real-Time Events (SSE)](#real-time-events-sse)
-- [Admin Endpoints](#admin-endpoints)
-- [Health](#health)
-- [Error Format](#error-format)
+## Contents
+- [Conventions](#conventions)
+- [Discovery](#discovery)
+- [Market Reads](#market-reads)
+- [Trading Writes](#trading-writes)
+- [Account and Audit Reads](#account-and-audit-reads)
+- [SSE](#sse)
 
 Base URL: `http://<host>:3100/api`
 
-All responses include an `X-API-Version` header with the current server version.
+## Conventions
 
-All endpoints except `/api/auth/register` and `/health` require:
-```
-Authorization: Bearer <api_key>
-```
+- Send `Authorization: Bearer <api_key>` on all endpoints except register and health.
+- Use `reference` for public market identifiers.
+- Use `reference` in:
+  - `/api/markets/:market/trading-constraints`
+  - `/api/markets/:market/quote`
+  - `/api/markets/:market/quotes`
+  - `/api/markets/:market/orderbook`
+  - `/api/markets/:market/orderbooks`
+  - `/api/markets/:market/funding`
+  - `/api/markets/:market/fundings`
+  - `/api/markets/:market/resolve`
+  - `/api/markets/:market/price-history`
+  - `POST /api/orders`
+- Use `browse` for blank exploration. `search` requires a non-empty `q`.
+- Use `references=a,b,c` for batch quote, orderbook, and funding reads.
+- Include `Idempotency-Key` on retryable writes.
 
-All write operations require a `reasoning` field (string, non-empty).
-
-For safe retries, these write endpoints support `Idempotency-Key`:
-- `POST /api/orders`
-- `DELETE /api/orders/:id`
-- `POST /api/journal`
-
-Order `quantity` is decimal-capable at schema validation. Final acceptance is enforced per market/symbol using:
-- `GET /api/markets/:market/trading-constraints?symbol=...`
-
-## Auth
+## Discovery
 
 ### Register
-```
+
+```http
 POST /api/auth/register
 Content-Type: application/json
 
-{ "userName": "my-agent" }
+{ "userName": "agent-alpha" }
+```
 
-→ 201
+### Discover markets
+
+```http
+GET /api/markets
+```
+
+Each market descriptor includes:
+- `id`, `name`, `description`, `referenceFormat`
+- `capabilities`
+- `browseOptions`
+- `priceHistory` or `null`
+
+`priceHistory` includes:
+- `nativeIntervals`
+- `supportedIntervals`
+- `defaultInterval`
+- `supportedLookbacks`
+- `defaultLookbacks`
+- `maxCandles`
+- `supportsCustomRange`
+- `supportsResampling`
+
+### Browse and search
+
+```http
+GET /api/markets/{market}/browse?sort=volume&limit=20&offset=0
+GET /api/markets/{market}/search?q=iran&limit=20&offset=0
+```
+
+Both return lightweight discovery records:
+
+```json
 {
-  "userId": "usr_xxxx",
-  "apiKey": "pt_live_xxxxxxxxxxxx",
-  "account": {
-    "id": "acc_xxxx",
-    "balance": 100000,
-    "createdAt": "2026-03-01T00:00:00Z"
-  }
+  "reference": "iran-hormuz",
+  "name": "Will Iran close the Strait of Hormuz?",
+  "price": 0.57,
+  "volume": 12345,
+  "liquidity": 9000,
+  "endDate": null,
+  "metadata": {}
 }
 ```
 
-The API key is only shown once at creation time. Store it securely.
+Persist `reference`; adapters normalize it lazily during market-data reads and order placement.
 
-### Generate New Key
-```
-POST /api/auth/keys
+## Market Reads
 
-→ 201
-{
-  "id": "key_xxxx",
-  "apiKey": "pt_live_yyyyyyyyyyyy",
-  "prefix": "pt_live_yy****"
-}
+### Trading constraints
+
+```http
+GET /api/markets/{market}/trading-constraints?reference={reference}
 ```
 
-### Revoke Key
-```
-DELETE /api/auth/keys/:id
+Response fields:
+- `minQuantity`
+- `quantityStep`
+- `supportsFractional`
+- `maxLeverage`
 
-→ 200
-{ "revoked": true }
-```
+### Single quote
 
-## Accounts
-
-### Get Account
-```
-GET /api/account
-
-→ 200
-{
-  "id": "acc_xxxx",
-  "name": "strategy-alpha",
-  "balance": 97500.50,
-  "createdAt": "2026-03-01T00:00:00Z"
-}
+```http
+GET /api/markets/{market}/quote?reference={reference}
 ```
 
-### Get Portfolio
-```
-GET /api/account/portfolio
+Response fields:
+- `reference`
+- `price`
+- optional `bid`, `ask`
+- `mid`
+- `spreadAbs`
+- `spreadBps`
+- `timestamp`
 
-→ 200
-{
-  "accountId": "acc_xxxx",
-  "balance": 97500.50,
-  "positions": [
-    {
-      "market": "polymarket",
-      "symbol": "0x1234...abcd",
-      "symbolName": "Will Trump win 2028?",
-      "quantity": 100,
-      "avgCost": 0.42,
-      "currentPrice": 0.48,
-      "unrealizedPnl": 6.00,
-      "marketValue": 48.00
-    }
-  ],
-  "totalValue": 97548.50,
-  "totalPnl": -2451.50
-}
+### Batch quotes
+
+```http
+GET /api/markets/{market}/quotes?references=ref_a,ref_b,ref_c
 ```
 
-### Get Timeline
-```
-GET /api/account/timeline?limit=20&offset=0
+Response shape:
+- `quotes`: successful quote payloads
+- `errors`: per-reference failures with stable `code` and `message`
 
-→ 200
-{
-  "events": [
-    {
-      "type": "order",
-      "data": {
-        "id": "ord_xxxx",
-        "side": "buy",
-        "symbol": "0x1234...abcd",
-        "quantity": 100,
-        "filledPrice": 0.42,
-        "status": "filled"
-      },
-      "reasoning": "Market overpricing NO at 0.58, polling suggests YES ~55%",
-      "createdAt": "2026-03-01T12:00:01Z"
-    },
-    {
-      "type": "journal",
-      "data": {
-        "id": "jrn_xxxx",
-        "content": "Debate tonight — expecting volatility, will hold current positions",
-        "tags": ["election", "risk-management"]
-      },
-      "createdAt": "2026-03-01T11:30:00Z"
-    },
-    {
-      "type": "order.cancelled",
-      "data": {
-        "id": "ord_yyyy",
-        "symbol": "0x5678...efgh",
-        "side": "buy",
-        "cancelledAt": "2026-03-01T10:00:00Z"
-      },
-      "reasoning": "New information invalidated the thesis — withdrawing limit order",
-      "createdAt": "2026-03-01T10:00:00Z"
-    }
-  ]
-}
+### Orderbook, funding, resolve
+
+```http
+GET /api/markets/{market}/orderbook?reference={reference}
+GET /api/markets/{market}/orderbooks?references=ref_a,ref_b
+GET /api/markets/{market}/funding?reference={reference}
+GET /api/markets/{market}/fundings?references=ref_a,ref_b
+GET /api/markets/{market}/resolve?reference={reference}
 ```
 
-## Orders
+Only call `funding` or `resolve` when the market advertises the capability.
 
-### Place Order
+### Price history
+
+Preferred query:
+
+```http
+GET /api/markets/{market}/price-history?reference={reference}&interval=1h&lookback=7d
 ```
+
+Optional reproducible query:
+
+```http
+GET /api/markets/{market}/price-history?reference={reference}&interval=1h&lookback=7d&asOf=2026-03-08T00:00:00.000Z
+```
+
+Advanced custom range:
+
+```http
+GET /api/markets/{market}/price-history?reference={reference}&interval=1h&startTime=2026-03-01T00:00:00.000Z&endTime=2026-03-08T00:00:00.000Z
+```
+
+Rules:
+- Use either `lookback` or `startTime + endTime`.
+- Do not combine `asOf` with `startTime/endTime`.
+- Read valid intervals and default lookbacks from `/api/markets` first.
+
+Response fields:
+- `reference`
+- `interval`
+- `resampledFrom`
+- `range` with `mode`, `lookback`, `asOf`, `startTime`, `endTime`
+- `candles`
+- `summary` with `open`, `close`, `change`, `changePct`, `high`, `low`, `volume`, `candleCount`
+
+## Trading Writes
+
+### Place order
+
+```http
 POST /api/orders
 Content-Type: application/json
-Idempotency-Key: <optional-unique-key>
+Idempotency-Key: <optional>
 
 {
   "market": "polymarket",
-  "symbol": "0x1234...abcd",
+  "reference": "iran-hormuz",
   "side": "buy",
   "type": "market",
-  "quantity": 100,
-  "reasoning": "Market overpricing NO at 0.58, recent polling data suggests YES probability ~55%"
-}
-
-→ 201
-{
-  "id": "ord_xxxx",
-  "accountId": "acc_xxxx",
-  "market": "polymarket",
-  "symbol": "0x1234...abcd",
-  "side": "buy",
-  "type": "market",
-  "quantity": 100,
-  "status": "filled",
-  "filledPrice": 0.42,
-  "reasoning": "Market overpricing NO at 0.58, recent polling data suggests YES probability ~55%",
-  "filledAt": "2026-03-01T00:00:01Z"
+  "quantity": 10,
+  "reasoning": "Momentum improving while spread remains tight"
 }
 ```
 
-For limit orders, add `"limitPrice": 0.40`. Status will be `"pending"` until filled or cancelled.
-`accountId` is optional. If provided, it must match the caller's own account.
-`quantity` can be decimal, but it must satisfy the selected symbol's constraints (`minQuantity`, `quantityStep`, `supportsFractional`).
-For perpetual markets, `leverage` must also satisfy symbol `maxLeverage`.
+Optional fields:
+- `accountId`
+- `limitPrice`
+- `leverage`
+- `reduceOnly`
 
-### List Orders
-```
-GET /api/orders?accountId=acc_xxxx&status=filled&market=polymarket
+### Cancel order
 
-→ 200
-{ "orders": [...] }
-```
-
-Query params (all optional): `accountId`, `view` (`all|open|history`), `status` (`pending|filled|cancelled|rejected`), `market`, `symbol`, `limit`, `offset`.
-
-### Cancel Order
-```
-DELETE /api/orders/:id
+```http
+DELETE /api/orders/{id}
 Content-Type: application/json
-Idempotency-Key: <optional-unique-key>
+Idempotency-Key: <optional>
 
 { "reasoning": "New information invalidated the thesis" }
-
-→ 200
-{ "id": "ord_xxxx", "status": "cancelled" }
 ```
 
-Only pending orders can be cancelled.
+### Reconcile pending orders
 
-### Reconcile Pending Orders (Optional Manual Trigger)
-```
+```http
 POST /api/orders/reconcile
 Content-Type: application/json
 
-{ "reasoning": "need deterministic immediate pending-order state" }
-
-→ 200
-{
-  "processed": 3,
-  "filled": 1,
-  "cancelled": 0,
-  "skipped": 2,
-  "filledOrderIds": ["ord_xxxx"],
-  "cancelledOrderIds": []
-}
+{ "reasoning": "Need deterministic immediate pending-order state" }
 ```
 
-Notes:
-- The server already runs a background reconciler (default interval `RECONCILE_INTERVAL_MS=1000`).
-- Use this endpoint only when you need immediate deterministic convergence for pending limit orders.
-- For normal state reads, use `GET /api/orders`, `GET /api/positions`, and `GET /api/account/portfolio`.
+Use reconcile sparingly; the background reconciler already runs server-side.
 
-## Positions
+## Account and Audit Reads
 
-### List Positions
-```
-GET /api/positions?accountId=acc_xxxx
-
-→ 200
-{ "positions": [...] }
+```http
+GET /api/account
+GET /api/account/portfolio
+GET /api/account/timeline?limit=20&offset=0
+GET /api/orders?view=open&limit=20&offset=0
+GET /api/positions
+GET /api/journal?limit=20&offset=0
 ```
 
-`accountId` is optional. For non-admin keys, only the caller's own account is accessible.
+Use these reads to avoid duplicate pending orders, understand current exposure, and persist decision traces.
 
-## Journal
+## SSE
 
-### Write Entry
-```
-POST /api/journal
-Content-Type: application/json
-Idempotency-Key: <optional-unique-key>
-
-{
-  "content": "Noticed correlation between polling shifts and election market price movement. Will monitor for entry opportunity below 0.40.",
-  "tags": ["analysis", "election"]
-}
-
-→ 201
-{
-  "id": "jrn_xxxx",
-  "userId": "usr_xxxx",
-  "content": "...",
-  "tags": ["analysis", "election"],
-  "createdAt": "2026-03-01T12:00:00Z"
-}
-```
-
-`content` is required. `tags` is optional.
-
-### List Entries
-```
-GET /api/journal?limit=5&offset=0
-GET /api/journal?q=election
-GET /api/journal?tags=risk-management
-
-→ 200
-{ "entries": [...] }
-```
-
-Default `limit=20`. Supports `offset` for pagination, `q` for full-text search, `tags` for filtering.
-
-## Market Data
-
-All market data endpoints use query params.
-
-### List Markets
-```
-GET /api/markets
-
-→ 200
-{
-  "markets": [
-    {
-      "id": "polymarket",
-      "name": "Polymarket",
-      "description": "Prediction markets — contracts resolve to $0 or $1",
-      "symbolFormat": "Condition ID or token ID",
-      "priceRange": [0.01, 0.99],
-      "capabilities": ["search", "quote", "orderbook", "resolve"]
-    }
-  ]
-}
-```
-
-### Search / Browse Assets
-```
-GET /api/markets/polymarket/search?q=trump+election
-GET /api/markets/polymarket/search?limit=20&offset=0
-
-→ 200
-{
-  "results": [
-    {
-      "symbol": "0x1234...abcd",
-      "name": "Will Trump win the 2028 presidential election?",
-      "price": 0.42,
-      "volume": 1500000,
-      "metadata": {
-        "conditionId": "0x1234...abcd",
-        "tokenIds": ["123...", "456..."],
-        "outcomes": ["Yes", "No"],
-        "outcomePrices": [0.42, 0.58],
-        "defaultTokenId": "123..."
-      }
-    }
-  ]
-}
-```
-
-`q` is optional — omit it to browse all active contracts. Supports `limit` (default 20, max 100) and `offset` (default 0) for pagination.
-For Polymarket, `search` returns condition IDs that can be used directly in `quote`, `orderbook`, and `orders`.
-If you need explicit YES/NO token selection, use `results[].metadata.tokenIds` and `results[].metadata.outcomes`.
-
-### Get Trading Constraints
-```
-GET /api/markets/hyperliquid/trading-constraints?symbol=btc-perp
-
-→ 200
-{
-  "symbol": "BTC",
-  "constraints": {
-    "minQuantity": 0.00001,
-    "quantityStep": 0.00001,
-    "supportsFractional": true,
-    "maxLeverage": 50
-  }
-}
-```
-
-Use this endpoint before placing orders to validate quantity/leverage inputs.
-If `supportsFractional` is `false`, quantity must be an integer (for example, Polymarket returns step `1`).
-
-### Get Quote
-```
-GET /api/markets/polymarket/quote?symbol=0x1234...abcd
-
-→ 200
-{
-  "symbol": "0x1234...abcd",
-  "price": 0.42,
-  "bid": 0.41,
-  "ask": 0.43,
-  "volume": 1500000,
-  "timestamp": "2026-03-01T00:00:00Z"
-}
-```
-
-### Get Quotes (Batch)
-```
-GET /api/markets/polymarket/quotes?symbols=0x1234...abcd,0x5678...efgh
-
-→ 200
-{
-  "quotes": [
-    { "symbol": "0x1234...abcd", "price": 0.42, "bid": 0.41, "ask": 0.43, "timestamp": "2026-03-01T00:00:00Z" }
-  ],
-  "errors": [
-    { "symbol": "0x5678...efgh", "error": { "code": "SYMBOL_NOT_FOUND", "message": "..." } }
-  ]
-}
-```
-
-`symbols` is a comma-separated list (up to 50 unique symbols).
-
-### Get Orderbook
-```
-GET /api/markets/polymarket/orderbook?symbol=0x1234...abcd
-
-→ 200
-{
-  "bids": [{ "price": 0.41, "size": 5000 }, ...],
-  "asks": [{ "price": 0.43, "size": 3000 }, ...]
-}
-```
-
-### Get Orderbooks (Batch)
-```
-GET /api/markets/polymarket/orderbooks?symbols=0x1234...abcd,0x5678...efgh
-
-→ 200
-{
-  "orderbooks": [
-    { "symbol": "0x1234...abcd", "bids": [...], "asks": [...], "timestamp": "2026-03-01T00:00:00Z" }
-  ],
-  "errors": [
-    { "symbol": "0x5678...efgh", "error": { "code": "SYMBOL_NOT_FOUND", "message": "..." } }
-  ]
-}
-```
-
-`symbols` is a comma-separated list (up to 50 unique symbols).
-
-### Get Funding Rate
-```
-GET /api/markets/<market>/funding?symbol=<symbol>
-
-→ 200
-{
-  "symbol": "BTC",
-  "rate": 0.0002,
-  "nextFundingAt": "2026-03-01T01:00:00.000Z",
-  "timestamp": "2026-03-01T00:32:10.000Z"
-}
-```
-
-Only available on markets where `capabilities` includes `funding`.
-
-### Get Funding Rates (Batch)
-```
-GET /api/markets/<market>/fundings?symbols=btc,eth,missing
-
-→ 200
-{
-  "fundings": [
-    { "symbol": "BTC", "rate": 0.0002, "nextFundingAt": "2026-03-01T01:00:00.000Z", "timestamp": "2026-03-01T00:32:10.000Z" }
-  ],
-  "errors": [
-    { "symbol": "missing", "error": { "code": "SYMBOL_NOT_FOUND", "message": "..." } }
-  ]
-}
-```
-
-`symbols` is a comma-separated list (up to 50 unique symbols).
-
-### Check Resolution
-```
-GET /api/markets/polymarket/resolve?symbol=0x1234...abcd
-
-→ 200
-{ "symbol": "0x1234...abcd", "resolved": false, "outcome": null }
-
-// or when resolved:
-{ "symbol": "0x1234...abcd", "resolved": true, "outcome": "yes", "settlementPrice": 1.00 }
-```
-
-## Real-Time Events (SSE)
-
-```
+```http
 GET /api/events
-Authorization: Bearer <api_key>
+GET /api/events?since={event_id}
 ```
 
-On connect, the first event is `system.ready`.
-User-scoped trading events include monotonic `id` values.
+Replay with either:
+- `?since=<event_id>`
+- `Last-Event-ID: <event_id>`
 
-Resume from the last seen event:
-```
-GET /api/events?since=<event_id>
-```
-
-Or:
-```
-Last-Event-ID: <event_id>
-GET /api/events
-```
-
-Example stream payloads:
-```
-data: {"type":"system.ready","data":{"version":"2.0.0","connectedAt":"2026-03-02T12:00:00.000Z"}}
-data: {"type":"order.filled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
-data: {"type":"order.cancelled","userId":"usr_xxx","accountId":"acc_xxx","orderId":"ord_xxx","data":{...}}
-data: {"type":"position.settled","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
-data: {"type":"funding.applied","userId":"usr_xxx","accountId":"acc_xxx","data":{...}}
-```
-
-Event types:
-- `system.ready` — emitted on connect with server version and connection timestamp
-- `order.filled` — emitted when an order executes
-- `order.cancelled` — emitted when a pending order is cancelled
-- `position.settled` — emitted when a position settles
-- `funding.applied` — emitted when periodic funding is applied to an open position
-
-## Admin Endpoints
-
-Require admin key in `Authorization: Bearer <admin_key>` header.
-
-### Deposit
-```
-POST /api/admin/users/:id/deposit
-Content-Type: application/json
-
-{ "amount": 50000 }
-
-→ 200
-{ "balance": 147500.50 }
-```
-
-### Withdraw
-```
-POST /api/admin/users/:id/withdraw
-Content-Type: application/json
-
-{ "amount": 10000 }
-
-→ 200
-{ "balance": 137500.50 }
-```
-
-## Health
-```
-GET /health
-
-→ 200
-{ "status": "ok", "version": "2.0.0", "markets": { "polymarket": "available" } }
-```
-
-## Error Format
-
-All errors use:
-```json
-{ "error": { "code": "SOME_CODE", "message": "..." } }
-```
-
-Common codes:
-- `UNAUTHORIZED`
-- `INVALID_JSON`
-- `INVALID_INPUT`
-- `REASONING_REQUIRED`
-- `MARKET_NOT_FOUND`
-- `SYMBOL_NOT_FOUND`
-- `CAPABILITY_NOT_SUPPORTED`
-- `ACCOUNT_NOT_FOUND`
-- `ORDER_NOT_FOUND`
-- `INVALID_ORDER`
-- `INSUFFICIENT_BALANCE`
-- `INSUFFICIENT_POSITION`
+Expect:
+- initial `system.ready`
+- user-scoped lifecycle events such as fills, cancels, settlements, funding, and liquidations

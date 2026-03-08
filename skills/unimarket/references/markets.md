@@ -1,108 +1,60 @@
-# Market Reference
+# Unimarket Markets
 
-## Cross-Market Trading Constraints
+## Cross-Market Rules
 
-- Order `quantity` is decimal-capable at schema validation.
-- Final order checks are market/symbol specific and should be discovered via:
-  - `GET /api/markets/:market/trading-constraints?symbol=...`
-- Default behavior (if a market adapter does not expose constraints):
-  - `minQuantity: 1`
-  - `quantityStep: 1`
-  - `supportsFractional: false` (integer quantities only)
-  - `maxLeverage: null`
+- Persist the discovery `reference`; do not replace it with guessed exchange identifiers.
+- Read `/api/markets` before requesting candles so the agent can discover:
+  - `supportedIntervals`
+  - `defaultInterval`
+  - `defaultLookbacks`
+  - `supportsResampling`
+- Read `/api/markets/{market}/trading-constraints?reference=...` before placing orders.
+- Use quote fields as:
+  - `price`: execution-facing reference price
+  - `mid`: best-effort midpoint
+  - `spreadAbs` and `spreadBps`: spread diagnostics when both sides exist
 
 ## Polymarket (`polymarket`)
 
-- **Symbols**: Condition IDs (from `search`) or token IDs (for direct CLOB access)
-- **Data source**: Polymarket CLOB API (quotes, orderbook) + Gamma API (search, metadata)
-- **Capabilities**: `search`, `quote`, `orderbook`, `resolve`
-- **Price range**: $0.01 – $0.99 per contract
-- **Quantity**: Number of contracts (integer only; `quantityStep=1`, `supportsFractional=false`)
-- **Resolution**: Contracts resolve to $1.00 (yes) or $0.00 (no) when the event outcome is determined
-- **Order symbol normalization**: `POST /api/orders` normalizes condition IDs to a canonical token symbol before persistence
-- **Trading constraints endpoint**: `GET /api/markets/polymarket/trading-constraints?symbol=<condition_or_token_id>`
+- Discovery `reference` is usually a market slug.
+- Execution reads and order placement accept the same `reference`; the adapter resolves it internally to a tradable token id.
+- Capabilities: `search`, `browse`, `quote`, `orderbook`, `resolve`, `priceHistory`.
+- Browse sorts: `volume`, `liquidity`, `endingSoon`, `newest`.
+- Price range is usually `0.01` to `0.99`.
+- Quantity is integer-only: `quantityStep = 1`, `supportsFractional = false`.
+- Bearish views are usually expressed by buying the opposite outcome token, not by shorting.
+- History behavior:
+  - native intervals: `1m`, `1h`, `1d`
+  - agent-facing intervals may include `5m`, `15m`, `4h`
+  - `resampledFrom` tells you when the server aggregated native candles into the requested interval
 
 ## Hyperliquid (`hyperliquid`)
 
-- **Symbols**: Ticker symbols (e.g. `BTC`, `ETH`, `SOL`). Aliases like `btc-perp` or `eth` are auto-normalized.
-- **Data source**: Hyperliquid public API (`https://api.hyperliquid.xyz/info`)
-- **Capabilities**: `search`, `quote`, `orderbook`, `funding`
-- **Price range**: Unconstrained (crypto market prices)
-- **Quantity**: Fractional size supported per symbol using `szDecimals` (for example, `szDecimals=5` => `quantityStep=0.00001`)
-- **Leverage cap**: Enforced per symbol using Hyperliquid `maxLeverage`
-- **Funding rate**: Applied hourly. Positive rate → longs pay; negative rate → longs receive. Tracked in portfolio as `accumulatedFunding`.
-- **No resolution**: Perpetual futures do not expire or settle. Positions are closed only by explicit sell orders.
-- **Trading constraints endpoint**: `GET /api/markets/hyperliquid/trading-constraints?symbol=btc-perp`
+- Discovery and execution `reference` is usually a ticker such as `BTC`.
+- Aliases like `btc`, `btc-perp`, or mixed case are normalized internally.
+- Capabilities: `search`, `browse`, `quote`, `orderbook`, `funding`, `priceHistory`.
+- Browse sorts: `price`.
+- Quantity precision is per-symbol and derived from `szDecimals`.
+- `maxLeverage` is enforced per symbol.
+- Funding applies hourly and affects realized account balance over time.
+- Perpetual futures do not resolve; close exposure with explicit trades.
+- History behavior:
+  - native intervals and supported intervals match
+  - `supportsResampling = false`
 
-### How Perpetual Futures Trading Works
-1. Search for crypto assets: `GET /api/markets/hyperliquid/search?q=BTC`
-2. Check symbol trading constraints (`minQuantity`, `quantityStep`, `supportsFractional`, `maxLeverage`)
-3. Check price and orderbook depth before trading
-4. Buy to open a long position at the current price
-5. Funding payments are applied hourly, adjusting your account balance
-6. Sell to close the position and realize P&L
+## Choosing Reads Before Trading
 
-### Quote Fields
-| Field | Description |
-|-------|-------------|
-| `price` | Mid price from the L2 order book |
-| `bid` / `ask` | Best bid/ask from the order book |
+### Prediction-market candidate
+1. Browse or search Polymarket.
+2. Keep the returned `reference`.
+3. Read `quote` and `orderbook`.
+4. Optionally read `price-history` to inspect trend.
+5. Optionally read `resolve` if the market may already be settling.
+6. Validate `trading-constraints` before ordering.
 
-### Funding Rate
-Use `GET /api/markets/hyperliquid/funding?symbol=BTC` to check the current predicted funding rate. The portfolio endpoint includes `accumulatedFunding` per position and `totalFunding` for the account.
-
-### How Prediction Market Trading Works
-1. Buy YES contracts if you think the event will happen (price < $1.00 = potential profit)
-2. Buy NO contracts if you think it won't happen
-3. When the event resolves, winning contracts pay $1.00, losing contracts pay $0.00
-4. You can sell contracts before resolution at the current market price
-
-### Quote Fields
-| Field | Description |
-|-------|-------------|
-| `price` | Current YES price ($0.01–$0.99) |
-| `bid` / `ask` | Best bid/ask from the order book |
-| `volume` | 24h trading volume in USD |
-
-### Finding Markets
-Use `GET /api/markets/polymarket/search?q=<query>` to search by keyword.
-
-Omit `q` to browse all active contracts:
-```
-GET /api/markets/polymarket/search?limit=20&offset=0   → first 20 contracts
-GET /api/markets/polymarket/search?limit=20&offset=20  → next 20 contracts
-```
-
-The `symbol` returned by `search` can be used directly with:
-- `GET /api/markets/polymarket/quote`
-- `GET /api/markets/polymarket/orderbook`
-- `POST /api/orders`
-
-For explicit YES/NO routing, read `results[].metadata`:
-- `metadata.tokenIds` aligns with `metadata.outcomes`
-- `metadata.defaultTokenId` is the default tradable token
-
-## Adding New Markets
-
-Implement the `MarketAdapter` interface:
-
-```typescript
-interface MarketAdapter {
-  readonly marketId: string
-  readonly displayName: string
-  readonly description: string
-  readonly symbolFormat: string
-  readonly priceRange: [number, number] | null
-  readonly capabilities: readonly MarketCapability[]
-
-  normalizeSymbol?(symbol: string): Promise<string>
-  getQuote(symbol: string): Promise<Quote>
-  search(query: string, options?: { limit?: number; offset?: number }): Promise<Asset[]>
-  getOrderbook?(symbol: string): Promise<Orderbook>
-  getFundingRate?(symbol: string): Promise<FundingRate>
-  getTradingConstraints?(symbol: string): Promise<TradingConstraints>
-  resolve?(symbol: string): Promise<Resolution | null>
-}
-```
-
-Register the adapter at startup. All existing routes automatically work with the new market.
+### Perp candidate
+1. Browse or search Hyperliquid.
+2. Keep the returned `reference`.
+3. Read `quote`, `orderbook`, and `funding`.
+4. Read `price-history` for recent trend or volatility.
+5. Validate `trading-constraints` before ordering.

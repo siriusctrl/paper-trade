@@ -72,7 +72,7 @@ Primary objective: maximize long-run paper-trading profitability.
 
 Each cycle should:
 1. read account, portfolio, orders, and positions
-2. research markets through search, quotes, orderbooks, and optional funding/resolve endpoints
+2. research markets through browse/search, quotes, orderbooks, price history, and optional funding/resolve endpoints
 3. decide explicitly between trade and no-trade
 4. avoid duplicate pending orders
 5. write one concise journal entry every cycle
@@ -152,14 +152,16 @@ Pragmatic starting defaults:
 
 Use a repeatable sequence:
 1. `GET /api/markets`
-2. `GET /api/markets/:market/browse`
-3. optional `GET /api/markets/:market/search` when the agent has a concrete query
-4. keep the returned `reference` for the candidate you want to investigate
-5. `GET /api/markets/:market/quotes`
-6. `GET /api/markets/:market/orderbooks`
-7. optional `funding` and `resolve` reads when the market supports them
-8. account, portfolio, positions, and order reads
-9. decision and journal write
+2. read each market's `browseOptions` and `priceHistory` defaults
+3. `GET /api/markets/:market/browse`
+4. optional `GET /api/markets/:market/search` when the agent has a concrete query
+5. keep the returned `reference` for the candidate you want to investigate
+6. `GET /api/markets/:market/quotes`
+7. `GET /api/markets/:market/orderbooks`
+8. optional `GET /api/markets/:market/price-history?reference=...&interval=...&lookback=...`
+9. optional `funding` and `resolve` reads when the market supports them
+10. account, portfolio, positions, and order reads
+11. decision and journal write
 
 ## What the Agent Should Know About the Platform
 
@@ -167,11 +169,13 @@ A few design facts help agents make better decisions.
 
 - unimarket is simulation-first; it does not place real exchange trades in core flows
 - discovery surfaces return market `reference` values; execution endpoints accept the same reference and let adapters normalize it internally
+- `GET /api/markets` also advertises per-market `priceHistory` defaults so the agent can choose valid intervals and lookbacks without hardcoding them
 - the agent should treat `reference` as the only external market identifier it needs to persist between discovery and execution
 - on Polymarket, a discovery `reference` is usually a slug preview, not an already-resolved token id
 - markets without `funding` behave like spot inventory
 - prediction-market bearish views are expressed by buying the opposite outcome token, not by opening a naked short
 - markets with `funding` behave like perp markets with leverage, funding, and liquidation
+- quote reads include convenience fields such as `mid`, `spreadAbs`, and `spreadBps` that help compare execution quality before trading
 - timeline and SSE now include funding and liquidation as first-class events
 
 ## Monitoring
