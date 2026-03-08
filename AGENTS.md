@@ -70,6 +70,8 @@ Build a reliable, market-agnostic paper trading platform that:
 - Prefer direct engineering judgment over repeated "do you want me to..." prompts.
 - Clearly state what is necessary, optional, or unnecessary, and explain the tradeoff briefly.
 - Ask follow-up questions only when blocked, when a decision materially changes scope/risk, or when user intent cannot be inferred from context.
+- When committing, use readable Conventional Commit messages.
+- If a task contains distinct logical changes, prefer multiple focused commits over one mixed commit when it improves clarity.
 
 ## Delegating Work to Codex
 
