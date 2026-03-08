@@ -38,6 +38,16 @@ const makeL2Book = (bids: [string, string][], asks: [string, string][]) => ({
   ],
 });
 
+const ASSET_CTXS_RESPONSE = [
+  META_RESPONSE,
+  [
+    { midPx: "95000.5", markPx: "95001", dayNtlVlm: "5000000000", openInterest: "80000", funding: "0.0001", prevDayPx: "94000" },
+    { midPx: "3200.1", markPx: "3201", dayNtlVlm: "2000000000", openInterest: "500000", funding: "0.00005", prevDayPx: "3180" },
+    { midPx: "180.5", markPx: "180.6", dayNtlVlm: "800000000", openInterest: "1200000", funding: "0.0002", prevDayPx: "175" },
+    { midPx: "0.25", markPx: "0.251", dayNtlVlm: "300000000", openInterest: "9000000", funding: "-0.0001", prevDayPx: "0.24" },
+  ],
+];
+
 describe("HyperliquidAdapter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -60,7 +70,7 @@ describe("HyperliquidAdapter", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -82,7 +92,15 @@ describe("HyperliquidAdapter", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") return jsonResponse({});
+      if (body.type === "metaAndAssetCtxs") return jsonResponse([
+        META_RESPONSE,
+        [
+          { midPx: "95000", dayNtlVlm: "1000", openInterest: "1", funding: "0", prevDayPx: "1" },
+          { midPx: "3200", dayNtlVlm: "1000", openInterest: "1", funding: "0", prevDayPx: "1" },
+          { midPx: "180", dayNtlVlm: "1000", openInterest: "1", funding: "0", prevDayPx: "1" },
+          { midPx: "0.25", dayNtlVlm: "1000", openInterest: "1", funding: "0", prevDayPx: "1" },
+        ],
+      ]);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -96,7 +114,13 @@ describe("HyperliquidAdapter", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_WITH_DELISTED);
-      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5" });
+      if (body.type === "metaAndAssetCtxs") return jsonResponse([
+        META_WITH_DELISTED,
+        [
+          { midPx: "95000.5", dayNtlVlm: "5000000000", openInterest: "80000", funding: "0.0001", prevDayPx: "94000" },
+          { midPx: "1", dayNtlVlm: "0", openInterest: "0", funding: "0", prevDayPx: "1" },
+        ],
+      ]);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -204,11 +228,11 @@ describe("HyperliquidAdapter", () => {
     expect(btcFunding.nextFundingAt).toBe(new Date(1_700_000_000_000).toISOString());
   });
 
-  it("sorts alphabetically for query searches and tolerates optional mids failures", async () => {
+  it("sorts alphabetically for query searches and tolerates optional context failures", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") throw new Error("mid fetch failed");
+      if (body.type === "metaAndAssetCtxs") throw new Error("context fetch failed");
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -358,7 +382,7 @@ describe("HyperliquidAdapter", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -367,7 +391,7 @@ describe("HyperliquidAdapter", () => {
     const second = await adapter.browse?.({ limit: 10, offset: 0 });
 
     expect(first).toEqual(second);
-    // meta is cached so only 1 call, allMids is cached for 5s so only 1 call — total 2 for first browse
+    // meta is cached so only 1 call, metaAndAssetCtxs is cached for 5s so only 1 call — total 2 for first browse
     // second browse is served entirely from browse cache — 0 additional calls
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
@@ -376,7 +400,7 @@ describe("HyperliquidAdapter", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
@@ -387,33 +411,107 @@ describe("HyperliquidAdapter", () => {
     // Price descending: BTC (95000.5), ETH (3200.1), SOL (180.5), DOGE (0.25)
     expect(page1?.map((r) => r.reference)).toEqual(["BTC", "ETH"]);
     expect(page2?.map((r) => r.reference)).toEqual(["SOL", "DOGE"]);
-    // Second browse uses browse cache — only meta + allMids calls from first browse
+    // Second browse uses browse cache — only meta + metaAndAssetCtxs calls from first browse
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("does not cache browse results when allMids fails transiently", async () => {
-    let midsCallCount = 0;
+  it("does not cache browse results when metaAndAssetCtxs fails transiently", async () => {
+    let ctxCallCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
-      if (body.type === "allMids") {
-        midsCallCount += 1;
-        if (midsCallCount === 1) throw new Error("transient mids failure");
-        return jsonResponse({ BTC: "95000.5", ETH: "3200.1", SOL: "180.5", DOGE: "0.25" });
+      if (body.type === "metaAndAssetCtxs") {
+        ctxCallCount += 1;
+        if (ctxCallCount === 1) throw new Error("transient context failure");
+        return jsonResponse(ASSET_CTXS_RESPONSE);
       }
       throw new Error(`Unexpected request type: ${body.type}`);
     });
 
     const adapter = makeAdapter();
 
-    // First call: mids fail, results have no prices and should not be cached
+    // First call: contexts fail, results have no prices and should not be cached
     const degraded = await adapter.browse?.({ limit: 4, offset: 0 });
     expect(degraded?.every((r) => r.price === undefined)).toBe(true);
 
-    // Second call: mids succeed, should re-fetch (not serve from cache)
+    // Second call: contexts succeed, should re-fetch (not serve from cache)
     const recovered = await adapter.browse?.({ limit: 4, offset: 0 });
     expect(recovered?.find((r) => r.reference === "BTC")?.price).toBe(95000.5);
-    expect(midsCallCount).toBe(2);
+    expect(ctxCallCount).toBe(2);
+  });
+
+  it("browses by volume in descending order", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    // dayNtlVlm order: BTC (5B) > ETH (2B) > SOL (800M) > DOGE (300M)
+    const results = await adapter.browse?.({ sort: "volume", limit: 10 });
+
+    expect(results?.map((r) => r.reference)).toEqual(["BTC", "ETH", "SOL", "DOGE"]);
+    expect(results?.[0]?.volume).toBe(5_000_000_000);
+    expect(results?.[3]?.volume).toBe(300_000_000);
+    // Price should still be populated
+    expect(results?.[0]?.price).toBe(95000.5);
+  });
+
+  it("browses by openInterest in descending order", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    // openInterest order: DOGE (9M) > SOL (1.2M) > ETH (500K) > BTC (80K)
+    const results = await adapter.browse?.({ sort: "openInterest", limit: 10 });
+
+    expect(results?.map((r) => r.reference)).toEqual(["DOGE", "SOL", "ETH", "BTC"]);
+    expect(results?.[0]?.openInterest).toBe(9_000_000);
+    expect(results?.[3]?.openInterest).toBe(80_000);
+  });
+
+  it("populates volume and metadata on browse results", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.browse?.({ limit: 1, offset: 0 });
+
+    const btc = results?.[0];
+    expect(btc?.price).toBe(95000.5);
+    expect(btc?.volume).toBe(5_000_000_000);
+    expect(btc?.openInterest).toBe(80_000);
+    expect(btc?.metadata?.funding).toBe(0.0001);
+  });
+
+  it("falls back to allMids for price when metaAndAssetCtxs fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") throw new Error("context unavailable");
+      if (body.type === "allMids") return jsonResponse({ BTC: "94500", ETH: "3100", SOL: "170", DOGE: "0.22" });
+      throw new Error(`Unexpected request type: ${body.type}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.browse?.({ sort: "price", limit: 4 });
+
+    // Price descending from allMids fallback
+    expect(results?.map((r) => r.reference)).toEqual(["BTC", "ETH", "SOL", "DOGE"]);
+    expect(results?.[0]?.price).toBe(94500);
+    // Volume/OI not available without contexts
+    expect(results?.[0]?.volume).toBeUndefined();
+    expect(results?.[0]?.openInterest).toBeUndefined();
   });
 
   it("gets price history from candleSnapshot and caches results", async () => {

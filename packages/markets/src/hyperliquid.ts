@@ -41,6 +41,8 @@ const CANDLE_TTL_MS: Record<string, number> = {
 };
 const HYPERLIQUID_BROWSE_OPTIONS: readonly BrowseOption[] = [
     { value: "price", label: "Price" },
+    { value: "volume", label: "Volume" },
+    { value: "openInterest", label: "Open Interest" },
 ];
 const HYPERLIQUID_PRICE_HISTORY: PriceHistorySupport = {
     nativeIntervals: ["1m", "5m", "15m", "1h", "4h", "1d"],
@@ -110,6 +112,15 @@ type MetaResponse = {
 
 type L2BookResponse = {
     levels: Array<Array<{ px: string; sz: string; n: number }>>;
+};
+
+type AssetContext = {
+    dayNtlVlm: string;
+    openInterest: string;
+    funding: string;
+    prevDayPx: string;
+    midPx?: string;
+    markPx?: string;
 };
 
 type PredictedFundingEntry = {
@@ -268,9 +279,32 @@ export class HyperliquidAdapter implements MarketAdapter {
         return this.buildTradingConstraints(matched);
     }
 
+    private async getAssetContexts(): Promise<Map<string, AssetContext>> {
+        return this.cache.remember("assetCtxs", {
+            ttlMs: QUOTE_TTL_MS,
+            load: async () => {
+                const data = await postInfo<[MetaResponse, unknown[]]>(this.apiUrl, {
+                    type: "metaAndAssetCtxs",
+                }, this.requestTimeoutMs);
+
+                if (!Array.isArray(data) || data.length < 2 || !Array.isArray(data[1])) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid metaAndAssetCtxs response from Hyperliquid");
+                }
+
+                const meta = data[0] as MetaResponse;
+                const ctxs = data[1] as AssetContext[];
+                const map = new Map<string, AssetContext>();
+                for (let i = 0; i < meta.universe.length && i < ctxs.length; i++) {
+                    map.set(meta.universe[i].name, ctxs[i]);
+                }
+                return map;
+            },
+        });
+    }
+
     private async listReferences({ query, sort }: { query?: string; sort: string }): Promise<{
         results: MarketReference[];
-        midsAvailable: boolean;
+        ctxAvailable: boolean;
     }> {
         const universe = await this.getMeta();
         const lowerQuery = query?.toLowerCase().trim() ?? "";
@@ -280,44 +314,100 @@ export class HyperliquidAdapter implements MarketAdapter {
             ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
             : listed;
 
-        // Fetch mid prices for the page to include current price
-        let midPrices: Record<string, string> = {};
-        let midsAvailable = false;
+        // Fetch asset contexts for enrichment (price, volume, OI, funding)
+        let ctxMap = new Map<string, AssetContext>();
+        let ctxAvailable = false;
         try {
-            midPrices = await this.getAllMids();
-            midsAvailable = true;
+            ctxMap = await this.getAssetContexts();
+            ctxAvailable = true;
         } catch {
-            // mid prices are optional enrichment; proceed without them
+            // asset contexts are optional enrichment; proceed without them
         }
 
+        // Fallback: if asset contexts failed, still try allMids for price
+        let midPrices: Record<string, string> = {};
+        if (!ctxAvailable) {
+            try {
+                midPrices = await this.getAllMids();
+            } catch {
+                // price fallback is also optional
+            }
+        }
+
+        const getCtxNumber = (coin: string, field: keyof AssetContext): number | null => {
+            const ctx = ctxMap.get(coin);
+            return ctx ? parseNumber(ctx[field]) : null;
+        };
+
+        const getPrice = (coin: string): number | null => {
+            const ctx = ctxMap.get(coin);
+            if (ctx) {
+                return parseNumber(ctx.midPx) ?? parseNumber(ctx.markPx) ?? null;
+            }
+            // Fallback to allMids when contexts are unavailable
+            return parseNumber(midPrices[coin]) ?? null;
+        };
+
         const sorted = filtered.map((asset, index) => ({ asset, index }));
-        if (!lowerQuery && sort === "price") {
-            sorted.sort((left, right) => {
-                const leftPrice = parseNumber(midPrices[left.asset.name]);
-                const rightPrice = parseNumber(midPrices[right.asset.name]);
-                if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
-                    return rightPrice - leftPrice;
-                }
-                return left.index - right.index;
-            });
+        if (!lowerQuery) {
+            if (sort === "volume") {
+                sorted.sort((left, right) => {
+                    const leftVol = getCtxNumber(left.asset.name, "dayNtlVlm");
+                    const rightVol = getCtxNumber(right.asset.name, "dayNtlVlm");
+                    if (leftVol !== null && rightVol !== null && leftVol !== rightVol) {
+                        return rightVol - leftVol;
+                    }
+                    return left.index - right.index;
+                });
+            } else if (sort === "openInterest") {
+                sorted.sort((left, right) => {
+                    const leftOI = getCtxNumber(left.asset.name, "openInterest");
+                    const rightOI = getCtxNumber(right.asset.name, "openInterest");
+                    if (leftOI !== null && rightOI !== null && leftOI !== rightOI) {
+                        return rightOI - leftOI;
+                    }
+                    return left.index - right.index;
+                });
+            } else {
+                // default: sort by price descending
+                sorted.sort((left, right) => {
+                    const leftPrice = getPrice(left.asset.name);
+                    const rightPrice = getPrice(right.asset.name);
+                    if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
+                        return rightPrice - leftPrice;
+                    }
+                    return left.index - right.index;
+                });
+            }
         } else {
             sorted.sort((left, right) => left.asset.name.localeCompare(right.asset.name));
         }
 
-        const toReference = (asset: MetaUniverse): MarketReference => ({
-            reference: asset.name,
-            name: `${asset.name}-PERP`,
-            price: parseNumber(midPrices[asset.name]) ?? undefined,
-            metadata: {
-                szDecimals: asset.szDecimals,
-                maxLeverage: asset.maxLeverage,
-                ...this.buildTradingConstraints(asset),
-            },
-        });
+        const toReference = (asset: MetaUniverse): MarketReference => {
+            const ctx = ctxMap.get(asset.name);
+            const price = getPrice(asset.name) ?? undefined;
+            const volume = parseNumber(ctx?.dayNtlVlm) ?? undefined;
+            const oi = parseNumber(ctx?.openInterest) ?? undefined;
+            const funding = parseNumber(ctx?.funding) ?? undefined;
+
+            return {
+                reference: asset.name,
+                name: `${asset.name}-PERP`,
+                price,
+                volume,
+                openInterest: oi,
+                metadata: {
+                    szDecimals: asset.szDecimals,
+                    maxLeverage: asset.maxLeverage,
+                    ...this.buildTradingConstraints(asset),
+                    ...(funding !== undefined ? { funding } : {}),
+                },
+            };
+        };
 
         return {
             results: sorted.map((entry) => toReference(entry.asset)),
-            midsAvailable,
+            ctxAvailable,
         };
     }
 
@@ -339,15 +429,16 @@ export class HyperliquidAdapter implements MarketAdapter {
 
         if (isBrowse) {
             const cacheKey = `browse-result:${normalizedSort}`;
-            // Browse cache is only valid when mids are available. Without mids we
-            // intentionally fall back to universe order and omit prices, so that
-            // degraded snapshot must not be reused across later browse requests.
+            // Browse cache is only valid when asset contexts are available. Without
+            // contexts we may still fall back to allMids for price, but volume and
+            // open interest enrichment are unavailable, so degraded snapshots must
+            // not be reused across later browse requests.
             let cacheable = true;
             const fullResults = await this.cache.remember(cacheKey, {
                 ttlMs: this.browseCacheTtlMs,
                 load: async () => {
-                    const { results, midsAvailable } = await this.listReferences({ sort: normalizedSort });
-                    cacheable = midsAvailable;
+                    const { results, ctxAvailable } = await this.listReferences({ sort: normalizedSort });
+                    cacheable = ctxAvailable;
                     return results;
                 },
                 shouldCache: () => cacheable,

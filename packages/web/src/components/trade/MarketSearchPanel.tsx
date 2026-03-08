@@ -1,4 +1,4 @@
-import { BarChart3, Clock, DollarSign, Droplets, Loader2, Search } from "lucide-react";
+import { BarChart3, Clock, DollarSign, Droplets, Loader2, Search, TrendingUp } from "lucide-react";
 
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
@@ -146,12 +146,14 @@ export const MarketSearchPanel = ({
           const isSelected = selectedAsset?.reference === asset.reference;
           const priceLabel = typeof asset.price === "number" ? asset.price.toFixed(asset.price < 1 ? 4 : 2) : null;
           const volumeLabel = formatMetric(asset.volume);
+          const openInterestLabel = formatMetric(asset.openInterest);
           const liquidityLabel = formatMetric(asset.liquidity);
           const endDateLabel = formatEndDate(asset.endDate);
 
           const stats = [
             priceLabel && { icon: DollarSign, label: "Price", value: priceLabel, color: "text-cyan-400" },
             volumeLabel && { icon: BarChart3, label: "Vol", value: volumeLabel, color: "text-emerald-400" },
+            openInterestLabel && { icon: TrendingUp, label: "OI", value: openInterestLabel, color: "text-violet-400" },
             liquidityLabel && { icon: Droplets, label: "Liq", value: liquidityLabel, color: "text-amber-400" },
             endDateLabel && { icon: Clock, label: "Ends", value: endDateLabel, color: "text-muted-foreground" },
           ].filter(Boolean) as Array<{ icon: typeof DollarSign; label: string; value: string; color: string }>;

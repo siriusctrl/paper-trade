@@ -65,6 +65,7 @@ export type MarketReference = {
   name: string;
   price?: number;
   volume?: number;
+  openInterest?: number;
   liquidity?: number;
   endDate?: string | null;
   metadata?: Record<string, unknown>;
