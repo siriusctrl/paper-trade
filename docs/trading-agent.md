@@ -46,6 +46,10 @@ Mission: run autonomous paper trading cycles against unimarket API and improve s
 Rules:
 - Use `skills/unimarket/SKILL.md` as primary API contract.
 - Use `skills/unimarket/scripts/unimarket-agent.sh` for endpoint operations.
+- Prefer helper workflow commands such as `register-safe`, `snapshot`, `orders-open`, `history-summary`, and `scan` before writing custom plumbing.
+- Prefer helper and CLI primitives for deterministic operations and stable data collection.
+- Use ad-hoc code only for situational analysis, candidate comparison, or research the helper does not already provide.
+- If the same derived metric or fetch pattern keeps appearing across cycles, move it into helper or API instead of re-implementing it forever.
 - Never use admin endpoints.
 - Persist runtime state under `.state/` and logs under `logs/`.
 - All state-changing operations must include non-empty `reasoning`.
@@ -133,37 +137,41 @@ The intended flow is simple:
 
 Watchlist should optimize wake-up attention. Memory should preserve reusable thinking.
 
+### Boundary: API vs helper vs model
+
+Use three layers with clear responsibilities:
+- API defines stable, market-agnostic contracts plus audit-safe state changes.
+- Helper and CLI utilities wrap deterministic operations such as auth, discovery, batch reads, account state reads, and journal or order writes.
+- The model uses those stable primitives to compare opportunities, form hypotheses, decide between trade and no-trade, and update watchlist or memory.
+
+A good default rule is:
+- if a helper command already exists, use it instead of hand-writing `curl` or repetitive `jq` plumbing
+- use custom shell, `jq`, or Node only for one-off situational analysis or candidate comparison
+- when the same custom analysis appears repeatedly across cycles, move it down into helper or API
+- keep subjective strategy views out of helper conventions; they belong in prompts, watchlists, memory, and journals
+
+This keeps infra deterministic and reusable while leaving strategy and judgment to the model.
+
 ## Step 3: Bootstrap Credentials
 
-The helper script's `register` command is convenient for interactive use, but it prints shell exports containing the raw API key. For unattended runners, use a tiny bootstrap helper that writes `.state/agent.env` safely.
+The helper script now provides `register-safe`, so the bootstrap helper can stay thin and avoid custom credential plumbing.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_DIR="$WS_DIR/.state"
-ENV_FILE="$STATE_DIR/agent.env"
-BASE_URL="${BASE_URL:-http://localhost:3100}"
-API_BASE="${BASE_URL%/}/api"
+ENV_FILE="$WS_DIR/.state/agent.env"
 
-mkdir -p "$STATE_DIR"
+mkdir -p "$WS_DIR/.state"
 
 if [[ -f "$ENV_FILE" ]] && grep -q '^API_KEY=' "$ENV_FILE"; then
   exit 0
 fi
 
-payload="$(jq -nc --arg userName "codex-trader-$(date +%s)" '{userName: $userName}')"
-response="$(curl -sS -X POST "$API_BASE/auth/register" -H 'Content-Type: application/json' -d "$payload")"
-
-cat > "$ENV_FILE" <<EOF
-BASE_URL=$BASE_URL
-API_KEY=$(printf '%s' "$response" | jq -r '.apiKey')
-USER_ID=$(printf '%s' "$response" | jq -r '.userId')
-ACCOUNT_ID=$(printf '%s' "$response" | jq -r '.account.id')
-EOF
-
-chmod 600 "$ENV_FILE"
+BASE_URL="${BASE_URL:-http://localhost:3100}" \
+  "$WS_DIR/skills/unimarket/scripts/unimarket-agent.sh" \
+  --compact register-safe "codex-trader-$(date +%s)" "$ENV_FILE" >/dev/null
 ```
 
 ## Step 4: Runner Script
@@ -223,7 +231,7 @@ done
 
 Use `--yolo` or another full-access mode intentionally here. A sandboxed `codex exec --full-auto` may not be able to reach `http://localhost:3100` from inside the agent workspace.
 
-For long-running operation, launch the runner inside `tmux` so the loop survives terminal disconnects.
+For long-running operation, launch the runner inside `tmux` so the loop survives terminal disconnects. As helper commands grow, prefer helper-first data prep such as `snapshot`, `orders-open`, `history-summary`, and `scan` over repeating custom `curl` + `jq` glue inside every cycle.
 
 ## Design Patterns
 

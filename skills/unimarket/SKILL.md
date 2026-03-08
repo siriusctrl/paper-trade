@@ -13,8 +13,8 @@ Authentication:
 
 ## Fast Path
 
-1. Register once with `POST /api/auth/register`.
-2. Discover market IDs, capabilities, browse sorts, and price-history defaults with `GET /api/markets`.
+1. Register once with helper `register-safe` when you need unattended credential bootstrap, or `POST /api/auth/register` for raw API use.
+2. Discover market IDs, capabilities, browse sorts, and price-history defaults with `markets-summary` or `GET /api/markets`.
 3. Browse or search candidates:
    - `GET /api/markets/{market}/browse`
    - `GET /api/markets/{market}/search?q=...`
@@ -23,8 +23,9 @@ Authentication:
    - `GET /api/markets/{market}/trading-constraints?reference=...`
    - `GET /api/markets/{market}/quote?reference=...`
    - optional `orderbook`, `price-history`, `funding`, `resolve`
-6. Place or cancel orders with non-empty `reasoning`.
-7. Audit with `orders`, `positions`, `portfolio`, `timeline`, `journal`, and `events`.
+6. Prefer helper workflow commands such as `snapshot`, `orders-open`, `history-summary`, and `scan` for deterministic decision prep.
+7. Place or cancel orders with non-empty `reasoning`.
+8. Audit with `orders`, `positions`, `portfolio`, `timeline`, `journal`, and `events`.
 
 ## Operating Rules
 
@@ -47,18 +48,40 @@ Authentication:
 - Avoid `POST /api/orders/reconcile` in routine cycles; the background reconciler already runs.
 - Reload this skill and its references if `system.ready.data.version` changes.
 
+## Boundary Rules
+
+- Use `skills/unimarket/scripts/unimarket-agent.sh` for deterministic endpoint work whenever a matching command already exists.
+- Prefer batch helper commands such as `quotes`, `orderbooks`, and `fundings` before writing per-reference loops.
+- Use raw `curl`, ad-hoc shell, `jq`, or Node only for situational analysis, ranking, summarization, or helper gaps.
+- Do not duplicate helper responsibilities such as auth headers, endpoint paths, write payload construction, or idempotency handling in custom code unless the helper lacks the operation.
+- If the same derived metric, fetch pattern, or decision-prep script keeps reappearing, treat that as a signal to extend the helper or API instead of re-implementing it forever.
+- Keep subjective trade selection, thesis ranking, and trade or no-trade judgment in the model rather than in helper conventions.
+
 ## Helper Script
 
-Use `skills/unimarket/scripts/unimarket-agent.sh` for repetitive calls.
+Use `skills/unimarket/scripts/unimarket-agent.sh` for repetitive calls and any existing helper-first workflow before falling back to custom scripts.
 
-Common commands:
+Global output options:
+- `--compact` for machine-friendly one-line JSON
+- `--jq '<filter>'` for stable field extraction without extra wrapper code
+- `--raw` when the caller needs untouched JSON
+
+Preferred workflow commands:
+- `register-safe [user_name] [env_file]` for unattended bootstrap
+- `markets-summary` for a concise market capability view
+- `snapshot [orders_view] [limit] [offset]` for account + portfolio + positions + orders in one response
+- `orders-open [limit] [offset]` for duplicate-order prevention without guessing query params
+- `history-summary <market> <reference> [interval] [lookback] [as_of]` for summary + last candles without full-history plumbing
+- `scan <market> <references_csv> [interval] [lookback] [as_of]` for shortlist preparation with constraints, quotes, orderbook summaries, optional funding, and optional history summaries
+
+Core commands still available:
 - `register`, `markets`, `browse`, `search`
 - `constraints`, `quote`, `quotes`, `orderbook`, `orderbooks`, `funding`, `fundings`, `resolve`
 - `history`, `history-range`
-- `buy`, `sell`, `cancel`, `orders`
+- `buy`, `sell`, `cancel`, `orders`, `orders-history`, `orders-status`
 - `account`, `portfolio`, `positions`, `timeline`, `journal-add`, `journal-list`, `events`
 
-Use `history` for the common agent flow:
+Use `history` when you need the full candle payload:
 - `history <market> <reference> [interval] [lookback] [as_of]`
 
 Use `history-range` only when an exact time window is required:
