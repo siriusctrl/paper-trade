@@ -64,6 +64,9 @@ export const withErrorHandling = (fn: (c: AppContext) => Promise<Response>) => {
         return jsonError(c, 400, error.code, error.message);
       }
       if (error instanceof MarketAdapterError) {
+        if (error.code === "INVALID_INPUT") {
+          return jsonError(c, 400, error.code, error.message);
+        }
         if (error.code === "SYMBOL_NOT_FOUND") {
           return jsonError(c, 404, error.code, error.message);
         }

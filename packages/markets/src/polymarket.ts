@@ -1,12 +1,26 @@
 import { TtlCache } from "./cache.js";
 import {
+  buildPriceHistoryResult,
+  DEFAULT_PRICE_HISTORY_LOOKBACKS_BY_INTERVAL,
+  DEFAULT_PRICE_HISTORY_MAX_CANDLES,
+  DEFAULT_PRICE_HISTORY_SUPPORTED_LOOKBACKS,
+  PRICE_HISTORY_INTERVAL_MS,
+  resolvePriceHistoryRange,
+  resampleCandles,
+} from "./history.js";
+import {
   MarketAdapterError,
   type BrowseOption,
   type BrowseOptions,
+  type CandleData,
   type MarketAdapter,
   type MarketReference,
   type Orderbook,
   type OrderbookLevel,
+  type PriceHistoryInterval,
+  type PriceHistoryOptions,
+  type PriceHistoryResult,
+  type PriceHistorySupport,
   type Quote,
   type Resolution,
   type SearchOptions,
@@ -27,11 +41,48 @@ const ORDERBOOK_TTL_MS = 10_000;
 const SEARCH_TTL_MS = 300_000;
 const RESOLVE_TTL_MS = 60_000;
 const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
+const GENERAL_CACHE_MAX_ENTRIES = 5_000;
+const DISCOVERY_CACHE_MAX_ENTRIES = 256;
 const RESOLVE_NAMES_CONCURRENCY = 8;
 const SEARCH_PAGE_SIZE = 20;
 const SEARCH_MAX_PAGES = 10;
 const BROWSE_EVENTS_PAGE_SIZE = 50;
 const BROWSE_MAX_EVENT_PAGES = 6;
+
+const CANDLE_TTL_MS: Record<string, number> = {
+  "1m": 60_000,
+  "5m": 120_000,
+  "15m": 300_000,
+  "1h": 300_000,
+  "4h": 600_000,
+  "1d": 1_800_000,
+};
+const POLYMARKET_PRICE_HISTORY: PriceHistorySupport = {
+  nativeIntervals: ["1m", "1h", "1d"],
+  supportedIntervals: ["1m", "5m", "15m", "1h", "4h", "1d"],
+  defaultInterval: "1h",
+  supportedLookbacks: DEFAULT_PRICE_HISTORY_SUPPORTED_LOOKBACKS,
+  defaultLookbacks: DEFAULT_PRICE_HISTORY_LOOKBACKS_BY_INTERVAL,
+  maxCandles: DEFAULT_PRICE_HISTORY_MAX_CANDLES,
+  supportsCustomRange: true,
+  supportsResampling: true,
+};
+const POLYMARKET_SOURCE_INTERVAL: Record<PriceHistoryInterval, PriceHistoryInterval> = {
+  "1m": "1m",
+  "5m": "1m",
+  "15m": "1m",
+  "1h": "1h",
+  "4h": "1h",
+  "1d": "1d",
+};
+const POLYMARKET_FIDELITY_MINUTES: Record<PriceHistoryInterval, number> = {
+  "1m": 1,
+  "5m": 1,
+  "15m": 1,
+  "1h": 60,
+  "4h": 60,
+  "1d": 1440,
+};
 
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_BASE_URL = "https://clob.polymarket.com";
@@ -194,10 +245,12 @@ export class PolymarketAdapter implements MarketAdapter {
   readonly description = "Prediction markets - contracts typically settle to 0 or 1";
   readonly referenceFormat = "Market reference (slug, condition ID, or token ID)";
   readonly priceRange: [number, number] = [0.01, 0.99];
-  readonly capabilities = ["search", "browse", "quote", "orderbook", "resolve"] as const;
+  readonly capabilities = ["search", "browse", "quote", "orderbook", "resolve", "priceHistory"] as const;
   readonly browseOptions = POLYMARKET_BROWSE_OPTIONS;
+  readonly priceHistory = POLYMARKET_PRICE_HISTORY;
 
-  private readonly cache = new TtlCache();
+  private readonly cache = new TtlCache(GENERAL_CACHE_MAX_ENTRIES);
+  private readonly discoveryCache = new TtlCache(DISCOVERY_CACHE_MAX_ENTRIES);
   private readonly gammaBaseUrl: string;
   private readonly clobBaseUrl: string;
   private readonly browseCacheTtlMs: number;
@@ -362,7 +415,7 @@ export class PolymarketAdapter implements MarketAdapter {
 
   private async fetchSearchPreviewPage(query: string, page: number): Promise<BrowsePage> {
     const cacheKey = `search-preview:${query.toLowerCase()}:${page}`;
-    const cached = this.cache.get<BrowsePage>(cacheKey);
+    const cached = this.discoveryCache.get<BrowsePage>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -416,13 +469,13 @@ export class PolymarketAdapter implements MarketAdapter {
         : null;
 
     const result = { previews, hasMore: Boolean(pagination?.hasMore) };
-    this.cache.set(cacheKey, result, SEARCH_TTL_MS);
+    this.discoveryCache.set(cacheKey, result, SEARCH_TTL_MS);
     return result;
   }
 
   private async fetchBrowseEventPage(page: number): Promise<BrowsePage> {
     const cacheKey = `browse-events:${page}`;
-    const cached = this.cache.get<BrowsePage>(cacheKey);
+    const cached = this.discoveryCache.get<BrowsePage>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -475,7 +528,7 @@ export class PolymarketAdapter implements MarketAdapter {
       previews,
       hasMore: raw.length === BROWSE_EVENTS_PAGE_SIZE,
     };
-    this.cache.set(cacheKey, result, SEARCH_TTL_MS);
+    this.discoveryCache.set(cacheKey, result, SEARCH_TTL_MS);
     return result;
   }
 
@@ -595,7 +648,7 @@ export class PolymarketAdapter implements MarketAdapter {
     const cacheKey = `browse-result:${sort}`;
     // This cache stores the full sorted browse universe for a sort key, not the
     // requested page slice. Deeper offsets rely on reusing that complete snapshot.
-    const sorted = await this.cache.remember(cacheKey, {
+    const sorted = await this.discoveryCache.remember(cacheKey, {
       ttlMs: this.browseCacheTtlMs,
       load: async () => {
         const collected: MarketReference[] = [];
@@ -833,5 +886,91 @@ export class PolymarketAdapter implements MarketAdapter {
     }
 
     return { names, outcomes };
+  }
+
+  async getPriceHistory(reference: string, options?: PriceHistoryOptions): Promise<PriceHistoryResult> {
+    const tokenId = await this.resolveTokenId(reference);
+    const { interval, range } = resolvePriceHistoryRange(this.priceHistory, options);
+    const sourceInterval = POLYMARKET_SOURCE_INTERVAL[interval] ?? interval;
+    const sourceBarMs = PRICE_HISTORY_INTERVAL_MS[sourceInterval];
+    const endTime = Math.floor(Date.parse(range.endTime) / sourceBarMs) * sourceBarMs;
+    const startTime = Math.floor(Date.parse(range.startTime) / sourceBarMs) * sourceBarMs;
+    const effectiveRange = {
+      ...range,
+      asOf: new Date(endTime).toISOString(),
+      startTime: new Date(startTime).toISOString(),
+      endTime: new Date(endTime).toISOString(),
+    };
+
+    const cacheKey = `candle:${tokenId}:${interval}:${startTime}:${endTime}`;
+    const ttl = CANDLE_TTL_MS[interval] ?? CANDLE_TTL_MS[this.priceHistory.defaultInterval];
+
+    return this.cache.remember(cacheKey, {
+      ttlMs: ttl,
+      load: async () => {
+        const fidelity = POLYMARKET_FIDELITY_MINUTES[sourceInterval] ?? 60;
+        const startSeconds = Math.floor(startTime / 1_000);
+        const endSeconds = Math.floor(endTime / 1_000);
+
+        const url = new URL("/prices-history", this.clobBaseUrl);
+        url.searchParams.set("market", tokenId);
+        url.searchParams.set("interval", sourceInterval);
+        url.searchParams.set("fidelity", String(fidelity));
+        url.searchParams.set("startTs", String(startSeconds));
+        url.searchParams.set("endTs", String(endSeconds));
+
+        let raw: unknown;
+        try {
+          raw = await fetchJson<unknown>(url.toString());
+        } catch {
+          return buildPriceHistoryResult({
+            reference,
+            interval,
+            resampledFrom: sourceInterval === interval ? null : sourceInterval,
+            range: effectiveRange,
+            candles: [],
+          });
+        }
+        if (!raw || typeof raw !== "object") {
+          return buildPriceHistoryResult({
+            reference,
+            interval,
+            resampledFrom: sourceInterval === interval ? null : sourceInterval,
+            range: effectiveRange,
+            candles: [],
+          });
+        }
+
+        const response = raw as UnknownObject;
+        const history = Array.isArray(response.history) ? response.history : [];
+
+        const candles = history
+          .map((entry) => {
+            if (typeof entry !== "object" || entry === null) return null;
+            const e = entry as UnknownObject;
+            const t = parseNumber(e.t);
+            const p = parseNumber(e.p);
+            if (t === null || p === null) return null;
+            return {
+              timestamp: new Date(t * 1_000).toISOString(),
+              open: p,
+              high: p,
+              low: p,
+              close: p,
+              volume: 0,
+            };
+          })
+          .filter((c): c is CandleData => c !== null);
+
+        const normalizedCandles = sourceInterval === interval ? candles : resampleCandles(candles, interval);
+        return buildPriceHistoryResult({
+          reference,
+          interval,
+          resampledFrom: sourceInterval === interval ? null : sourceInterval,
+          range: effectiveRange,
+          candles: normalizedCandles,
+        });
+      },
+    });
   }
 }

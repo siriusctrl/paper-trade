@@ -7,6 +7,7 @@ import {
   listPositionsQuerySchema,
   multiQuoteQuerySchema,
   paginationQuerySchema,
+  priceHistoryQuerySchema,
   placeOrderSchema,
   registerSchema,
   reasoningSchema,
@@ -100,5 +101,46 @@ describe("schemas", () => {
 
     expect(adminAmountSchema.safeParse({ amount: 0 }).success).toBe(false);
     expect(adminAmountSchema.safeParse({ amount: 500 }).success).toBe(true);
+  });
+
+  it("validates price history query ranges and lookbacks", () => {
+    expect(priceHistoryQuerySchema.parse({ reference: "BTC" })).toEqual({ reference: "BTC" });
+    expect(
+      priceHistoryQuerySchema.parse({
+        reference: "BTC",
+        interval: "1h",
+        lookback: "7d",
+        asOf: "2026-03-08T00:00:00.000Z",
+      }),
+    ).toMatchObject({
+      reference: "BTC",
+      interval: "1h",
+      lookback: "7d",
+      asOf: "2026-03-08T00:00:00.000Z",
+    });
+
+    expect(
+      priceHistoryQuerySchema.safeParse({
+        reference: "BTC",
+        startTime: "2026-03-07T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      priceHistoryQuerySchema.safeParse({
+        reference: "BTC",
+        lookback: "7d",
+        startTime: "2026-03-01T00:00:00.000Z",
+        endTime: "2026-03-08T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      priceHistoryQuerySchema.safeParse({
+        reference: "BTC",
+        startTime: "invalid",
+        endTime: "2026-03-08T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
   });
 });

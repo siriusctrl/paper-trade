@@ -24,6 +24,7 @@ export class MarketRegistry {
       priceRange: adapter.priceRange,
       capabilities: adapter.capabilities,
       browseOptions: adapter.browseOptions ?? [],
+      priceHistory: adapter.priceHistory ?? null,
     }));
   }
 }

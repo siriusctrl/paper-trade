@@ -64,6 +64,22 @@ export type MarketInfo = {
   capabilities: string[];
   referenceFormat: string;
   browseOptions: BrowseOption[];
+  priceHistory: MarketPriceHistoryInfo | null;
+};
+
+export type PriceHistoryInterval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+
+export type PriceHistoryLookback = "1h" | "4h" | "1d" | "7d" | "30d";
+
+export type MarketPriceHistoryInfo = {
+  nativeIntervals: PriceHistoryInterval[];
+  supportedIntervals: PriceHistoryInterval[];
+  defaultInterval: PriceHistoryInterval;
+  supportedLookbacks: PriceHistoryLookback[];
+  defaultLookbacks: Partial<Record<PriceHistoryInterval, PriceHistoryLookback>>;
+  maxCandles: number;
+  supportsCustomRange: boolean;
+  supportsResampling: boolean;
 };
 
 export type BrowseOption = {
@@ -86,6 +102,9 @@ export type QuoteData = {
   price: number;
   bid?: number;
   ask?: number;
+  mid: number;
+  spreadAbs: number | null;
+  spreadBps: number | null;
   timestamp: string;
 };
 
@@ -200,6 +219,51 @@ export type PlaceOrderInput = {
   leverage?: number;
   reduceOnly?: boolean;
   reasoning: string;
+};
+
+export type CandleData = {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type PriceHistoryRange = {
+  mode: "lookback" | "custom";
+  lookback: PriceHistoryLookback | null;
+  asOf: string;
+  startTime: string;
+  endTime: string;
+};
+
+export type PriceHistorySummary = {
+  open: number | null;
+  close: number | null;
+  change: number | null;
+  changePct: number | null;
+  high: number | null;
+  low: number | null;
+  volume: number | null;
+  candleCount: number;
+};
+
+export type PriceHistoryResponse = {
+  reference: string;
+  interval: PriceHistoryInterval;
+  resampledFrom: PriceHistoryInterval | null;
+  range: PriceHistoryRange;
+  candles: CandleData[];
+  summary: PriceHistorySummary;
+};
+
+export type TradeMarker = {
+  side: string;
+  quantity: number;
+  price: number;
+  fee: number;
+  createdAt: string;
 };
 
 const AUTH_ERROR_MESSAGE = "Invalid admin key. Please sign in again.";
@@ -327,5 +391,28 @@ export const createAdminApiClient = ({
         headers: { "Idempotency-Key": idempotencyKey },
         body: JSON.stringify(order),
       }),
+    getPriceHistory: (
+      marketId: string,
+      reference: string,
+      options: {
+        interval?: PriceHistoryInterval;
+        lookback?: PriceHistoryLookback;
+        asOf?: string;
+        startTime?: string;
+        endTime?: string;
+      } = {},
+    ) => {
+      const params = new URLSearchParams({ reference });
+      if (options.interval) params.set("interval", options.interval);
+      if (options.lookback) params.set("lookback", options.lookback);
+      if (options.asOf) params.set("asOf", options.asOf);
+      if (options.startTime) params.set("startTime", options.startTime);
+      if (options.endTime) params.set("endTime", options.endTime);
+      return request<PriceHistoryResponse>(`/api/markets/${marketId}/price-history?${params.toString()}`);
+    },
+    getSymbolTrades: (userId: string, market: string, symbol: string, limit = 50) =>
+      request<{ trades: TradeMarker[] }>(
+        `/api/admin/users/${userId}/symbol-trades?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+      ),
   };
 };

@@ -95,13 +95,65 @@ GET /api/markets
 GET /api/markets/:market/browse?sort=<market-specific-sort>
 GET /api/markets/:market/search?q=iran
 GET /api/markets/:market/quote?reference=<reference>
+GET /api/markets/:market/price-history?reference=<reference>&interval=1h&lookback=7d
 POST /api/orders
 ```
+
+Quote responses include convenience fields for agents:
+- `price`: execution-facing reference price
+- `mid`: midpoint when both `bid` and `ask` are available, otherwise falls back to `price`
+- `spreadAbs`: absolute spread when both sides exist
+- `spreadBps`: spread in basis points when both sides exist
 
 The platform now treats `reference` as the single external identifier across markets:
 - Polymarket: usually a slug during discovery, resolved lazily to a token id for execution
 - Hyperliquid: usually a ticker such as `BTC`
 - Future markets: whatever adapter-specific identifier makes the most sense externally
+
+`GET /api/markets` also exposes market-specific `priceHistory` defaults so humans and agents can discover:
+- `supportedIntervals` and `nativeIntervals`
+- `defaultInterval`
+- `supportedLookbacks` and per-interval `defaultLookbacks`
+- `maxCandles`, `supportsCustomRange`, and `supportsResampling`
+
+Price history is agent-friendly by default:
+- Use `interval + lookback` for the common case
+- Use `asOf` to anchor a historical snapshot for repeatable analysis
+- Use `startTime + endTime` only for advanced custom ranges
+
+Example:
+
+```bash
+GET /api/markets/polymarket/price-history?reference=iran-hormuz&interval=4h&lookback=30d
+```
+
+Example response shape:
+
+```json
+{
+  "reference": "iran-hormuz",
+  "interval": "4h",
+  "resampledFrom": "1h",
+  "range": {
+    "mode": "lookback",
+    "lookback": "30d",
+    "asOf": "2026-03-08T00:00:00.000Z",
+    "startTime": "2026-02-06T00:00:00.000Z",
+    "endTime": "2026-03-08T00:00:00.000Z"
+  },
+  "candles": [],
+  "summary": {
+    "open": null,
+    "close": null,
+    "change": null,
+    "changePct": null,
+    "high": null,
+    "low": null,
+    "volume": null,
+    "candleCount": 0
+  }
+}
+```
 
 ### Running the Server
 

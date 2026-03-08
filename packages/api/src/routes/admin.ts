@@ -4,14 +4,15 @@ import {
   paginationQuerySchema,
   placeOrderSchema,
   registerSchema,
+  symbolTradesQuerySchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
-import { and, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../platform/auth.js";
 import { db } from "../db/client.js";
-import { accounts, equitySnapshots, journal, users } from "../db/schema.js";
+import { accounts, equitySnapshots, journal, trades, users } from "../db/schema.js";
 import { jsonError } from "../platform/errors.js";
 import { getUserAccount, parseJson, parseQuery, withErrorHandling } from "../platform/helpers.js";
 import { checkIdempotency, storeIdempotencyResponse } from "../platform/idempotency.js";
@@ -265,6 +266,54 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       const response = c.json(placement.order, 201);
       await maybeStoreResponse(response);
       return response;
+    }),
+  );
+  // ─── GET /users/:id/symbol-trades — Per-symbol trade history for charts ─────
+
+  router.get(
+    "/users/:id/symbol-trades",
+    withErrorHandling(async (c) => {
+      const userId = c.req.param("id");
+      const user = await db.select().from(users).where(eq(users.id, userId)).get();
+      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+
+      const parsedQuery = parseQuery(c, symbolTradesQuerySchema);
+      if (!parsedQuery.success) return parsedQuery.response;
+
+      const account = await getUserAccount(userId);
+      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+
+      let symbolFilter = parsedQuery.data.symbol;
+      const marketAdapter = registry.get(parsedQuery.data.market);
+      if (marketAdapter?.normalizeReference) {
+        try {
+          symbolFilter = await marketAdapter.normalizeReference(parsedQuery.data.symbol);
+        } catch {
+          // use original symbol if normalization fails
+        }
+      }
+
+      const tradeRows = await db
+        .select({
+          side: trades.side,
+          quantity: trades.quantity,
+          price: trades.price,
+          fee: trades.fee,
+          createdAt: trades.createdAt,
+        })
+        .from(trades)
+        .where(
+          and(
+            eq(trades.accountId, account.id),
+            eq(trades.market, parsedQuery.data.market),
+            eq(trades.symbol, symbolFilter),
+          ),
+        )
+        .orderBy(desc(trades.createdAt))
+        .limit(parsedQuery.data.limit)
+        .all();
+
+      return c.json({ trades: tradeRows });
     }),
   );
 

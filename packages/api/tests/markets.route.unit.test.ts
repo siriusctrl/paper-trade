@@ -51,7 +51,10 @@ describe("createMarketRoutes", () => {
 
   it("returns missing-market and capability errors consistently", async () => {
     const browseOnly = { capabilities: ["browse"], browse: vi.fn().mockResolvedValue([]) };
-    const quoteOnly = { capabilities: ["quote"], getQuote: vi.fn().mockResolvedValue({ price: 1 }) };
+    const quoteOnly = {
+      capabilities: ["quote"],
+      getQuote: vi.fn().mockResolvedValue({ reference: "BTC", price: 1, bid: 0.99, ask: 1.01, timestamp: "2026-03-08T00:00:00.000Z" }),
+    };
     const registry = {
       list: () => [],
       get: (marketId: string) => {
@@ -65,6 +68,19 @@ describe("createMarketRoutes", () => {
     const missing = await app.request("/markets/missing/quote?reference=BTC");
     expect(missing.status).toBe(404);
     await expect(missing.json()).resolves.toMatchObject({ error: { code: "MARKET_NOT_FOUND" } });
+
+    const quote = await app.request("/markets/quote/quote?reference=BTC");
+    expect(quote.status).toBe(200);
+    await expect(quote.json()).resolves.toMatchObject({
+      reference: "BTC",
+      price: 1,
+      bid: 0.99,
+      ask: 1.01,
+      mid: 1,
+      spreadAbs: 0.02,
+      spreadBps: 200,
+      timestamp: "2026-03-08T00:00:00.000Z",
+    });
 
     const browse = await app.request("/markets/quote/browse?sort=price");
     expect(browse.status).toBe(400);
@@ -103,7 +119,7 @@ describe("createMarketRoutes", () => {
 
     const quotes = await app.request("/markets/mock/quotes?references=btc,eth,sol");
     await expect(quotes.json()).resolves.toEqual({
-      quotes: [{ reference: "btc", price: 100 }],
+      quotes: [{ reference: "btc", price: 100, mid: 100, spreadAbs: null, spreadBps: null }],
       errors: [
         { reference: "eth", error: { code: "SYMBOL_NOT_FOUND", message: "missing eth" } },
         { reference: "sol", error: { code: "INTERNAL_ERROR", message: "quote exploded" } },
@@ -149,5 +165,92 @@ describe("createMarketRoutes", () => {
     const invalid = await app.request("/markets/mock/search");
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({ error: { code: "INVALID_INPUT" } });
+  });
+
+  it("returns price history candles and rejects unsupported markets", async () => {
+    const candleData = [
+      { timestamp: "2026-03-07T00:00:00.000Z", open: 100, high: 105, low: 95, close: 102, volume: 500 },
+    ];
+    const historyPayload = {
+      reference: "BTC",
+      interval: "1h",
+      resampledFrom: null,
+      range: {
+        mode: "lookback",
+        lookback: "7d",
+        asOf: "2026-03-08T00:00:00.000Z",
+        startTime: "2026-03-01T00:00:00.000Z",
+        endTime: "2026-03-08T00:00:00.000Z",
+      },
+      candles: candleData,
+      summary: {
+        open: 100,
+        close: 102,
+        change: 2,
+        changePct: 2,
+        high: 105,
+        low: 95,
+        volume: 500,
+        candleCount: 1,
+      },
+    };
+    const withHistory = {
+      capabilities: ["quote", "priceHistory"],
+      getQuote: vi.fn().mockResolvedValue({ price: 100 }),
+      priceHistory: {
+        nativeIntervals: ["1h"],
+        supportedIntervals: ["1h"],
+        defaultInterval: "1h",
+        supportedLookbacks: ["7d"],
+        defaultLookbacks: { "1h": "7d" },
+        maxCandles: 300,
+        supportsCustomRange: true,
+        supportsResampling: false,
+      },
+      getPriceHistory: vi.fn().mockResolvedValue(historyPayload),
+    };
+    const withoutHistory = {
+      capabilities: ["quote"],
+      getQuote: vi.fn().mockResolvedValue({ price: 50 }),
+    };
+    const registry = {
+      list: () => [],
+      get: (marketId: string) => {
+        if (marketId === "hl") return withHistory;
+        if (marketId === "pm") return withoutHistory;
+        return undefined;
+      },
+    };
+    const app = makeApp(registry);
+
+    const happy = await app.request("/markets/hl/price-history?reference=BTC");
+    expect(happy.status).toBe(200);
+    await expect(happy.json()).resolves.toEqual(historyPayload);
+
+    const withLookback = await app.request(
+      "/markets/hl/price-history?reference=BTC&interval=1h&lookback=7d&asOf=2026-03-08T00:00:00.000Z",
+    );
+    expect(withLookback.status).toBe(200);
+    expect(withHistory.getPriceHistory).toHaveBeenLastCalledWith("BTC", {
+      interval: "1h",
+      lookback: "7d",
+      asOf: "2026-03-08T00:00:00.000Z",
+      startTime: undefined,
+      endTime: undefined,
+    });
+
+    const invalid = await app.request(
+      "/markets/hl/price-history?reference=BTC&lookback=7d&startTime=2026-03-01T00:00:00.000Z&endTime=2026-03-08T00:00:00.000Z",
+    );
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({ error: { code: "INVALID_INPUT" } });
+
+    const unsupported = await app.request("/markets/pm/price-history?reference=YES");
+    expect(unsupported.status).toBe(400);
+    await expect(unsupported.json()).resolves.toMatchObject({ error: { code: "CAPABILITY_NOT_SUPPORTED" } });
+
+    const missing = await app.request("/markets/unknown/price-history?reference=BTC");
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({ error: { code: "MARKET_NOT_FOUND" } });
   });
 });

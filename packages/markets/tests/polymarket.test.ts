@@ -824,6 +824,40 @@ describe("PolymarketAdapter", () => {
     // key maintains its own browse-result cache entry with independent ordering
   });
 
+  it("retains browse caches across sort switches under heavy symbol-map churn", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/events")) {
+        return jsonResponse([
+          {
+            title: "Mega event",
+            liquidity: "1000",
+            markets: Array.from({ length: 300 }, (_, index) => ({
+              slug: `market-${index}`,
+              question: `Market ${index}`,
+              conditionId: `0x${index.toString(16).padStart(64, "0")}`,
+              clobTokenIds: JSON.stringify([String(index + 1)]),
+              volume24hr: String(10_000 - index),
+              liquidity: String(index),
+              lastTradePrice: "0.50",
+            })),
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const byVolume = await adapter.browse?.({ sort: "volume", limit: 10, offset: 0 });
+    const byLiquidity = await adapter.browse?.({ sort: "liquidity", limit: 10, offset: 0 });
+    const byVolumeAgain = await adapter.browse?.({ sort: "volume", limit: 10, offset: 0 });
+
+    expect(byVolume?.[0]?.reference).toBe("market-0");
+    expect(byLiquidity?.[0]?.reference).toBe("market-299");
+    expect(byVolumeAgain).toEqual(byVolume);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("applies limit and offset from browse cache without re-fetching", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
@@ -900,6 +934,79 @@ describe("PolymarketAdapter", () => {
     expect(firstPage).toHaveLength(20);
     expect(deeperPage?.map((row) => row.reference)).toEqual(["market-51", "market-52"]);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("resamples price history into the requested interval", async () => {
+    const tokenId = "777";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "https://gamma.example/markets?slug=macro-yes&limit=1") {
+        return jsonResponse([{ slug: "macro-yes", conditionId: `0x${"7".repeat(64)}`, clobTokenIds: JSON.stringify([tokenId]) }]);
+      }
+      if (
+        url
+        === "https://clob.example/prices-history?market=777&interval=1m&fidelity=1&startTs=1700006400&endTs=1700009400"
+      ) {
+        return jsonResponse({
+          history: [
+            { t: 1700006400, p: "0.40" },
+            { t: 1700006460, p: "0.42" },
+            { t: 1700006520, p: "0.41" },
+            { t: 1700006580, p: "0.45" },
+            { t: 1700006640, p: "0.44" },
+            { t: 1700006700, p: "0.46" },
+          ],
+        });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const opts = {
+      interval: "5m" as const,
+      startTime: new Date(1700006400000).toISOString(),
+      endTime: new Date(1700009400000).toISOString(),
+    };
+    const first = await adapter.getPriceHistory("macro-yes", opts);
+    const second = await adapter.getPriceHistory("macro-yes", opts);
+
+    expect(first).toMatchObject({
+      reference: "macro-yes",
+      interval: "5m",
+      resampledFrom: "1m",
+      range: {
+        mode: "custom",
+        lookback: null,
+        startTime: new Date(1700006400000).toISOString(),
+        endTime: new Date(1700009400000).toISOString(),
+      },
+      summary: {
+        open: 0.4,
+        close: 0.46,
+        high: 0.46,
+        low: 0.4,
+        candleCount: 2,
+      },
+    });
+    expect(first.candles).toEqual([
+      {
+        timestamp: new Date(1700006400000).toISOString(),
+        open: 0.4,
+        high: 0.45,
+        low: 0.4,
+        close: 0.44,
+        volume: 0,
+      },
+      {
+        timestamp: new Date(1700006700000).toISOString(),
+        open: 0.46,
+        high: 0.46,
+        low: 0.46,
+        close: 0.46,
+        volume: 0,
+      },
+    ]);
+    expect(second).toEqual(first);
   });
 
 });

@@ -105,6 +105,58 @@ export const multiQuoteQuerySchema = z.object({
     .refine((references) => references.length <= 50, { message: "references supports up to 50 values" }),
 });
 
+export const priceHistoryIntervalSchema = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
+export const priceHistoryLookbackSchema = z.enum(["1h", "4h", "1d", "7d", "30d"]);
+
+const dateTimeQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), { message: "must be a valid datetime" });
+
+export const priceHistoryQuerySchema = z.object({
+  reference: referenceSchema,
+  interval: priceHistoryIntervalSchema.optional(),
+  lookback: priceHistoryLookbackSchema.optional(),
+  asOf: dateTimeQuerySchema.optional(),
+  startTime: dateTimeQuerySchema.optional(),
+  endTime: dateTimeQuerySchema.optional(),
+}).superRefine((value, ctx) => {
+  const hasStart = value.startTime !== undefined;
+  const hasEnd = value.endTime !== undefined;
+  const usesCustomRange = hasStart || hasEnd;
+
+  if (hasStart !== hasEnd) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "startTime and endTime must be provided together",
+      path: hasStart ? ["endTime"] : ["startTime"],
+    });
+  }
+
+  if (value.lookback && usesCustomRange) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "lookback cannot be combined with startTime/endTime",
+      path: ["lookback"],
+    });
+  }
+
+  if (value.asOf && usesCustomRange) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "asOf cannot be combined with startTime/endTime",
+      path: ["asOf"],
+    });
+  }
+});
+
+export const symbolTradesQuerySchema = z.object({
+  market: marketIdSchema,
+  symbol: symbolSchema,
+  limit: z.coerce.number().int().positive().max(200).default(50),
+});
+
 export const adminAmountSchema = z.object({
   amount: z.number().positive(),
 });
@@ -119,6 +171,8 @@ export type SearchMarketQuery = z.infer<typeof searchMarketQuerySchema>;
 export type BrowseMarketQuery = z.infer<typeof browseMarketQuerySchema>;
 export type QuoteQuery = z.infer<typeof quoteQuerySchema>;
 export type MultiQuoteQuery = z.infer<typeof multiQuoteQuerySchema>;
+export type PriceHistoryQuery = z.infer<typeof priceHistoryQuerySchema>;
+export type SymbolTradesQuery = z.infer<typeof symbolTradesQuerySchema>;
 export type AdminAmountInput = z.infer<typeof adminAmountSchema>;
 export type OrderStatus = z.infer<typeof orderStatusSchema>;
 export type OrdersView = z.infer<typeof ordersViewSchema>;

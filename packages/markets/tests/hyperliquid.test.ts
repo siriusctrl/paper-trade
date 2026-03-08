@@ -49,6 +49,11 @@ describe("HyperliquidAdapter", () => {
     expect(adapter.displayName).toBe("Hyperliquid");
     expect(adapter.referenceFormat).toContain("Ticker");
     expect(adapter.capabilities).toEqual(expect.arrayContaining(["search", "browse", "quote", "orderbook", "funding"]));
+    expect(adapter.priceHistory).toMatchObject({
+      defaultInterval: "1h",
+      supportsCustomRange: true,
+      supportsResampling: false,
+    });
   });
 
   it("searches references by query and caches meta", async () => {
@@ -409,5 +414,81 @@ describe("HyperliquidAdapter", () => {
     const recovered = await adapter.browse?.({ limit: 4, offset: 0 });
     expect(recovered?.find((r) => r.reference === "BTC")?.price).toBe(95000.5);
     expect(midsCallCount).toBe(2);
+  });
+
+  it("gets price history from candleSnapshot and caches results", async () => {
+    const candleResponse = [
+      { t: 1700000000000, o: "95000", h: "95500", l: "94500", c: "95200", v: "100.5" },
+      { t: 1700003600000, o: "95200", h: "96000", l: "95100", c: "95800", v: "200.3" },
+    ];
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "candleSnapshot") return jsonResponse(candleResponse);
+      throw new Error(`Unexpected request: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    const opts = {
+      interval: "1h" as const,
+      startTime: new Date(1700000000000).toISOString(),
+      endTime: new Date(1700010000000).toISOString(),
+    };
+    const first = await adapter.getPriceHistory("BTC", opts);
+
+    expect(first).toMatchObject({
+      reference: "BTC",
+      interval: "1h",
+      resampledFrom: null,
+      range: {
+        mode: "custom",
+        lookback: null,
+        asOf: new Date(1700010000000).toISOString(),
+        startTime: new Date(1699999200000).toISOString(),
+        endTime: new Date(1700010000000).toISOString(),
+      },
+      summary: {
+        open: 95000,
+        close: 95800,
+        high: 96000,
+        low: 94500,
+        volume: 300.8,
+        candleCount: 2,
+      },
+    });
+    expect(first.candles).toHaveLength(2);
+    expect(first.candles[0]).toMatchObject({
+      open: 95000,
+      high: 95500,
+      low: 94500,
+      close: 95200,
+      volume: 100.5,
+    });
+    expect(first.candles[0]?.timestamp).toBe(new Date(1700000000000).toISOString());
+
+    // Second call with same options should be cached
+    const second = await adapter.getPriceHistory("BTC", opts);
+    expect(second).toEqual(first);
+
+    const candleCalls = fetchSpy.mock.calls.filter(([, init]) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      return body.type === "candleSnapshot";
+    });
+    expect(candleCalls).toHaveLength(1);
+  });
+
+  it("rejects invalid candleSnapshot responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "candleSnapshot") return jsonResponse("not an array");
+      throw new Error(`Unexpected request: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    await expect(adapter.getPriceHistory("BTC")).rejects.toMatchObject<Partial<MarketAdapterError>>({
+      code: "UPSTREAM_ERROR",
+    });
   });
 });

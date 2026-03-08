@@ -1,5 +1,13 @@
 import { TtlCache } from "./cache.js";
 import {
+    buildPriceHistoryResult,
+    DEFAULT_PRICE_HISTORY_LOOKBACKS_BY_INTERVAL,
+    DEFAULT_PRICE_HISTORY_MAX_CANDLES,
+    DEFAULT_PRICE_HISTORY_SUPPORTED_LOOKBACKS,
+    PRICE_HISTORY_INTERVAL_MS,
+    resolvePriceHistoryRange,
+} from "./history.js";
+import {
     MarketAdapterError,
     type BrowseOption,
     type BrowseOptions,
@@ -8,6 +16,9 @@ import {
     type MarketReference,
     type Orderbook,
     type OrderbookLevel,
+    type PriceHistoryResult,
+    type PriceHistorySupport,
+    type PriceHistoryOptions,
     type Quote,
     type SearchOptions,
     type TradingConstraints,
@@ -19,9 +30,28 @@ const META_TTL_MS = 300_000;
 const FUNDING_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
+
+const CANDLE_TTL_MS: Record<string, number> = {
+    "1m": 60_000,
+    "5m": 120_000,
+    "15m": 300_000,
+    "1h": 300_000,
+    "4h": 600_000,
+    "1d": 1_800_000,
+};
 const HYPERLIQUID_BROWSE_OPTIONS: readonly BrowseOption[] = [
     { value: "price", label: "Price" },
 ];
+const HYPERLIQUID_PRICE_HISTORY: PriceHistorySupport = {
+    nativeIntervals: ["1m", "5m", "15m", "1h", "4h", "1d"],
+    supportedIntervals: ["1m", "5m", "15m", "1h", "4h", "1d"],
+    defaultInterval: "1h",
+    supportedLookbacks: DEFAULT_PRICE_HISTORY_SUPPORTED_LOOKBACKS,
+    defaultLookbacks: DEFAULT_PRICE_HISTORY_LOOKBACKS_BY_INTERVAL,
+    maxCandles: DEFAULT_PRICE_HISTORY_MAX_CANDLES,
+    supportsCustomRange: true,
+    supportsResampling: false,
+};
 
 const DEFAULT_API_URL = "https://api.hyperliquid.xyz/info";
 
@@ -154,8 +184,9 @@ export class HyperliquidAdapter implements MarketAdapter {
     readonly description = "Crypto perpetual futures — no expiry, funding rate every hour";
     readonly referenceFormat = "Ticker (e.g. BTC, ETH, SOL)";
     readonly priceRange: [number, number] | null = null;
-    readonly capabilities = ["search", "browse", "quote", "orderbook", "funding"] as const;
+    readonly capabilities = ["search", "browse", "quote", "orderbook", "funding", "priceHistory"] as const;
     readonly browseOptions = HYPERLIQUID_BROWSE_OPTIONS;
+    readonly priceHistory = HYPERLIQUID_PRICE_HISTORY;
 
     private readonly apiUrl: string;
     private readonly cache = new TtlCache();
@@ -472,5 +503,60 @@ export class HyperliquidAdapter implements MarketAdapter {
 
         this.cache.set(cacheKey, fundingRate, FUNDING_TTL_MS);
         return fundingRate;
+    }
+
+    async getPriceHistory(reference: string, options?: PriceHistoryOptions): Promise<PriceHistoryResult> {
+        const normalizedSymbol = await this.normalizeReference(reference);
+        const { interval, range } = resolvePriceHistoryRange(this.priceHistory, options);
+        const barMs = PRICE_HISTORY_INTERVAL_MS[interval];
+        const endTime = Math.floor(Date.parse(range.endTime) / barMs) * barMs;
+        const startTime = Math.floor(Date.parse(range.startTime) / barMs) * barMs;
+        const effectiveRange = {
+            ...range,
+            asOf: new Date(endTime).toISOString(),
+            startTime: new Date(startTime).toISOString(),
+            endTime: new Date(endTime).toISOString(),
+        };
+
+        const cacheKey = `candle:${normalizedSymbol}:${interval}:${startTime}:${endTime}`;
+        const ttl = CANDLE_TTL_MS[interval] ?? CANDLE_TTL_MS[this.priceHistory.defaultInterval];
+
+        return this.cache.remember(cacheKey, {
+            ttlMs: ttl,
+            load: async () => {
+                const data = await postInfo<unknown[]>(this.apiUrl, {
+                    type: "candleSnapshot",
+                    req: {
+                        coin: normalizedSymbol,
+                        interval,
+                        startTime,
+                        endTime,
+                    },
+                }, this.requestTimeoutMs);
+
+                if (!Array.isArray(data)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid candleSnapshot response from Hyperliquid");
+                }
+
+                const candles = data.map((candle) => {
+                    const c = candle as Record<string, unknown>;
+                    return {
+                        timestamp: new Date(parseNumber(c.t) ?? 0).toISOString(),
+                        open: parseNumber(c.o) ?? 0,
+                        high: parseNumber(c.h) ?? 0,
+                        low: parseNumber(c.l) ?? 0,
+                        close: parseNumber(c.c) ?? 0,
+                        volume: parseNumber(c.v) ?? 0,
+                    };
+                });
+
+                return buildPriceHistoryResult({
+                    reference,
+                    interval,
+                    range: effectiveRange,
+                    candles,
+                });
+            },
+        });
     }
 }

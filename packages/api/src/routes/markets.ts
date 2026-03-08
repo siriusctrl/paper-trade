@@ -1,4 +1,4 @@
-import { browseMarketQuerySchema, multiQuoteQuerySchema, quoteQuerySchema, searchMarketQuerySchema } from "@unimarket/core";
+import { browseMarketQuerySchema, multiQuoteQuerySchema, priceHistoryQuerySchema, quoteQuerySchema, searchMarketQuerySchema } from "@unimarket/core";
 import { MarketAdapterError, type MarketRegistry, type TradingConstraints } from "@unimarket/markets";
 import { Hono } from "hono";
 
@@ -23,6 +23,25 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
       return { code: "INTERNAL_ERROR", message: error.message };
     }
     return { code: "INTERNAL_ERROR", message: "Unknown server error" };
+  };
+
+  const roundMetric = (value: number): number => Number(value.toFixed(12));
+
+  const enrichQuote = <TQuote extends { price: number; bid?: number; ask?: number }>(quote: TQuote) => {
+    const bid = quote.bid;
+    const ask = quote.ask;
+    const hasBid = typeof bid === "number" && Number.isFinite(bid);
+    const hasAsk = typeof ask === "number" && Number.isFinite(ask);
+    const mid = roundMetric(hasBid && hasAsk ? (bid + ask) / 2 : quote.price);
+    const spreadAbs = hasBid && hasAsk ? roundMetric(ask - bid) : null;
+    const spreadBps = spreadAbs !== null && mid > 0 ? roundMetric((spreadAbs / mid) * 10_000) : null;
+
+    return {
+      ...quote,
+      mid,
+      spreadAbs,
+      spreadBps,
+    };
   };
 
   router.get(
@@ -111,7 +130,7 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
       }
 
       const quote = await adapter.getQuote(parsed.data.reference);
-      return c.json(quote);
+      return c.json(enrichQuote(quote));
     }),
   );
 
@@ -137,7 +156,7 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
         if (!reference || !result) continue;
 
         if (result.status === "fulfilled") {
-          quotes.push(result.value);
+          quotes.push(enrichQuote(result.value));
           continue;
         }
 
@@ -245,6 +264,29 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
       }
 
       return c.json({ fundings, errors });
+    }),
+  );
+
+  router.get(
+    "/:market/price-history",
+    withErrorHandling(async (c) => {
+      const parsed = parseQuery(c, priceHistoryQuerySchema);
+      if (!parsed.success) return parsed.response;
+
+      const adapter = registry.get(c.req.param("market"));
+      if (!adapter) return jsonError(c, 404, "MARKET_NOT_FOUND", "Market not found");
+      if (!adapter.capabilities.includes("priceHistory") || typeof adapter.getPriceHistory !== "function") {
+        return jsonError(c, 400, "CAPABILITY_NOT_SUPPORTED", "priceHistory is not supported for this market");
+      }
+
+      const history = await adapter.getPriceHistory(parsed.data.reference, {
+        interval: parsed.data.interval,
+        lookback: parsed.data.lookback,
+        asOf: parsed.data.asOf,
+        startTime: parsed.data.startTime,
+        endTime: parsed.data.endTime,
+      });
+      return c.json(history);
     }),
   );
 

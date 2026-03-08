@@ -1,4 +1,64 @@
-export type MarketCapability = "search" | "browse" | "quote" | "orderbook" | "resolve" | "funding";
+export type MarketCapability = "search" | "browse" | "quote" | "orderbook" | "resolve" | "funding" | "priceHistory";
+
+export type CandleData = {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type PriceHistoryInterval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+
+export type PriceHistoryLookback = "1h" | "4h" | "1d" | "7d" | "30d";
+
+export type PriceHistorySupport = {
+  nativeIntervals: readonly PriceHistoryInterval[];
+  supportedIntervals: readonly PriceHistoryInterval[];
+  defaultInterval: PriceHistoryInterval;
+  supportedLookbacks: readonly PriceHistoryLookback[];
+  defaultLookbacks: Readonly<Partial<Record<PriceHistoryInterval, PriceHistoryLookback>>>;
+  maxCandles: number;
+  supportsCustomRange: boolean;
+  supportsResampling: boolean;
+};
+
+export type PriceHistoryOptions = {
+  interval?: PriceHistoryInterval;
+  lookback?: PriceHistoryLookback;
+  asOf?: string;
+  startTime?: string;
+  endTime?: string;
+};
+
+export type PriceHistoryRange = {
+  mode: "lookback" | "custom";
+  lookback: PriceHistoryLookback | null;
+  asOf: string;
+  startTime: string;
+  endTime: string;
+};
+
+export type PriceHistorySummary = {
+  open: number | null;
+  close: number | null;
+  change: number | null;
+  changePct: number | null;
+  high: number | null;
+  low: number | null;
+  volume: number | null;
+  candleCount: number;
+};
+
+export type PriceHistoryResult = {
+  reference: string;
+  interval: PriceHistoryInterval;
+  resampledFrom: PriceHistoryInterval | null;
+  range: PriceHistoryRange;
+  candles: CandleData[];
+  summary: PriceHistorySummary;
+};
 
 export type MarketReference = {
   reference: string;
@@ -54,6 +114,7 @@ export type MarketDescriptor = {
   priceRange: [number, number] | null;
   capabilities: readonly MarketCapability[];
   browseOptions: readonly BrowseOption[];
+  priceHistory: PriceHistorySupport | null;
 };
 
 export type SearchOptions = {
@@ -92,6 +153,7 @@ export interface MarketAdapter {
   readonly priceRange: [number, number] | null;
   readonly capabilities: readonly MarketCapability[];
   readonly browseOptions?: readonly BrowseOption[];
+  readonly priceHistory?: PriceHistorySupport | null;
 
   search(query: string, options?: SearchOptions): Promise<MarketReference[]>;
   browse?(options?: BrowseOptions): Promise<MarketReference[]>;
@@ -102,6 +164,7 @@ export interface MarketAdapter {
   resolveSymbolNames?(symbols: Iterable<string>): Promise<SymbolResolution>;
   getFundingRate?(reference: string): Promise<FundingRate>;
   getTradingConstraints?(reference: string): Promise<TradingConstraints>;
+  getPriceHistory?(reference: string, options?: PriceHistoryOptions): Promise<PriceHistoryResult>;
 }
 
 export class MarketAdapterError extends Error {

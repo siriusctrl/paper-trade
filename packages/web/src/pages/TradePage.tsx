@@ -15,17 +15,29 @@ import {
   AdminApiError,
   createAdminApiClient,
   type AgentOption,
+  type CandleData,
   type MarketInfo,
   type MarketReferenceResult,
   type PlaceOrderInput,
+  type PriceHistoryInterval,
+  type PriceHistoryLookback,
   type PortfolioData,
   type PortfolioPosition,
   type QuoteData,
+  type TradeMarker,
   type TradingConstraints,
   isAdminAuthError,
 } from "../lib/admin-api";
+import {
+  clearDiscoveryCacheEntry,
+  readDiscoveryCache,
+  type DiscoveryCacheRequest,
+  writeDiscoveryCache,
+} from "../lib/discovery-cache";
 
 type OrderResult = { ok: boolean; message: string } | null;
+const DEFAULT_CHART_INTERVALS: PriceHistoryInterval[] = ["1m", "5m", "1h", "4h", "1d"];
+
 type ClosePrefill = {
   agentId: string;
   market: string;
@@ -99,6 +111,11 @@ export const TradePage = () => {
 
   const [error, setError] = useState<string | null>(null);
 
+  const [candles, setCandles] = useState<CandleData[]>([]);
+  const [tradeMarkers, setTradeMarkers] = useState<TradeMarker[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartInterval, setChartInterval] = useState<PriceHistoryInterval>("1h");
+
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const agentDropdownRef = useRef<HTMLDivElement>(null);
   const discoveryRequestRef = useRef(0);
@@ -112,9 +129,25 @@ export const TradePage = () => {
     () => markets.find((entry) => entry.id === selectedMarket) ?? null,
     [markets, selectedMarket],
   );
+  const chartIntervals = useMemo(() => {
+    const priceHistory = selectedMarketInfo?.priceHistory;
+    const supported = priceHistory?.supportedIntervals;
+    if (!supported || supported.length === 0) {
+      return DEFAULT_CHART_INTERVALS;
+    }
+
+    const presets = DEFAULT_CHART_INTERVALS.filter((interval) => supported.includes(interval));
+    return presets.length > 0 ? presets : [priceHistory.defaultInterval];
+  }, [selectedMarketInfo]);
 
   const isPerpMarket = Boolean(selectedMarketInfo?.capabilities.includes("funding"));
   const discoveryMode = searchQuery.trim().length > 0 ? "search" : "browse";
+
+  useEffect(() => {
+    if (!chartIntervals.includes(chartInterval)) {
+      setChartInterval(chartIntervals[0] ?? "1h");
+    }
+  }, [chartInterval, chartIntervals]);
 
   const canSubmit = Boolean(
     !submitting &&
@@ -171,36 +204,69 @@ export const TradePage = () => {
       sort,
       offset = 0,
       append = false,
+      force = false,
     }: {
       marketId: string;
       query: string;
       sort?: string;
       offset?: number;
       append?: boolean;
+      force?: boolean;
     }) => {
       if (!marketId) {
         return;
       }
 
       const requestId = ++discoveryRequestRef.current;
-      if (append) {
-        setLoadingMore(true);
-      } else {
-        setSearchLoading(true);
+      const trimmedQuery = query.trim();
+      const cacheRequest: DiscoveryCacheRequest = {
+        marketId,
+        query: trimmedQuery,
+        sort,
+        limit: DISCOVERY_PAGE_SIZE,
+        offset,
+      };
+      const cached = force ? null : readDiscoveryCache(cacheRequest);
+      const shouldShowLoader = force || cached === null;
+
+      if (force) {
+        clearDiscoveryCacheEntry(cacheRequest);
+      }
+
+      if (cached) {
+        setSearchResults((previous) => (append ? mergeReferences(previous, cached.results) : cached.results));
+        setHasMoreResults(cached.hasMore);
+        setSearchLoading(false);
+        setLoadingMore(false);
+      }
+
+      if (shouldShowLoader) {
+        if (append) {
+          setLoadingMore(true);
+          setSearchLoading(false);
+        } else {
+          setSearchLoading(true);
+          setLoadingMore(false);
+        }
       }
 
       try {
-        const trimmedQuery = query.trim();
         const payload = trimmedQuery
           ? await client.searchMarketReferences(marketId, trimmedQuery, DISCOVERY_PAGE_SIZE, offset)
           : await client.browseMarketReferences(marketId, sort, DISCOVERY_PAGE_SIZE, offset);
+
+        const nextResults = payload.results;
+        writeDiscoveryCache(cacheRequest, {
+          results: nextResults,
+          hasMore: nextResults.length === DISCOVERY_PAGE_SIZE,
+        });
 
         if (requestId !== discoveryRequestRef.current) {
           return;
         }
 
-        setSearchResults((previous) => (append ? mergeReferences(previous, payload.results) : payload.results));
-        setHasMoreResults(payload.results.length === DISCOVERY_PAGE_SIZE);
+        setSearchResults((previous) => (append ? mergeReferences(previous, nextResults) : nextResults));
+        setHasMoreResults(nextResults.length === DISCOVERY_PAGE_SIZE);
       } catch (searchError) {
         if (requestId !== discoveryRequestRef.current) {
           return;
@@ -208,11 +274,13 @@ export const TradePage = () => {
         if (isAdminAuthError(searchError)) {
           return;
         }
-        if (!append) {
+        if (!cached && !append) {
           setSearchResults([]);
           setHasMoreResults(false);
         }
-        setError(getErrorMessage(searchError, "Failed to load market references"));
+        if (!cached || force) {
+          setError(getErrorMessage(searchError, "Failed to load market references"));
+        }
       } finally {
         if (requestId === discoveryRequestRef.current) {
           if (append) {
@@ -386,6 +454,55 @@ export const TradePage = () => {
 
     return () => clearInterval(interval);
   }, [client, selectedAsset, selectedMarket]);
+
+  // ─── Fetch price history and trade markers when asset or interval changes ───
+  useEffect(() => {
+    if (!selectedAsset || !selectedMarket) {
+      setCandles([]);
+      setTradeMarkers([]);
+      return;
+    }
+
+    const priceHistory = selectedMarketInfo?.priceHistory;
+    if (!selectedMarketInfo?.capabilities.includes("priceHistory") || !priceHistory) {
+      setCandles([]);
+      setChartLoading(false);
+      return;
+    }
+
+    let active = true;
+    setChartLoading(true);
+
+    const fetchChartData = async () => {
+      try {
+        const defaultLookback = priceHistory.defaultLookbacks[chartInterval]
+          ?? priceHistory.defaultLookbacks[priceHistory.defaultInterval]
+          ?? "7d";
+
+        const historyResponse = await client.getPriceHistory(selectedMarket, selectedAsset.reference, {
+          interval: chartInterval,
+          lookback: defaultLookback as PriceHistoryLookback,
+        });
+
+        if (!active) return;
+        setCandles(historyResponse.candles);
+      } catch {
+        if (active) {
+          setCandles([]);
+        }
+      } finally {
+        if (active) {
+          setChartLoading(false);
+        }
+      }
+    };
+
+    void fetchChartData();
+
+    return () => {
+      active = false;
+    };
+  }, [chartInterval, client, selectedAsset, selectedMarket, selectedMarketInfo]);
 
   const handleCreateTrader = async () => {
     if (!newTraderName.trim()) {
@@ -587,6 +704,7 @@ export const TradePage = () => {
               marketId: selectedMarket,
               query: searchQuery.trim(),
               sort: browseSort,
+              force: true,
             });
           }}
           onBrowseSortChange={(nextSort) => {
@@ -620,6 +738,11 @@ export const TradePage = () => {
               reasoning={reasoning}
               submitting={submitting}
               orderResult={orderResult}
+              candles={candles}
+              tradeMarkers={tradeMarkers}
+              chartLoading={chartLoading}
+              chartInterval={chartInterval}
+              chartIntervals={chartIntervals}
               onOrderSideChange={setOrderSide}
               onOrderTypeChange={setOrderType}
               onQuantityChange={setQuantity}
@@ -628,6 +751,7 @@ export const TradePage = () => {
               onReasoningChange={setReasoning}
               onSubmit={() => void handlePlaceOrder()}
               canSubmit={canSubmit}
+              onChartIntervalChange={setChartInterval}
             />
           ) : null}
 

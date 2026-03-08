@@ -1,11 +1,12 @@
 import { ArrowDownUp, Loader2, ShoppingCart, TrendingDown, TrendingUp } from "lucide-react";
 
+import { PriceChart, type CandlePoint, type TradeMarker } from "./PriceChart";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { formatCurrency } from "../../lib/admin";
-import type { MarketReferenceResult, QuoteData, TradingConstraints } from "../../lib/admin-api";
+import type { MarketReferenceResult, PriceHistoryInterval, QuoteData, TradingConstraints } from "../../lib/admin-api";
 
 type OrderResult = { ok: boolean; message: string } | null;
 
@@ -23,6 +24,11 @@ export const TradeTicketCard = ({
   reasoning,
   submitting,
   orderResult,
+  candles,
+  tradeMarkers,
+  chartLoading,
+  chartInterval,
+  chartIntervals,
   onOrderSideChange,
   onOrderTypeChange,
   onQuantityChange,
@@ -31,6 +37,7 @@ export const TradeTicketCard = ({
   onReasoningChange,
   onSubmit,
   canSubmit,
+  onChartIntervalChange,
 }: {
   selectedAsset: MarketReferenceResult | null;
   quote: QuoteData | null;
@@ -45,6 +52,11 @@ export const TradeTicketCard = ({
   reasoning: string;
   submitting: boolean;
   orderResult: OrderResult;
+  candles: CandlePoint[];
+  tradeMarkers: TradeMarker[];
+  chartLoading: boolean;
+  chartInterval: PriceHistoryInterval;
+  chartIntervals: PriceHistoryInterval[];
   onOrderSideChange: (side: "buy" | "sell") => void;
   onOrderTypeChange: (type: "market" | "limit") => void;
   onQuantityChange: (value: string) => void;
@@ -53,6 +65,7 @@ export const TradeTicketCard = ({
   onReasoningChange: (value: string) => void;
   onSubmit: () => void;
   canSubmit: boolean;
+  onChartIntervalChange: (interval: PriceHistoryInterval) => void;
 }) => {
   if (!selectedAsset) {
     return (
@@ -91,6 +104,29 @@ export const TradeTicketCard = ({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Price chart */}
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Price History</span>
+            <div className="flex gap-0.5 rounded border border-border/40 p-0.5">
+              {chartIntervals.map((iv) => (
+                <button
+                  key={iv}
+                  type="button"
+                  className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase transition-colors ${chartInterval === iv
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  onClick={() => onChartIntervalChange(iv)}
+                >
+                  {iv}
+                </button>
+              ))}
+            </div>
+          </div>
+          <PriceChart candles={candles} loading={chartLoading} interval={chartInterval} />
+        </div>
+
         {quote ? (
           <div className="grid grid-cols-3 gap-3">
             <div className="rounded-lg bg-muted/50 p-2.5 text-center">
