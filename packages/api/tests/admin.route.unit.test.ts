@@ -14,7 +14,9 @@ const loadRoutes = async (options?: {
   }>;
   allUsers?: Array<{ id: string; name: string }>;
   parseJsonResult?: { success: true; data: Record<string, unknown> } | { success: false; response: Response };
-  idempotencyResult?: { kind: "none" } | { kind: "store"; candidate: Record<string, unknown> } | { kind: "invalid" | "replay"; response: Response };
+  idempotencyResult?:
+    | { kind: "candidate"; candidate: Record<string, unknown> | null }
+    | { kind: "response"; response: Response };
   placement?:
     | { kind: "filled" | "pending"; order: Record<string, unknown> }
     | { kind: "error"; status: 400 | 404; code: string; message: string };
@@ -28,7 +30,7 @@ const loadRoutes = async (options?: {
     journal: { __name: "journal" },
   };
 
-  const getUserAccount = vi.fn().mockResolvedValue(options?.account ?? null);
+  const getUserAccountScope = vi.fn().mockResolvedValue({ account: options?.account ?? null, mismatch: false });
   const parseJson = vi.fn().mockResolvedValue(
     options?.parseJsonResult ?? {
       success: true,
@@ -36,11 +38,44 @@ const loadRoutes = async (options?: {
     },
   );
   const parseQuery = vi.fn(() => ({ success: true, data: { limit: 20, offset: 0 } }));
-  const checkIdempotency = vi.fn().mockResolvedValue(options?.idempotencyResult ?? { kind: "store", candidate: { id: "idem_1" } });
-  const storeIdempotencyResponse = vi.fn().mockResolvedValue(undefined);
+  const beginIdempotentRequest = vi.fn().mockResolvedValue(
+    options?.idempotencyResult ?? { kind: "candidate", candidate: { id: "idem_1" } },
+  );
+  const storeIdempotentJsonResponse = vi.fn().mockResolvedValue(undefined);
   const placeOrderForAccount = vi.fn().mockResolvedValue(
     options?.placement ?? { kind: "error", status: 400, code: "INVALID_INPUT", message: "bad order" },
   );
+  const buildEquityHistoryModel = vi.fn().mockResolvedValue({
+    range: "bad",
+    series: [
+      {
+        userId: "usr_1",
+        userName: "Alice",
+        snapshots: [
+          {
+            snapshotAt: "2026-03-01T00:00:00.000Z",
+            equity: 110,
+            balance: 100,
+            marketValue: 10,
+            unrealizedPnl: 5,
+          },
+        ],
+      },
+      {
+        userId: "usr_2",
+        userName: "usr_2",
+        snapshots: [
+          {
+            snapshotAt: "2026-03-02T00:00:00.000Z",
+            equity: 90,
+            balance: 95,
+            marketValue: -5,
+            unrealizedPnl: -2,
+          },
+        ],
+      },
+    ],
+  });
 
   vi.doMock("../src/db/client.js", () => ({
     db: {
@@ -63,17 +98,28 @@ const loadRoutes = async (options?: {
   }));
   vi.doMock("../src/db/schema.js", () => tables);
   vi.doMock("../src/platform/helpers.js", () => ({
-    getUserAccount,
+    getUserAccountScope,
     parseJson,
     parseQuery,
+    requireUserRecord: async (_c: unknown, _userId: string) =>
+      options?.user
+        ? { success: true, user: options.user }
+        : {
+          success: false,
+          response: new Response(JSON.stringify({ error: { code: "USER_NOT_FOUND", message: "User not found" } }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }),
+        },
     withErrorHandling: (fn: (c: unknown) => Promise<Response>) => fn,
   }));
   vi.doMock("../src/platform/errors.js", () => ({
     jsonError: (_c: unknown, status: number, code: string, message: string) =>
       new Response(JSON.stringify({ error: { code, message } }), { status, headers: { "content-type": "application/json" } }),
   }));
-  vi.doMock("../src/platform/idempotency.js", () => ({ checkIdempotency, storeIdempotencyResponse }));
+  vi.doMock("../src/platform/idempotency.js", () => ({ beginIdempotentRequest, storeIdempotentJsonResponse }));
   vi.doMock("../src/services/admin-overview.js", () => ({ buildAdminOverviewModel: vi.fn().mockResolvedValue({}) }));
+  vi.doMock("../src/services/equity-history.js", () => ({ buildEquityHistoryModel }));
   vi.doMock("../src/services/order-placement.js", () => ({ createOrderPlacementService: vi.fn(() => ({ placeOrderForAccount })) }));
   vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel: vi.fn().mockResolvedValue({}) }));
   vi.doMock("../src/timeline.js", () => ({ buildTimelineEvents: vi.fn().mockResolvedValue([]) }));
@@ -87,7 +133,7 @@ const loadRoutes = async (options?: {
   });
   app.route("/admin", createAdminRoutes({} as never));
 
-  return { app, getUserAccount, parseJson, checkIdempotency, storeIdempotencyResponse, placeOrderForAccount };
+  return { app, getUserAccountScope, parseJson, beginIdempotentRequest, storeIdempotentJsonResponse, placeOrderForAccount };
 };
 
 afterEach(() => {
@@ -158,7 +204,7 @@ describe("admin routes", () => {
       user: { id: "usr_1", name: "Alice" },
       account: { id: "acct_1", userId: "usr_1", balance: 100 },
       placement: { kind: "error", status: 400, code: "INVALID_INPUT", message: "quantity must align with step 1" },
-      idempotencyResult: { kind: "store", candidate: { id: "idem_1" } },
+      idempotencyResult: { kind: "candidate", candidate: { id: "idem_1" } },
     });
 
     const res = await routes.app.request("/admin/users/usr_1/orders", {
@@ -171,10 +217,10 @@ describe("admin routes", () => {
     await expect(res.json()).resolves.toEqual({
       error: { code: "INVALID_INPUT", message: "quantity must align with step 1" },
     });
-    expect(routes.checkIdempotency).toHaveBeenCalled();
+    expect(routes.beginIdempotentRequest).toHaveBeenCalled();
     expect(routes.placeOrderForAccount).toHaveBeenCalledWith(
       expect.objectContaining({ account: expect.objectContaining({ id: "acct_1" }) }),
     );
-    expect(routes.storeIdempotencyResponse).not.toHaveBeenCalled();
+    expect(routes.storeIdempotentJsonResponse).not.toHaveBeenCalled();
   });
 });

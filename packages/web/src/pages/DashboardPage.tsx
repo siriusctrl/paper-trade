@@ -17,15 +17,14 @@ import { Input } from "../components/ui/input";
 import { LoadingState } from "../components/LoadingState";
 import {
   chartPalette,
-  clearAdminKey,
   formatCompactNumber,
   formatCurrency,
   formatNumber,
   formatSignedCurrency,
-  readStoredAdminKey,
 } from "../lib/admin";
 import { useAdminOverview } from "../lib/useAdminOverview";
 import { useEquityHistory } from "../lib/useEquityHistory";
+import { useAdminSession } from "../lib/useAdminSession";
 
 const AGENTS_PER_PAGE = 6;
 const RANGE_OPTIONS = ["1w", "1m", "3m", "6m", "1y"] as const;
@@ -40,20 +39,19 @@ type ChartMode = "equity" | "return";
 
 export const DashboardPage = () => {
   const navigate = useNavigate();
-  const adminKey = readStoredAdminKey();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [range, setRange] = useState<string>("1m");
   const [chartMode, setChartMode] = useState<ChartMode>("equity");
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set());
+  const { adminKey, client } = useAdminSession();
 
-  const handleAuthError = () => {
-    clearAdminKey();
-    navigate("/login", { replace: true });
-  };
-
-  const { overview, error, loading, refresh } = useAdminOverview({ adminKey, onAuthError: handleAuthError });
-  const { data: historyData, loading: historyLoading, refresh: refreshHistory } = useEquityHistory({ adminKey, range, onAuthError: handleAuthError });
+  const { overview, error, loading, refresh } = useAdminOverview({ client, enabled: Boolean(adminKey) });
+  const { data: historyData, loading: historyLoading, refresh: refreshHistory } = useEquityHistory({
+    client,
+    enabled: Boolean(adminKey),
+    range,
+  });
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), refreshHistory()]);

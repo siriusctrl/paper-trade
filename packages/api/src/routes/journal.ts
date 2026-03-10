@@ -6,8 +6,15 @@ import type { AppVariables } from "../platform/auth.js";
 import { db } from "../db/client.js";
 import { journal } from "../db/schema.js";
 import { jsonError } from "../platform/errors.js";
-import { deserializeTags, parseJson, parseQuery, serializeTags, withErrorHandling } from "../platform/helpers.js";
-import { checkIdempotency, storeIdempotencyResponse } from "../platform/idempotency.js";
+import {
+  deserializeTags,
+  parseJson,
+  parseQuery,
+  requireNonAdminUserId,
+  serializeTags,
+  withErrorHandling,
+} from "../platform/helpers.js";
+import { beginIdempotentRequest, storeIdempotentJsonResponse } from "../platform/idempotency.js";
 import { makeId, nowIso } from "../utils.js";
 
 const router = new Hono<{ Variables: AppVariables }>();
@@ -18,20 +25,19 @@ router.post(
     const parsed = await parseJson(c, createJournalSchema);
     if (!parsed.success) return parsed.response;
 
-    const userId = c.get("userId");
-    if (!userId || userId === "admin") {
-      return jsonError(c, 400, "INVALID_USER", "Invalid user for journal entry");
+    const userResult = requireNonAdminUserId(c, "Invalid user for journal entry");
+    if (!userResult.success) {
+      return userResult.response;
     }
 
-    const idempotencyResult = await checkIdempotency(c, userId, parsed.data);
-    if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
-      return idempotencyResult.response;
+    const idempotency = await beginIdempotentRequest(c, userResult.userId, parsed.data);
+    if (idempotency.kind === "response") {
+      return idempotency.response;
     }
-    const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
 
     const entry = {
       id: makeId("jrn"),
-      userId,
+      userId: userResult.userId,
       content: parsed.data.content,
       tags: serializeTags(parsed.data.tags),
       createdAt: nowIso(),
@@ -39,10 +45,9 @@ router.post(
 
     await db.insert(journal).values(entry).run();
     const payload = { ...entry, tags: deserializeTags(entry.tags) };
-    if (idempotencyCandidate) {
-      await storeIdempotencyResponse(idempotencyCandidate, 201, payload);
-    }
-    return c.json(payload, 201);
+    const response = c.json(payload, 201);
+    await storeIdempotentJsonResponse(idempotency.candidate, response);
+    return response;
   }),
 );
 
@@ -52,16 +57,16 @@ router.get(
     const parsed = parseQuery(c, paginationQuerySchema);
     if (!parsed.success) return parsed.response;
 
-    const userId = c.get("userId");
-    if (!userId || userId === "admin") {
-      return jsonError(c, 400, "INVALID_USER", "Invalid user for journal listing");
+    const userResult = requireNonAdminUserId(c, "Invalid user for journal listing");
+    if (!userResult.success) {
+      return userResult.response;
     }
 
     const q = c.req.query("q")?.trim();
     const tagsQuery = c.req.query("tags")?.trim();
     const tagSet = tagsQuery ? new Set(tagsQuery.split(",").map((t) => t.trim()).filter(Boolean)) : null;
 
-    let rows = await db.select().from(journal).where(eq(journal.userId, userId)).orderBy(desc(journal.createdAt)).all();
+    let rows = await db.select().from(journal).where(eq(journal.userId, userResult.userId)).orderBy(desc(journal.createdAt)).all();
 
     if (q) {
       const lowered = q.toLowerCase();

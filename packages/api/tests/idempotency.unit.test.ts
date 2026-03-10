@@ -158,4 +158,36 @@ describe("idempotency", () => {
     await storeIdempotencyResponse(candidate, 201, { ok: true });
     expect(insertRun).toHaveBeenCalledTimes(1);
   });
+
+  it("wraps checkIdempotency with beginIdempotentRequest", async () => {
+    const { beginIdempotentRequest } = await loadModule(undefined);
+
+    const none = await beginIdempotentRequest(makeContext() as never, "usr_1", { amount: 1 });
+    expect(none).toEqual({ kind: "candidate", candidate: null });
+
+    const store = await beginIdempotentRequest(makeContext("idem-1") as never, "usr_1", { amount: 1 });
+    expect(store).toMatchObject({ kind: "candidate", candidate: expect.objectContaining({ key: "idem-1" }) });
+  });
+
+  it("stores cloned JSON responses through storeIdempotentJsonResponse", async () => {
+    const { storeIdempotentJsonResponse, insertRun } = await loadModule(undefined);
+    const candidate = {
+      userId: "usr_1",
+      key: "idem-1",
+      method: "POST",
+      path: "/orders",
+      requestHash: "hash",
+    };
+
+    const okResponse = new Response(JSON.stringify({ ok: true }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+    await storeIdempotentJsonResponse(candidate, okResponse);
+    expect(insertRun).toHaveBeenCalledTimes(1);
+
+    const textResponse = new Response("plain", { status: 201 });
+    await storeIdempotentJsonResponse(candidate, textResponse);
+    expect(insertRun).toHaveBeenCalledTimes(1);
+  });
 });

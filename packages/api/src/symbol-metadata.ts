@@ -193,3 +193,46 @@ export const resolveSymbolsWithCache = async (
 
   return resolution;
 };
+
+const normalizeGroupedSymbols = (
+  groupedSymbols: Map<string, Iterable<string>> | Iterable<{ marketId: string; symbols: Iterable<string> }> | Iterable<[string, Iterable<string>]>,
+): Array<{ marketId: string; symbols: Iterable<string> }> => {
+  if (groupedSymbols instanceof Map) {
+    return Array.from(groupedSymbols, ([marketId, symbols]) => ({ marketId, symbols }));
+  }
+
+  const normalized: Array<{ marketId: string; symbols: Iterable<string> }> = [];
+  for (const entry of groupedSymbols) {
+    normalized.push(Array.isArray(entry) ? { marketId: entry[0], symbols: entry[1] } : entry);
+  }
+  return normalized;
+};
+
+export const resolveSymbolsByMarketWithCache = async (
+  registry: MarketRegistry,
+  groupedSymbols: Map<string, Iterable<string>> | Iterable<{ marketId: string; symbols: Iterable<string> }> | Iterable<[string, Iterable<string>]>,
+): Promise<Map<string, SymbolResolution>> => {
+  const groupedList = normalizeGroupedSymbols(groupedSymbols);
+  const resolved = new Map<string, SymbolResolution>();
+
+  // Keep cache reads/writes single-filed to avoid SQLITE_BUSY under concurrent
+  // admin overview/timeline enrichment across markets.
+  for (const { marketId, symbols } of groupedList) {
+    resolved.set(marketId, await resolveSymbolsWithCache(registry, marketId, symbols));
+  }
+
+  return resolved;
+};
+
+export const formatResolvedSymbolLabel = (
+  resolution: SymbolResolution | null | undefined,
+  symbol: string,
+): string | null => {
+  if (!resolution) {
+    return null;
+  }
+
+  const name = resolution.names.get(symbol);
+  const outcome = resolution.outcomes.get(symbol);
+  return name ? (outcome ? `${name} — ${outcome}` : name) : null;
+};

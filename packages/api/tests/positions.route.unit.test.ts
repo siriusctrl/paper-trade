@@ -8,11 +8,19 @@ const loadRouter = async (options: {
   rowsQueue: unknown[][];
 }) => {
   vi.resetModules();
-  const getUserAccount = vi.fn().mockResolvedValue(options.account);
+  const getUserAccountScope = vi.fn(async (_userId: string, requestedAccountId?: string) => {
+    if (!options.account) {
+      return { account: null, mismatch: false };
+    }
+    if (requestedAccountId && requestedAccountId !== options.account.id) {
+      return { account: null, mismatch: true };
+    }
+    return { account: options.account, mismatch: false };
+  });
   const all = vi.fn(() => Promise.resolve(options.rowsQueue.shift() ?? []));
 
   vi.doMock("../src/platform/helpers.js", () => ({
-    getUserAccount,
+    getUserAccountScope,
     parseQuery: vi.fn(() => options.parsed),
     withErrorHandling: (fn: (c: unknown) => Promise<Response>) => fn,
   }));
@@ -43,7 +51,7 @@ const loadRouter = async (options: {
     await next();
   });
   app.route("/positions", positionsRoutes);
-  return { app, getUserAccount };
+  return { app, getUserAccountScope };
 };
 
 afterEach(() => {
@@ -64,7 +72,7 @@ describe("positionsRoutes", () => {
   });
 
   it("returns empty results for admin account/user mismatches", async () => {
-    const { app, getUserAccount } = await loadRouter({
+    const { app, getUserAccountScope } = await loadRouter({
       userId: "admin",
       parsed: { success: true, data: { accountId: "acct_1", userId: "usr_1" } },
       account: { id: "acct_2" },
@@ -73,7 +81,7 @@ describe("positionsRoutes", () => {
 
     const res = await app.request("/positions");
     expect(await res.json()).toEqual({ positions: [] });
-    expect(getUserAccount).toHaveBeenCalledWith("usr_1");
+    expect(getUserAccountScope).toHaveBeenCalledWith("usr_1", "acct_1");
   });
 
   it("returns ordered admin positions when no filter is provided", async () => {

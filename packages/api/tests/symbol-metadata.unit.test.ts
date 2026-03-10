@@ -167,4 +167,35 @@ describe("resolveSymbolsWithCache", () => {
     expect(result.names.get("found")).toBe("Found market");
     expect(warn).toHaveBeenCalledWith("[symbol-metadata] cache write failed for market=polymarket", expect.any(Error));
   });
+
+  it("resolves grouped symbol metadata by market and formats labels", async () => {
+    const polymarketResolver = vi.fn().mockResolvedValue({
+      names: new Map([["yes", "Will it happen?"]]),
+      outcomes: new Map([["yes", "Yes"]]),
+    });
+    const hyperliquidResolver = vi.fn().mockResolvedValue({
+      names: new Map([["BTC", "BTC-PERP"]]),
+      outcomes: new Map(),
+    });
+    const { resolveSymbolsByMarketWithCache, formatResolvedSymbolLabel, registry } = await loadModule({
+      registryGet: (marketId) => {
+        if (marketId === "polymarket") return { resolveSymbolNames: polymarketResolver };
+        if (marketId === "hyperliquid") return { resolveSymbolNames: hyperliquidResolver };
+        return undefined;
+      },
+    });
+
+    const resolutions = await resolveSymbolsByMarketWithCache(
+      registry as never,
+      new Map([
+        ["polymarket", ["yes"]],
+        ["hyperliquid", ["BTC"]],
+      ]),
+    );
+
+    expect(polymarketResolver).toHaveBeenCalledWith(["yes"]);
+    expect(hyperliquidResolver).toHaveBeenCalledWith(["BTC"]);
+    expect(formatResolvedSymbolLabel(resolutions.get("polymarket"), "yes")).toBe("Will it happen? — Yes");
+    expect(formatResolvedSymbolLabel(resolutions.get("hyperliquid"), "BTC")).toBe("BTC-PERP");
+  });
 });

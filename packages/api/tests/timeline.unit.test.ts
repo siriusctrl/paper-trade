@@ -51,9 +51,15 @@ const loadModule = async (state: {
   vi.doMock("../src/db/schema.js", () => tables);
 
   vi.doMock("../src/symbol-metadata.js", () => ({
-    resolveSymbolsWithCache: vi.fn().mockResolvedValue(
-      state.resolution ?? { names: new Map<string, string>(), outcomes: new Map<string, string>() },
+    resolveSymbolsByMarketWithCache: vi.fn().mockResolvedValue(
+      new Map([["polymarket", state.resolution ?? { names: new Map<string, string>(), outcomes: new Map<string, string>() }]]),
     ),
+    formatResolvedSymbolLabel: vi.fn((resolution: { names: Map<string, string>; outcomes: Map<string, string> } | undefined, symbol: string) => {
+      const name = resolution?.names.get(symbol);
+      if (!name) return null;
+      const outcome = resolution?.outcomes.get(symbol);
+      return outcome ? `${name} — ${outcome}` : name;
+    }),
   }));
 
   const mod = await import("../src/timeline.js");

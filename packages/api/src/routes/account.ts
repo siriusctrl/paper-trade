@@ -4,7 +4,7 @@ import { Hono } from "hono";
 
 import type { AppVariables } from "../platform/auth.js";
 import { jsonError } from "../platform/errors.js";
-import { getUserAccount, parseQuery, withErrorHandling } from "../platform/helpers.js";
+import { getUserAccountScope, parseQuery, requireNonAdminUserId, withErrorHandling } from "../platform/helpers.js";
 import { buildAccountPortfolioModel } from "../services/portfolio-read.js";
 import { buildTimelineEvents } from "../timeline.js";
 
@@ -14,31 +14,36 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
   account.get(
     "/",
     withErrorHandling(async (c) => {
-      const userId = c.get("userId");
-      if (!userId || userId === "admin") {
-        return jsonError(c, 400, "INVALID_USER", "Invalid user for account retrieval");
+      const userResult = requireNonAdminUserId(c, "Invalid user for account retrieval");
+      if (!userResult.success) {
+        return userResult.response;
       }
 
-      const acc = await getUserAccount(userId);
-      if (!acc) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      const accountScope = await getUserAccountScope(userResult.userId);
+      if (!accountScope.account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
-      return c.json({ id: acc.id, name: acc.name, balance: acc.balance, createdAt: acc.createdAt });
+      return c.json({
+        id: accountScope.account.id,
+        name: accountScope.account.name,
+        balance: accountScope.account.balance,
+        createdAt: accountScope.account.createdAt,
+      });
     }),
   );
 
   account.get(
     "/portfolio",
     withErrorHandling(async (c) => {
-      const userId = c.get("userId");
-      if (!userId || userId === "admin") {
-        return jsonError(c, 400, "INVALID_USER", "Invalid user for portfolio");
+      const userResult = requireNonAdminUserId(c, "Invalid user for portfolio");
+      if (!userResult.success) {
+        return userResult.response;
       }
 
-      const acc = await getUserAccount(userId);
-      if (!acc) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      const accountScope = await getUserAccountScope(userResult.userId);
+      if (!accountScope.account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
       const portfolio = await buildAccountPortfolioModel({
-        account: acc,
+        account: accountScope.account,
         registry,
         tolerateQuoteFailures: false,
         includeMissingAdapterAsUnpriced: false,
@@ -74,21 +79,21 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
   account.get(
     "/timeline",
     withErrorHandling(async (c) => {
-      const userId = c.get("userId");
-      if (!userId || userId === "admin") {
-        return jsonError(c, 400, "INVALID_USER", "Invalid user for timeline");
+      const userResult = requireNonAdminUserId(c, "Invalid user for timeline");
+      if (!userResult.success) {
+        return userResult.response;
       }
 
-      const acc = await getUserAccount(userId);
-      if (!acc) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      const accountScope = await getUserAccountScope(userResult.userId);
+      if (!accountScope.account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
       const parsedQuery = parseQuery(c, paginationQuerySchema);
       if (!parsedQuery.success) return parsedQuery.response;
 
       const events = await buildTimelineEvents({
         registry,
-        userId: acc.userId,
-        accountId: acc.id,
+        userId: accountScope.account.userId,
+        accountId: accountScope.account.id,
         limit: parsedQuery.data.limit,
         offset: parsedQuery.data.offset,
       });

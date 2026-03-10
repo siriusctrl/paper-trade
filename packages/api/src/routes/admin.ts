@@ -7,16 +7,23 @@ import {
   symbolTradesQuerySchema,
 } from "@unimarket/core";
 import type { MarketRegistry } from "@unimarket/markets";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../platform/auth.js";
 import { db } from "../db/client.js";
-import { accounts, equitySnapshots, journal, trades, users } from "../db/schema.js";
+import { accounts, journal, trades, users } from "../db/schema.js";
 import { jsonError } from "../platform/errors.js";
-import { getUserAccount, parseJson, parseQuery, withErrorHandling } from "../platform/helpers.js";
-import { checkIdempotency, storeIdempotencyResponse } from "../platform/idempotency.js";
+import {
+  getUserAccountScope,
+  parseJson,
+  parseQuery,
+  requireUserRecord,
+  withErrorHandling,
+} from "../platform/helpers.js";
+import { beginIdempotentRequest, storeIdempotentJsonResponse } from "../platform/idempotency.js";
 import { buildAdminOverviewModel } from "../services/admin-overview.js";
+import { buildEquityHistoryModel } from "../services/equity-history.js";
 import { createOrderPlacementService } from "../services/order-placement.js";
 import { buildAccountPortfolioModel } from "../services/portfolio-read.js";
 import { buildTimelineEvents } from "../timeline.js";
@@ -33,12 +40,12 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     { ok: true; balance: number }
     | { ok: false; code: "ACCOUNT_NOT_FOUND" | "INSUFFICIENT_BALANCE"; message: string; status: 404 | 400 }
   > => {
-    const account = await getUserAccount(userId);
-    if (!account) {
+    const accountScope = await getUserAccountScope(userId);
+    if (!accountScope.account) {
       return { ok: false, status: 404, code: "ACCOUNT_NOT_FOUND", message: "Account not found" };
     }
 
-    if (amountDelta < 0 && account.balance < Math.abs(amountDelta)) {
+    if (amountDelta < 0 && accountScope.account.balance < Math.abs(amountDelta)) {
       return {
         ok: false,
         status: 400,
@@ -47,8 +54,8 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       };
     }
 
-    const nextBalance = Number((account.balance + amountDelta).toFixed(6));
-    await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, account.id)).run();
+    const nextBalance = Number((accountScope.account.balance + amountDelta).toFixed(6));
+    await db.update(accounts).set({ balance: nextBalance }).where(eq(accounts.id, accountScope.account.id)).run();
     return { ok: true, balance: nextBalance };
   };
 
@@ -89,17 +96,17 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     "/users/:id/timeline",
     withErrorHandling(async (c) => {
       const userId = c.req.param("id");
-      const user = await db.select().from(users).where(eq(users.id, userId)).get();
-      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+      const userResult = await requireUserRecord(c, userId);
+      if (!userResult.success) return userResult.response;
 
       const parsedQuery = parseQuery(c, paginationQuerySchema);
       if (!parsedQuery.success) return parsedQuery.response;
 
-      const acc = await getUserAccount(userId);
+      const accountScope = await getUserAccountScope(userId);
       const events = await buildTimelineEvents({
         registry,
         userId,
-        accountId: acc?.id ?? null,
+        accountId: accountScope.account?.id ?? null,
         limit: parsedQuery.data.limit,
         offset: parsedQuery.data.offset,
       });
@@ -108,58 +115,10 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     }),
   );
 
-  const RANGE_MS: Record<string, number> = {
-    "1w": 7 * 86_400_000,
-    "1m": 30 * 86_400_000,
-    "3m": 90 * 86_400_000,
-    "6m": 180 * 86_400_000,
-    "1y": 365 * 86_400_000,
-  };
-
   router.get(
     "/equity-history",
     withErrorHandling(async (c) => {
-      const range = (c.req.query("range") ?? "1m").toLowerCase();
-      const ms = RANGE_MS[range] ?? RANGE_MS["1m"];
-      const since = new Date(Date.now() - ms).toISOString();
-
-      const rows = await db.select()
-        .from(equitySnapshots)
-        .where(gte(equitySnapshots.snapshotAt, since))
-        .orderBy(equitySnapshots.snapshotAt)
-        .all();
-
-      // Group by userId
-      const byUser = new Map<string, Array<{
-        snapshotAt: string;
-        equity: number;
-        balance: number;
-        marketValue: number;
-        unrealizedPnl: number;
-      }>>();
-
-      for (const row of rows) {
-        if (!byUser.has(row.userId)) byUser.set(row.userId, []);
-        byUser.get(row.userId)!.push({
-          snapshotAt: row.snapshotAt,
-          equity: row.equity,
-          balance: row.balance,
-          marketValue: row.marketValue,
-          unrealizedPnl: row.unrealizedPnl,
-        });
-      }
-
-      // Get user names
-      const userRows = await db.select().from(users).all();
-      const nameById = new Map(userRows.map((u) => [u.id, u.name]));
-
-      const series = Array.from(byUser.entries()).map(([userId, snapshots]) => ({
-        userId,
-        userName: nameById.get(userId) ?? userId,
-        snapshots,
-      }));
-
-      return c.json({ range, series });
+      return c.json(await buildEquityHistoryModel(c.req.query("range") ?? "1m"));
     }),
   );
 
@@ -199,14 +158,14 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     "/users/:id/portfolio",
     withErrorHandling(async (c) => {
       const userId = c.req.param("id");
-      const user = await db.select().from(users).where(eq(users.id, userId)).get();
-      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+      const userResult = await requireUserRecord(c, userId);
+      if (!userResult.success) return userResult.response;
 
-      const account = await getUserAccount(userId);
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      const accountScope = await getUserAccountScope(userId);
+      if (!accountScope.account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
       const portfolio = await buildAccountPortfolioModel({
-        account,
+        account: accountScope.account,
         registry,
         includeRecentOrders: true,
         tolerateQuoteFailures: true,
@@ -214,8 +173,8 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       });
 
       return c.json({
-        userId: user.id,
-        userName: user.name,
+        userId: userResult.user.id,
+        userName: userResult.user.name,
         accountId: portfolio.accountId,
         balance: portfolio.balance,
         positions: portfolio.positions,
@@ -234,37 +193,29 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     "/users/:id/orders",
     withErrorHandling(async (c) => {
       const userId = c.req.param("id");
-      const user = await db.select().from(users).where(eq(users.id, userId)).get();
-      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+      const userResult = await requireUserRecord(c, userId);
+      if (!userResult.success) return userResult.response;
 
       const parsed = await parseJson(c, placeOrderSchema);
       if (!parsed.success) return parsed.response;
 
-      const account = await getUserAccount(userId);
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-      if (parsed.data.accountId && parsed.data.accountId !== account.id) {
+      const accountScope = await getUserAccountScope(userId, parsed.data.accountId);
+      if (!accountScope.account) {
         return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
       }
 
       const adminUserId = c.get("userId");
-      const idempotencyResult = await checkIdempotency(c, adminUserId, { targetUserId: userId, ...parsed.data });
-      if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
-        return idempotencyResult.response;
+      const idempotency = await beginIdempotentRequest(c, adminUserId, { targetUserId: userId, ...parsed.data });
+      if (idempotency.kind === "response") {
+        return idempotency.response;
       }
-      const idempotencyCandidate = idempotencyResult.kind === "store" ? idempotencyResult.candidate : null;
-      const maybeStoreResponse = async (response: Response): Promise<void> => {
-        if (!idempotencyCandidate) return;
-        const clone = response.clone();
-        const body = await clone.json();
-        await storeIdempotencyResponse(idempotencyCandidate, clone.status, body);
-      };
-      const placement = await placeOrderForAccount({ account, order: parsed.data });
+      const placement = await placeOrderForAccount({ account: accountScope.account, order: parsed.data });
       if (placement.kind === "error") {
         return jsonError(c, placement.status, placement.code, placement.message);
       }
 
       const response = c.json(placement.order, 201);
-      await maybeStoreResponse(response);
+      await storeIdempotentJsonResponse(idempotency.candidate, response);
       return response;
     }),
   );
@@ -274,14 +225,14 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
     "/users/:id/symbol-trades",
     withErrorHandling(async (c) => {
       const userId = c.req.param("id");
-      const user = await db.select().from(users).where(eq(users.id, userId)).get();
-      if (!user) return jsonError(c, 404, "USER_NOT_FOUND", "User not found");
+      const userResult = await requireUserRecord(c, userId);
+      if (!userResult.success) return userResult.response;
 
       const parsedQuery = parseQuery(c, symbolTradesQuerySchema);
       if (!parsedQuery.success) return parsedQuery.response;
 
-      const account = await getUserAccount(userId);
-      if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
+      const accountScope = await getUserAccountScope(userId);
+      if (!accountScope.account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
 
       let symbolFilter = parsedQuery.data.symbol;
       const marketAdapter = registry.get(parsedQuery.data.market);
@@ -304,7 +255,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
         .from(trades)
         .where(
           and(
-            eq(trades.accountId, account.id),
+            eq(trades.accountId, accountScope.account.id),
             eq(trades.market, parsedQuery.data.market),
             eq(trades.symbol, symbolFilter),
           ),

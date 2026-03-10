@@ -1,27 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { createAdminApiClient, isAdminAuthError, type OverviewResponse } from "./admin-api";
+import { type AdminApiClient, isAdminAuthError, type OverviewResponse } from "./admin-api";
 
 export const useAdminOverview = ({
-  adminKey,
-  onAuthError,
+  client,
+  enabled,
 }: {
-  adminKey: string;
-  onAuthError: () => void;
+  client: AdminApiClient;
+  enabled: boolean;
 }) => {
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Use refs to avoid re-creating fetchOverview when callbacks change
+  // Keep stale data visible if a refresh fails after the first successful load.
   const overviewRef = useRef(overview);
   overviewRef.current = overview;
-  const onAuthErrorRef = useRef(onAuthError);
-  onAuthErrorRef.current = onAuthError;
 
   const fetchOverview = useCallback(
     async (): Promise<void> => {
-      if (!adminKey) {
+      if (!enabled) {
         setError("Missing admin key. Please sign in.");
         setOverview(null);
         return;
@@ -30,7 +28,6 @@ export const useAdminOverview = ({
       setLoading(true);
 
       try {
-        const client = createAdminApiClient({ adminKey, onAuthError: () => onAuthErrorRef.current() });
         const payload = await client.getOverview();
         setOverview(payload);
         setError(null);
@@ -50,14 +47,14 @@ export const useAdminOverview = ({
         setLoading(false);
       }
     },
-    [adminKey],
+    [client, enabled],
   );
 
   // Fetch once on mount
   useEffect(() => {
-    if (!adminKey) return;
+    if (!enabled) return;
     void fetchOverview();
-  }, [adminKey, fetchOverview]);
+  }, [enabled, fetchOverview]);
 
   return {
     overview,

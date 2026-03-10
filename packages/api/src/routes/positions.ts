@@ -6,7 +6,7 @@ import type { AppVariables } from "../platform/auth.js";
 import { db } from "../db/client.js";
 import { positions } from "../db/schema.js";
 import { jsonError } from "../platform/errors.js";
-import { getUserAccount, parseQuery, withErrorHandling } from "../platform/helpers.js";
+import { getUserAccountScope, parseQuery, withErrorHandling } from "../platform/helpers.js";
 
 const router = new Hono<{ Variables: AppVariables }>();
 
@@ -23,8 +23,8 @@ router.get(
     if (userId === "admin") {
       if (parsed.data.accountId) {
         if (parsed.data.userId) {
-          const account = await getUserAccount(parsed.data.userId);
-          if (!account || account.id !== parsed.data.accountId) return c.json({ positions: [] });
+          const accountScope = await getUserAccountScope(parsed.data.userId, parsed.data.accountId);
+          if (!accountScope.account) return c.json({ positions: [] });
         }
 
         const rows = await db
@@ -37,13 +37,13 @@ router.get(
       }
 
       if (parsed.data.userId) {
-        const account = await getUserAccount(parsed.data.userId);
-        if (!account) return c.json({ positions: [] });
+        const accountScope = await getUserAccountScope(parsed.data.userId);
+        if (!accountScope.account) return c.json({ positions: [] });
 
         const rows = await db
           .select()
           .from(positions)
-          .where(eq(positions.accountId, account.id))
+          .where(eq(positions.accountId, accountScope.account.id))
           .orderBy(asc(positions.market), asc(positions.symbol))
           .all();
         return c.json({ positions: rows });
@@ -53,16 +53,18 @@ router.get(
       return c.json({ positions: rows });
     }
 
-    const account = await getUserAccount(userId);
-    if (!account) return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
-    if (parsed.data.accountId && parsed.data.accountId !== account.id) {
-      return c.json({ positions: [] });
+    const accountScope = await getUserAccountScope(userId, parsed.data.accountId);
+    if (!accountScope.account) {
+      if (accountScope.mismatch) {
+        return c.json({ positions: [] });
+      }
+      return jsonError(c, 404, "ACCOUNT_NOT_FOUND", "Account not found");
     }
 
     const rows = await db
       .select()
       .from(positions)
-      .where(eq(positions.accountId, account.id))
+      .where(eq(positions.accountId, accountScope.account.id))
       .orderBy(asc(positions.market), asc(positions.symbol))
       .all();
     return c.json({ positions: rows });

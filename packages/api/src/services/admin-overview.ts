@@ -3,7 +3,7 @@ import type { MarketRegistry } from "@unimarket/markets";
 
 import { db } from "../db/client.js";
 import { accounts, equitySnapshots, positions, users } from "../db/schema.js";
-import { resolveSymbolsWithCache } from "../symbol-metadata.js";
+import { formatResolvedSymbolLabel, resolveSymbolsByMarketWithCache } from "../symbol-metadata.js";
 import { makeId, nowIso } from "../utils.js";
 import { buildAccountPortfolioModelsByAccount } from "./portfolio-read.js";
 
@@ -91,20 +91,23 @@ export const buildAdminOverviewModel = async ({
   const portfolioByAccountId = await buildAccountPortfolioModelsByAccount({ accounts: accountRows, registry });
 
   const primaryAccountByUserId = getPrimaryAccountByUserId(accountRows);
-  const polymarketSymbols = new Set<string>();
+  const symbolsByMarket = new Map<string, Set<string>>();
   if (includeSymbolMetadata) {
     for (const portfolio of portfolioByAccountId.values()) {
       for (const position of portfolio.positions) {
-        if (position.market === "polymarket") {
-          polymarketSymbols.add(position.symbol);
+        const current = symbolsByMarket.get(position.market);
+        if (current) {
+          current.add(position.symbol);
+        } else {
+          symbolsByMarket.set(position.market, new Set([position.symbol]));
         }
       }
     }
   }
 
-  const symbolResolution = includeSymbolMetadata
-    ? await resolveSymbolsWithCache(registry, "polymarket", polymarketSymbols)
-    : { names: new Map<string, string>(), outcomes: new Map<string, string>() };
+  const symbolResolutionByMarket = includeSymbolMetadata
+    ? await resolveSymbolsByMarketWithCache(registry, symbolsByMarket)
+    : new Map();
 
   const marketSummaryById = new Map<string, {
     marketId: string;
@@ -157,22 +160,25 @@ export const buildAdminOverviewModel = async ({
       const primaryAccount = primaryAccountByUserId.get(user.id) ?? null;
       const portfolio = primaryAccount ? portfolioByAccountId.get(primaryAccount.id) : null;
       const agentPositions = [...(portfolio?.positions ?? [])]
-        .map((position) => ({
-          market: position.market,
-          symbol: position.symbol,
-          symbolName: includeSymbolMetadata ? (symbolResolution.names.get(position.symbol) ?? null) : null,
-          side: includeSymbolMetadata ? (symbolResolution.outcomes.get(position.symbol) ?? null) : null,
-          quantity: position.quantity,
-          avgCost: position.avgCost,
-          currentPrice: position.currentPrice,
-          marketValue: position.marketValue,
-          unrealizedPnl: position.unrealizedPnl,
-          quoteTimestamp: position.quoteTimestamp,
-          margin: position.margin,
-          maintenanceMargin: position.maintenanceMargin,
-          leverage: position.leverage,
-          liquidationPrice: position.liquidationPrice,
-        }))
+        .map((position) => {
+          const resolution = symbolResolutionByMarket.get(position.market);
+          return {
+            market: position.market,
+            symbol: position.symbol,
+            symbolName: includeSymbolMetadata ? formatResolvedSymbolLabel(resolution, position.symbol) : null,
+            side: includeSymbolMetadata ? (resolution?.outcomes.get(position.symbol) ?? null) : null,
+            quantity: position.quantity,
+            avgCost: position.avgCost,
+            currentPrice: position.currentPrice,
+            marketValue: position.marketValue,
+            unrealizedPnl: position.unrealizedPnl,
+            quoteTimestamp: position.quoteTimestamp,
+            margin: position.margin,
+            maintenanceMargin: position.maintenanceMargin,
+            leverage: position.leverage,
+            liquidationPrice: position.liquidationPrice,
+          };
+        })
         .sort((a, b) => `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`));
 
       const totalBalance = Number((primaryAccount?.balance ?? 0).toFixed(6));

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleAlert } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 
 import { AgentPicker } from "../components/trade/AgentPicker";
 import { CreateTraderCard } from "../components/trade/CreateTraderCard";
@@ -10,10 +9,9 @@ import { PortfolioPanels } from "../components/trade/PortfolioPanels";
 import { TradeTicketCard } from "../components/trade/TradeTicketCard";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
-import { clearAdminKey, formatCurrency, readStoredAdminKey } from "../lib/admin";
+import { formatCurrency } from "../lib/admin";
 import {
   AdminApiError,
-  createAdminApiClient,
   type AgentOption,
   type CandleData,
   type MarketInfo,
@@ -28,6 +26,7 @@ import {
   type TradingConstraints,
   isAdminAuthError,
 } from "../lib/admin-api";
+import { useAdminSession } from "../lib/useAdminSession";
 import { useMarketDiscovery } from "../lib/useMarketDiscovery";
 
 type OrderResult = { ok: boolean; message: string } | null;
@@ -45,19 +44,7 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
 };
 
 export const TradePage = () => {
-  const navigate = useNavigate();
-  const adminKey = readStoredAdminKey();
-  const client = useMemo(
-    () =>
-      createAdminApiClient({
-        adminKey,
-        onAuthError: () => {
-          clearAdminKey();
-          navigate("/login", { replace: true });
-        },
-      }),
-    [adminKey, navigate],
-  );
+  const { adminKey, client } = useAdminSession();
 
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [selectedMarket, setSelectedMarket] = useState("");

@@ -9,27 +9,21 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import {
-  clearAdminKey,
   flattenAgentPositions,
   formatCurrency,
   formatNumber,
   formatSignedCurrency,
-  readStoredAdminKey,
 } from "../lib/admin";
 import { useAdminOverview } from "../lib/useAdminOverview";
 import { useAgentTimeline } from "../lib/useAgentTimeline";
+import { useAdminSession } from "../lib/useAdminSession";
 
 export const AgentDetailPage = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  const adminKey = readStoredAdminKey();
+  const { adminKey, client } = useAdminSession();
 
-  const handleAuthError = () => {
-    clearAdminKey();
-    navigate("/login", { replace: true });
-  };
-
-  const { overview, error, loading, refresh } = useAdminOverview({ adminKey, onAuthError: handleAuthError });
+  const { overview, error, loading, refresh } = useAdminOverview({ client, enabled: Boolean(adminKey) });
 
   const agent = useMemo(() => {
     if (!overview || !id) return null;
@@ -47,7 +41,7 @@ export const AgentDetailPage = () => {
     nextPage,
     prevPage,
     refresh: refreshTimeline,
-  } = useAgentTimeline({ userId: id, adminKey, onAuthError: handleAuthError });
+  } = useAgentTimeline({ userId: id, client, enabled: Boolean(adminKey) });
 
   const handleRefresh = async () => {
     await Promise.all([refresh(), refreshTimeline()]);

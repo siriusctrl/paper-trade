@@ -2353,7 +2353,7 @@ describe("api integration", () => {
 
     const firstAgent = firstOverviewPayload.agents.find((agent: { userId: string }) => agent.userId === user.userId);
     const firstPosition = firstAgent?.positions?.find((position: { symbol: string }) => position.symbol === "0x-meta-no");
-    expect(firstPosition?.symbolName).toBe("Resolved 0x-meta-no");
+    expect(firstPosition?.symbolName).toBe("Resolved 0x-meta-no — No");
     expect(firstPosition?.side).toBe("No");
     expect(resolveSpy).toHaveBeenCalled();
 
@@ -2375,7 +2375,7 @@ describe("api integration", () => {
     const secondOverviewPayload = await secondOverviewResponse.json();
     const secondAgent = secondOverviewPayload.agents.find((agent: { userId: string }) => agent.userId === user.userId);
     const secondPosition = secondAgent?.positions?.find((position: { symbol: string }) => position.symbol === "0x-meta-no");
-    expect(secondPosition?.symbolName).toBe("Resolved 0x-meta-no");
+    expect(secondPosition?.symbolName).toBe("Resolved 0x-meta-no — No");
     expect(secondPosition?.side).toBe("No");
 
     const timelineResponse = await authedJson(`/api/admin/users/${user.userId}/timeline?limit=20&offset=0`, "admin_test_key");

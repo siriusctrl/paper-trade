@@ -9,7 +9,7 @@ const loadRoutes = async (opts: {
   timeline?: unknown[];
 }) => {
   vi.resetModules();
-  const getUserAccount = vi.fn().mockResolvedValue(opts.account);
+  const getUserAccountScope = vi.fn().mockResolvedValue({ account: opts.account, mismatch: false });
   const parseQuery = vi.fn(() => opts.parsedQuery ?? { success: true, data: { limit: 20, offset: 0 } });
   const buildAccountPortfolioModel = vi.fn().mockResolvedValue(
     opts.portfolio ?? {
@@ -25,8 +25,21 @@ const loadRoutes = async (opts: {
   const buildTimelineEvents = vi.fn().mockResolvedValue(opts.timeline ?? []);
 
   vi.doMock("../src/platform/helpers.js", () => ({
-    getUserAccount,
+    getUserAccountScope,
     parseQuery,
+    requireNonAdminUserId: (c: { get: (key: string) => string | undefined }, message: string) => {
+      const userId = c.get("userId");
+      if (!userId || userId === "admin") {
+        return {
+          success: false,
+          response: new Response(JSON.stringify({ error: { code: "INVALID_USER", message } }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }),
+        };
+      }
+      return { success: true, userId };
+    },
     withErrorHandling: (fn: (c: unknown) => Promise<Response>) => fn,
   }));
   vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel }));
@@ -43,7 +56,7 @@ const loadRoutes = async (opts: {
     await next();
   });
   app.route("/account", createAccountRoutes({} as never));
-  return { app, getUserAccount, parseQuery, buildAccountPortfolioModel, buildTimelineEvents };
+  return { app, getUserAccountScope, parseQuery, buildAccountPortfolioModel, buildTimelineEvents };
 };
 
 afterEach(() => {

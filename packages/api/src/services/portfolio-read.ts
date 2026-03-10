@@ -46,6 +46,32 @@ export type AccountPortfolioModel = {
   totalFunding: number;
 };
 
+const finalizeAccountPortfolioModel = ({
+  account,
+  positions,
+  openOrders = [],
+  recentOrders = [],
+}: {
+  account: AccountRow;
+  positions: EnrichedPositionRow[];
+  openOrders?: OrderRow[];
+  recentOrders?: OrderRow[];
+}): AccountPortfolioModel => {
+  const totalMarketValue = positions.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+  const totalFunding = positions.reduce((sum, row) => sum + row.accumulatedFunding, 0);
+
+  return {
+    accountId: account.id,
+    balance: account.balance,
+    positions,
+    openOrders,
+    recentOrders,
+    totalValue: Number((account.balance + totalMarketValue).toFixed(6)),
+    totalPnl: Number(positions.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0).toFixed(6)),
+    totalFunding: Number(totalFunding.toFixed(6)),
+  };
+};
+
 const loadFundingByAccountAndSymbol = async (accountIds: string[]): Promise<Map<string, number>> => {
   if (accountIds.length === 0) {
     return new Map();
@@ -210,22 +236,12 @@ export const buildAccountPortfolioModel = async ({
     tolerateQuoteFailures,
     includeMissingAdapterAsUnpriced,
   });
-
-  const totalMarketValue = positionsView.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
-  const totalFunding = positionsView.reduce((sum, row) => sum + row.accumulatedFunding, 0);
-  const totalValue = Number((account.balance + totalMarketValue).toFixed(6));
-  const totalPnl = Number(positionsView.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0).toFixed(6));
-
-  return {
-    accountId: account.id,
-    balance: account.balance,
+  return finalizeAccountPortfolioModel({
+    account,
     positions: positionsView,
     openOrders,
     recentOrders,
-    totalValue,
-    totalPnl,
-    totalFunding: Number(totalFunding.toFixed(6)),
-  };
+  });
 };
 
 export const buildAccountPortfolioModelsByAccount = async ({
@@ -272,20 +288,13 @@ export const buildAccountPortfolioModelsByAccount = async ({
 
   const portfolioByAccountId = new Map<string, AccountPortfolioModel>();
   for (const account of accountRows) {
-    const accountPositions = positionsByAccountId.get(account.id) ?? [];
-    const totalMarketValue = accountPositions.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
-    const totalFunding = accountPositions.reduce((sum, row) => sum + row.accumulatedFunding, 0);
-
-    portfolioByAccountId.set(account.id, {
-      accountId: account.id,
-      balance: account.balance,
-      positions: accountPositions,
-      openOrders: [],
-      recentOrders: [],
-      totalValue: Number((account.balance + totalMarketValue).toFixed(6)),
-      totalPnl: Number(accountPositions.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0).toFixed(6)),
-      totalFunding: Number(totalFunding.toFixed(6)),
-    });
+    portfolioByAccountId.set(
+      account.id,
+      finalizeAccountPortfolioModel({
+        account,
+        positions: positionsByAccountId.get(account.id) ?? [],
+      }),
+    );
   }
 
   return portfolioByAccountId;

@@ -113,6 +113,25 @@ export const checkIdempotency = async (
   return { kind: "replay", response: replay };
 };
 
+export const beginIdempotentRequest = async (
+  c: AppContext,
+  userId: string,
+  payload: unknown,
+): Promise<
+  | { kind: "candidate"; candidate: IdempotencyStoreCandidate | null }
+  | { kind: "response"; response: Response }
+> => {
+  const idempotencyResult = await checkIdempotency(c, userId, payload);
+  if (idempotencyResult.kind === "invalid" || idempotencyResult.kind === "replay") {
+    return { kind: "response", response: idempotencyResult.response };
+  }
+
+  return {
+    kind: "candidate",
+    candidate: idempotencyResult.kind === "store" ? idempotencyResult.candidate : null,
+  };
+};
+
 export const storeIdempotencyResponse = async (
   candidate: IdempotencyStoreCandidate,
   status: number,
@@ -139,3 +158,18 @@ export const storeIdempotencyResponse = async (
     .run();
 };
 
+export const storeIdempotentJsonResponse = async (
+  candidate: IdempotencyStoreCandidate | null,
+  response: Response,
+): Promise<void> => {
+  if (!candidate || response.status >= 500) {
+    return;
+  }
+
+  try {
+    const body = await response.clone().json();
+    await storeIdempotencyResponse(candidate, response.status, body);
+  } catch {
+    // Ignore non-JSON response payloads for idempotent replay cache.
+  }
+};

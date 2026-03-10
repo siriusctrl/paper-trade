@@ -5,7 +5,7 @@ import { desc, eq } from "drizzle-orm";
 import { db } from "./db/client.js";
 import { fundingPayments, journal, liquidations, orders } from "./db/schema.js";
 import { deserializeTags } from "./platform/helpers.js";
-import { resolveSymbolsWithCache } from "./symbol-metadata.js";
+import { formatResolvedSymbolLabel, resolveSymbolsByMarketWithCache } from "./symbol-metadata.js";
 
 const deserializeStringArray = (raw: string): string[] => {
   try {
@@ -131,19 +131,27 @@ export const buildTimelineEvents = async ({
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(offset, offset + limit);
 
-  const polymarketSymbols = new Set<string>();
+  const symbolsByMarket = new Map<string, Set<string>>();
   for (const event of merged) {
-    if (event.data.market === "polymarket" && event.data.symbol) {
-      polymarketSymbols.add(event.data.symbol);
+    if (!event.data.market || !event.data.symbol) {
+      continue;
+    }
+
+    const symbols = symbolsByMarket.get(event.data.market);
+    if (symbols) {
+      symbols.add(event.data.symbol);
+    } else {
+      symbolsByMarket.set(event.data.market, new Set([event.data.symbol]));
     }
   }
 
-  const symbolResolution = await resolveSymbolsWithCache(registry, "polymarket", polymarketSymbols);
+  const symbolResolutionByMarket = await resolveSymbolsByMarketWithCache(registry, symbolsByMarket);
   for (const event of merged) {
-    if (!event.data.symbol) continue;
-    const name = symbolResolution.names.get(event.data.symbol);
-    const outcome = symbolResolution.outcomes.get(event.data.symbol);
-    event.data.symbolName = name ? (outcome ? `${name} — ${outcome}` : name) : null;
+    if (!event.data.market || !event.data.symbol) continue;
+    event.data.symbolName = formatResolvedSymbolLabel(
+      symbolResolutionByMarket.get(event.data.market),
+      event.data.symbol,
+    );
   }
 
   return merged;

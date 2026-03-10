@@ -1,13 +1,13 @@
 import { TradingError } from "@unimarket/core";
 import { MarketAdapterError } from "@unimarket/markets";
 import type { Context } from "hono";
+import { eq } from "drizzle-orm";
 import type { z } from "zod";
 
 import type { AppVariables } from "./auth.js";
 import { db } from "../db/client.js";
-import { accounts } from "../db/schema.js";
+import { accounts, users } from "../db/schema.js";
 import { jsonError } from "./errors.js";
-import { eq } from "drizzle-orm";
 
 type AppContext = Context<{ Variables: AppVariables }>;
 
@@ -87,6 +87,51 @@ export const getFirst = async <T>(query: Promise<T[]>): Promise<T | undefined> =
 
 export const getUserAccount = async (userId: string) => {
   return db.select().from(accounts).where(eq(accounts.userId, userId)).get();
+};
+
+export const getUserRecord = async (userId: string) => {
+  return db.select().from(users).where(eq(users.id, userId)).get();
+};
+
+export const getUserAccountScope = async (
+  userId: string,
+  requestedAccountId?: string | null,
+): Promise<{ account: Awaited<ReturnType<typeof getUserAccount>>; mismatch: boolean }> => {
+  const account = await getUserAccount(userId);
+  if (!account) {
+    return { account: undefined, mismatch: false };
+  }
+
+  if (requestedAccountId && requestedAccountId !== account.id) {
+    return { account: undefined, mismatch: true };
+  }
+
+  return { account, mismatch: false };
+};
+
+export const requireNonAdminUserId = (
+  c: AppContext,
+  message: string,
+): { success: true; userId: string } | { success: false; response: Response } => {
+  const userId = c.get("userId");
+  if (!userId || userId === "admin") {
+    return { success: false, response: jsonError(c, 400, "INVALID_USER", message) };
+  }
+  return { success: true, userId };
+};
+
+export const requireUserRecord = async (
+  c: AppContext,
+  userId: string,
+): Promise<
+  | { success: true; user: NonNullable<Awaited<ReturnType<typeof getUserRecord>>> }
+  | { success: false; response: Response }
+> => {
+  const user = await getUserRecord(userId);
+  if (!user) {
+    return { success: false, response: jsonError(c, 404, "USER_NOT_FOUND", "User not found") };
+  }
+  return { success: true, user };
 };
 
 export const serializeTags = (tags: string[] | undefined): string => JSON.stringify(tags ?? []);
