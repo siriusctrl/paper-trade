@@ -15,6 +15,8 @@ const makeAdapter = () =>
     apiUrl: "https://hl.example/info",
   });
 
+const PERP_DEXS_RESPONSE = [null];
+
 const META_RESPONSE = {
   universe: [
     { name: "BTC", szDecimals: 5, maxLeverage: 50 },
@@ -48,9 +50,49 @@ const ASSET_CTXS_RESPONSE = [
   ],
 ];
 
+const VNTL_META_RESPONSE = {
+  universe: [
+    { name: "vntl:OPENAI", szDecimals: 3, maxLeverage: 3 },
+  ],
+};
+
+const XYZ_META_RESPONSE = {
+  universe: [
+    { name: "xyz:NVDA", szDecimals: 2, maxLeverage: 5 },
+  ],
+};
+
+const FLX_META_RESPONSE = {
+  universe: [
+    { name: "flx:NVDA", szDecimals: 2, maxLeverage: 4 },
+  ],
+};
+
+const VNTL_ASSET_CTXS_RESPONSE = [
+  VNTL_META_RESPONSE,
+  [
+    { midPx: "975.55", markPx: "963.18", dayNtlVlm: "37401.3756", openInterest: "2363.462", funding: "0.0000173865", prevDayPx: "945.13" },
+  ],
+];
+
+const XYZ_ASSET_CTXS_RESPONSE = [
+  XYZ_META_RESPONSE,
+  [
+    { midPx: "121.5", markPx: "121.1", dayNtlVlm: "1500000", openInterest: "8200", funding: "0.00005", prevDayPx: "118.9" },
+  ],
+];
+
+const FLX_ASSET_CTXS_RESPONSE = [
+  FLX_META_RESPONSE,
+  [
+    { midPx: "120.2", markPx: "120.1", dayNtlVlm: "400000", openInterest: "9200", funding: "0.00004", prevDayPx: "119.1" },
+  ],
+];
+
 describe("HyperliquidAdapter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("has correct adapter metadata", () => {
@@ -69,6 +111,7 @@ describe("HyperliquidAdapter", () => {
   it("searches references by query and caches meta", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") return jsonResponse(PERP_DEXS_RESPONSE);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
       if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
       throw new Error(`Unexpected request type: ${body.type}`);
@@ -86,6 +129,106 @@ describe("HyperliquidAdapter", () => {
       return body.type === "meta";
     });
     expect(metaCalls).toHaveLength(1);
+  });
+
+  it("searches builder-deployed perps and resolves unique dex-prefixed aliases", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") {
+        return jsonResponse([null, { name: "vntl" }, { name: "xyz" }, { name: "flx" }]);
+      }
+      if (body.type === "meta" && body.dex === "vntl") return jsonResponse(VNTL_META_RESPONSE);
+      if (body.type === "meta" && body.dex === "xyz") return jsonResponse(XYZ_META_RESPONSE);
+      if (body.type === "meta" && body.dex === "flx") return jsonResponse(FLX_META_RESPONSE);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "vntl") return jsonResponse(VNTL_ASSET_CTXS_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "xyz") return jsonResponse(XYZ_ASSET_CTXS_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "flx") return jsonResponse(FLX_ASSET_CTXS_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      if (body.type === "l2Book" && body.coin === "vntl:OPENAI") {
+        return jsonResponse(makeL2Book([["970", "1.2"]], [["980", "0.8"]]));
+      }
+      throw new Error(`Unexpected request type: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("openai");
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      reference: "vntl:OPENAI",
+      name: "vntl:OPENAI-PERP",
+      price: 975.55,
+    });
+    await expect(adapter.normalizeReference("openai")).resolves.toBe("vntl:OPENAI");
+    await expect(adapter.normalizeReference("nvda")).rejects.toMatchObject<Partial<MarketAdapterError>>({
+      code: "SYMBOL_NOT_FOUND",
+      message: expect.stringContaining("Use a dex-prefixed reference such as"),
+    });
+
+    const quote = await adapter.getQuote("vntl:OPENAI");
+    expect(quote.price).toBe(975);
+    expect(quote.bid).toBe(970);
+    expect(quote.ask).toBe(980);
+  });
+
+  it("defaults duplicate search hits to relevance-volume ranking and honors explicit sort", async () => {
+    const higherPriceLowerVolume = [
+      XYZ_META_RESPONSE,
+      [
+        { midPx: "121.5", markPx: "121.1", dayNtlVlm: "400000", openInterest: "8200", funding: "0.00005", prevDayPx: "118.9" },
+      ],
+    ];
+    const lowerPriceHigherVolume = [
+      FLX_META_RESPONSE,
+      [
+        { midPx: "120.2", markPx: "120.1", dayNtlVlm: "1500000", openInterest: "9200", funding: "0.00004", prevDayPx: "119.1" },
+      ],
+    ];
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") {
+        return jsonResponse([null, { name: "xyz" }, { name: "flx" }]);
+      }
+      if (body.type === "meta" && body.dex === "xyz") return jsonResponse(XYZ_META_RESPONSE);
+      if (body.type === "meta" && body.dex === "flx") return jsonResponse(FLX_META_RESPONSE);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "xyz") return jsonResponse(higherPriceLowerVolume);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "flx") return jsonResponse(lowerPriceHigherVolume);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      throw new Error(`Unexpected request type: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    const defaultRanked = await adapter.search("nvda");
+    const byPrice = await adapter.search("nvda", { sort: "price" });
+
+    expect(defaultRanked.map((row) => row.reference)).toEqual(["flx:NVDA", "xyz:NVDA"]);
+    expect(byPrice.map((row) => row.reference)).toEqual(["xyz:NVDA", "flx:NVDA"]);
+  });
+
+  it("keeps query discovery available when one builder dex meta request fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") {
+        return jsonResponse([null, { name: "vntl" }, { name: "broken" }]);
+      }
+      if (body.type === "meta" && body.dex === "vntl") return jsonResponse(VNTL_META_RESPONSE);
+      if (body.type === "meta" && body.dex === "broken") throw new Error("builder dex unavailable");
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "vntl") return jsonResponse(VNTL_ASSET_CTXS_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "broken") throw new Error("builder dex unavailable");
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      throw new Error(`Unexpected request type: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("openai");
+
+    expect(results).toMatchObject([
+      { reference: "vntl:OPENAI", name: "vntl:OPENAI-PERP" },
+    ]);
   });
 
   it("browses all listed references with pagination", async () => {
@@ -134,6 +277,7 @@ describe("HyperliquidAdapter", () => {
   it("normalizes reference aliases and perp suffixes", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") return jsonResponse(PERP_DEXS_RESPONSE);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
       throw new Error(`Unexpected request type: ${body.type}`);
     });
@@ -228,9 +372,45 @@ describe("HyperliquidAdapter", () => {
     expect(btcFunding.nextFundingAt).toBe(new Date(1_700_000_000_000).toISOString());
   });
 
+  it("returns the caller's reference when cached quote, orderbook, and funding entries are reused", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "l2Book" && body.coin === "BTC") {
+        return jsonResponse(makeL2Book([["94990", "1.5"]], [["95010", "2.0"]]));
+      }
+      if (body.type === "predictedFundings") {
+        return jsonResponse([
+          ["BTC", [["HlPerp", { fundingRate: "0.0001", nextFundingTime: 1_700_000_000_000 }]]],
+        ]);
+      }
+      throw new Error(`Unexpected request: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    await expect(adapter.getQuote("btc-perp")).resolves.toMatchObject({ reference: "btc-perp" });
+    await expect(adapter.getQuote("BTC")).resolves.toMatchObject({ reference: "BTC" });
+    await expect(adapter.getOrderbook("btc-perp")).resolves.toMatchObject({ reference: "btc-perp" });
+    await expect(adapter.getOrderbook("BTC")).resolves.toMatchObject({ reference: "BTC" });
+    await expect(adapter.getFundingRate("btc-perp")).resolves.toMatchObject({ reference: "btc-perp" });
+    await expect(adapter.getFundingRate("BTC")).resolves.toMatchObject({ reference: "BTC" });
+
+    const l2BookCalls = fetchSpy.mock.calls.filter(([, init]) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      return body.type === "l2Book";
+    });
+    const fundingCalls = fetchSpy.mock.calls.filter(([, init]) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      return body.type === "predictedFundings";
+    });
+    expect(l2BookCalls).toHaveLength(1);
+    expect(fundingCalls).toHaveLength(1);
+  });
+
   it("sorts alphabetically for query searches and tolerates optional context failures", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") return jsonResponse(PERP_DEXS_RESPONSE);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
       if (body.type === "metaAndAssetCtxs") throw new Error("context fetch failed");
       throw new Error(`Unexpected request type: ${body.type}`);
@@ -241,6 +421,36 @@ describe("HyperliquidAdapter", () => {
 
     expect(results.map((row) => row.reference)).toEqual(["DOGE", "SOL"]);
     expect(results.every((row) => row.price === undefined)).toBe(true);
+  });
+
+  it("falls back to asset contexts for builder-perp funding", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-10T04:12:34.000Z"));
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.type === "perpDexs") return jsonResponse([null, { name: "vntl" }]);
+      if (body.type === "meta" && body.dex === "vntl") return jsonResponse(VNTL_META_RESPONSE);
+      if (body.type === "meta") return jsonResponse(META_RESPONSE);
+      if (body.type === "metaAndAssetCtxs" && body.dex === "vntl") return jsonResponse(VNTL_ASSET_CTXS_RESPONSE);
+      if (body.type === "metaAndAssetCtxs") return jsonResponse(ASSET_CTXS_RESPONSE);
+      if (body.type === "predictedFundings") return jsonResponse([]);
+      throw new Error(`Unexpected request type: ${JSON.stringify(body)}`);
+    });
+
+    const adapter = makeAdapter();
+    const funding = await adapter.getFundingRate("vntl:OPENAI");
+
+    expect(funding).toMatchObject({
+      reference: "vntl:OPENAI",
+      rate: 0.0000173865,
+      nextFundingAt: "2026-03-10T05:00:00.000Z",
+    });
+    const predictedFundingCalls = fetchSpy.mock.calls.filter(([, init]) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      return body.type === "predictedFundings";
+    });
+    expect(predictedFundingCalls).toHaveLength(0);
   });
 
   it("rejects empty references and invalid meta or l2Book payloads", async () => {

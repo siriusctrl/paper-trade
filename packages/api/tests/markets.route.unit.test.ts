@@ -167,6 +167,69 @@ describe("createMarketRoutes", () => {
     await expect(invalid.json()).resolves.toMatchObject({ error: { code: "INVALID_INPUT" } });
   });
 
+  it("passes optional search sort through to the adapter", async () => {
+    const adapter = {
+      capabilities: ["search"],
+      searchSortOptions: [{ value: "volume", label: "Volume" }],
+      search: vi.fn().mockResolvedValue([{ reference: "xyz:NVDA", name: "xyz:NVDA-PERP" }]),
+    };
+    const registry = { list: () => [], get: () => adapter };
+    const app = makeApp(registry);
+
+    const response = await app.request("/markets/mock/search?q=nvda&sort=volume&limit=5&offset=2");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      results: [{ reference: "xyz:NVDA", name: "xyz:NVDA-PERP" }],
+      hasMore: false,
+    });
+    expect(adapter.search).toHaveBeenCalledWith("nvda", {
+      sort: "volume",
+      limit: 6,
+      offset: 2,
+    });
+  });
+
+  it("returns discovery hasMore and rejects unsupported sort keys", async () => {
+    const adapter = {
+      capabilities: ["search", "browse"],
+      searchSortOptions: [{ value: "volume", label: "Volume" }],
+      browseOptions: [{ value: "price", label: "Price" }],
+      search: vi.fn().mockResolvedValue([
+        { reference: "a", name: "A" },
+        { reference: "b", name: "B" },
+        { reference: "c", name: "C" },
+      ]),
+      browse: vi.fn().mockResolvedValue([
+        { reference: "btc", name: "BTC" },
+        { reference: "eth", name: "ETH" },
+      ]),
+    };
+    const registry = { list: () => [], get: () => adapter };
+    const app = makeApp(registry);
+
+    const searchResponse = await app.request("/markets/mock/search?q=nvda&limit=2");
+    expect(searchResponse.status).toBe(200);
+    await expect(searchResponse.json()).resolves.toEqual({
+      results: [
+        { reference: "a", name: "A" },
+        { reference: "b", name: "B" },
+      ],
+      hasMore: true,
+    });
+
+    const invalidSearchSort = await app.request("/markets/mock/search?q=nvda&sort=price");
+    expect(invalidSearchSort.status).toBe(400);
+    await expect(invalidSearchSort.json()).resolves.toMatchObject({
+      error: { code: "INVALID_INPUT", message: expect.stringContaining("Unsupported sort 'price'") },
+    });
+
+    const invalidBrowseSort = await app.request("/markets/mock/browse?sort=volume");
+    expect(invalidBrowseSort.status).toBe(400);
+    await expect(invalidBrowseSort.json()).resolves.toMatchObject({
+      error: { code: "INVALID_INPUT", message: expect.stringContaining("Unsupported sort 'volume'") },
+    });
+  });
+
   it("returns price history candles and rejects unsupported markets", async () => {
     const candleData = [
       { timestamp: "2026-03-07T00:00:00.000Z", open: 100, high: 105, low: 95, close: 102, volume: 500 },

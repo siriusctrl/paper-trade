@@ -21,7 +21,7 @@ describe("MarketRegistry", () => {
 
     const markets = registry.list();
     expect(markets).toHaveLength(1);
-    expect(markets[0]).toMatchObject({ id: "mock", referenceFormat: "id", priceHistory: null });
+    expect(markets[0]).toMatchObject({ id: "mock", referenceFormat: "id", searchSortOptions: [], priceHistory: null });
     expect(registry.get("mock")).toBe(adapter);
     expect(registry.get("missing")).toBeUndefined();
   });

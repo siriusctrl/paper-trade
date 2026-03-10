@@ -44,6 +44,20 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
     };
   };
 
+  const validateSort = (sort: string | undefined, options: ReadonlyArray<{ value: string }>): string | null => {
+    if (!sort) return null;
+    if (options.some((option) => option.value === sort)) return null;
+    const supported = options.map((option) => option.value).join(", ");
+    return supported.length > 0
+      ? `Unsupported sort '${sort}'. Supported values: ${supported}`
+      : `Sort is not supported for this market`;
+  };
+
+  const toDiscoveryPage = <T>(results: T[], limit: number) => ({
+    results: results.slice(0, limit),
+    hasMore: results.length > limit,
+  });
+
   router.get(
     "/",
     withErrorHandling(async (c) => {
@@ -62,12 +76,15 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
       if (!adapter.capabilities.includes("search")) {
         return jsonError(c, 400, "CAPABILITY_NOT_SUPPORTED", "search is not supported for this market");
       }
+      const sortError = validateSort(parsed.data.sort, adapter.searchSortOptions ?? []);
+      if (sortError) return jsonError(c, 400, "INVALID_INPUT", sortError);
 
       const results = await adapter.search(parsed.data.q, {
-        limit: parsed.data.limit,
+        sort: parsed.data.sort,
+        limit: parsed.data.limit + 1,
         offset: parsed.data.offset,
       });
-      return c.json({ results });
+      return c.json(toDiscoveryPage(results, parsed.data.limit));
     }),
   );
 
@@ -82,13 +99,15 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
       if (!adapter.capabilities.includes("browse") || typeof adapter.browse !== "function") {
         return jsonError(c, 400, "CAPABILITY_NOT_SUPPORTED", "browse is not supported for this market");
       }
+      const sortError = validateSort(parsed.data.sort, adapter.browseOptions ?? []);
+      if (sortError) return jsonError(c, 400, "INVALID_INPUT", sortError);
 
       const results = await adapter.browse({
         sort: parsed.data.sort,
-        limit: parsed.data.limit,
+        limit: parsed.data.limit + 1,
         offset: parsed.data.offset,
       });
-      return c.json({ results });
+      return c.json(toDiscoveryPage(results, parsed.data.limit));
     }),
   );
 

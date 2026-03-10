@@ -5,7 +5,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
-import type { BrowseOption, MarketInfo, MarketReferenceResult } from "../../lib/admin-api";
+import type { BrowseOption, MarketReferenceResult } from "../../lib/admin-api";
 
 const compactNumber = new Intl.NumberFormat("en-US", {
   notation: "compact",
@@ -34,44 +34,49 @@ const formatEndDate = (value: string | null | undefined): string | null => {
 };
 
 export const MarketSearchPanel = ({
-  markets,
-  selectedMarket,
+  marketName,
   selectedAsset,
   searchQuery,
   searchResults,
   searchLoading,
   browseSort,
+  searchSort,
   browseOptions,
+  searchSortOptions,
   hasMoreResults,
   loadingMore,
-  onSelectMarket,
   onSearchQueryChange,
   onSearch,
   onBrowseSortChange,
+  onSearchSortChange,
   onLoadMore,
   onSelectAsset,
 }: {
-  markets: MarketInfo[];
-  selectedMarket: string;
+  marketName: string;
   selectedAsset: MarketReferenceResult | null;
   searchQuery: string;
   searchResults: MarketReferenceResult[];
   searchLoading: boolean;
   browseSort: string;
+  searchSort: string;
   browseOptions: BrowseOption[];
+  searchSortOptions: BrowseOption[];
   hasMoreResults: boolean;
   loadingMore: boolean;
-  onSelectMarket: (marketId: string) => void;
   onSearchQueryChange: (value: string) => void;
   onSearch: () => void;
   onBrowseSortChange: (sort: string) => void;
+  onSearchSortChange: (sort: string) => void;
   onLoadMore: () => void;
   onSelectAsset: (asset: MarketReferenceResult) => void;
 }) => {
-  const selectedMarketInfo = markets.find((market) => market.id === selectedMarket) ?? null;
-  const selectedMarketName = selectedMarketInfo?.name ?? "market";
   const discoveryMode = searchQuery.trim().length > 0 ? "search" : "browse";
-  const selectedBrowseLabel = browseOptions.find((option) => option.value === browseSort)?.label ?? browseSort;
+  const activeSort = discoveryMode === "search" ? searchSort : browseSort;
+  const activeSortOptions =
+    discoveryMode === "search"
+      ? [{ value: "", label: "Default" }, ...searchSortOptions]
+      : browseOptions;
+  const selectedSortLabel = activeSortOptions.find((option) => option.value === activeSort)?.label ?? activeSort;
 
   return (
     <div className="space-y-4">
@@ -81,8 +86,8 @@ export const MarketSearchPanel = ({
             <p className="text-sm font-semibold">Discovery</p>
             <p className="text-xs text-muted-foreground">
               {discoveryMode === "search"
-                ? `Searching ${selectedMarketName} previews by reference.`
-                : `Browsing active ${selectedMarketName} markets${selectedBrowseLabel ? ` by ${selectedBrowseLabel}.` : "."}`}
+                ? `Searching ${marketName} previews${selectedSortLabel ? ` by ${selectedSortLabel}.` : "."}`
+                : `Browsing active ${marketName} markets${selectedSortLabel ? ` by ${selectedSortLabel}.` : "."}`}
             </p>
           </div>
         </div>
@@ -94,7 +99,7 @@ export const MarketSearchPanel = ({
               id="asset-search"
               value={searchQuery}
               onChange={(event) => onSearchQueryChange(event.target.value)}
-              placeholder={`Search ${selectedMarketName}...`}
+              placeholder={`Search ${marketName}...`}
               className="pl-9"
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -119,14 +124,19 @@ export const MarketSearchPanel = ({
         </div>
 
         <div className="flex flex-wrap gap-1.5 rounded-lg border border-border/40 bg-muted/35 p-1">
-          {browseOptions.map((option) => (
+          {activeSortOptions.map((option) => (
             <Button
               key={option.value}
-              variant={browseSort === option.value ? "default" : "ghost"}
+              variant={activeSort === option.value ? "default" : "ghost"}
               size="sm"
               className="h-7 text-[11px]"
-              onClick={() => onBrowseSortChange(option.value)}
-              disabled={searchQuery.trim().length > 0}
+              onClick={() => {
+                if (discoveryMode === "search") {
+                  onSearchSortChange(option.value);
+                  return;
+                }
+                onBrowseSortChange(option.value);
+              }}
             >
               {option.label}
             </Button>

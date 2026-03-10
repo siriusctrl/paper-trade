@@ -52,6 +52,8 @@ const polymarketAdapter: MarketAdapter = {
   referenceFormat: "mock",
   priceRange: [0.01, 0.99],
   capabilities: ["search", "browse", "quote", "orderbook", "resolve"],
+  browseOptions: [{ value: "volume", label: "Volume" }],
+  searchSortOptions: [{ value: "volume", label: "Volume" }],
   search: async (query) => {
     const lowered = query.toLowerCase();
     return [
@@ -364,6 +366,7 @@ describe("api integration", () => {
     expect(browseQuery.status).toBe(200);
     const browsePayload = await browseQuery.json();
     expect(Array.isArray(browsePayload.results)).toBe(true);
+    expect(typeof browsePayload.hasMore).toBe("boolean");
 
     const invalidQuoteQuery = await authedJson("/api/markets/polymarket/quote", user.apiKey);
     expect(invalidQuoteQuery.status).toBe(400);
@@ -648,6 +651,7 @@ describe("api integration", () => {
     expect(searchResponse.status).toBe(200);
     const searchPayload = await searchResponse.json();
     expect(searchPayload.results.length).toBeGreaterThan(0);
+    expect(typeof searchPayload.hasMore).toBe("boolean");
 
     const quoteResponse = await authedJson("/api/markets/polymarket/quote?reference=0x-market-fill", user.apiKey);
     expect(quoteResponse.status).toBe(200);

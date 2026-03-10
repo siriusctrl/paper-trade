@@ -29,7 +29,7 @@ const normalizeRequest = (request: DiscoveryCacheRequest) => {
   return {
     marketId: request.marketId.trim().toLowerCase(),
     query,
-    sort: query.length > 0 ? "" : request.sort?.trim() ?? "",
+    sort: request.sort?.trim() ?? "",
     limit: Math.max(0, Math.trunc(request.limit)),
     offset: Math.max(0, Math.trunc(request.offset)),
   };

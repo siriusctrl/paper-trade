@@ -253,7 +253,7 @@ Core commands:
   markets
   markets-summary
   browse <market> [sort] [limit] [offset]
-  search <market> [query] [limit] [offset]
+  search <market> [query] [sort] [limit] [offset]
   constraints <market> <reference>
   quote <market> <reference>
   quotes <market> <references_csv>
@@ -399,6 +399,7 @@ ENV
         referenceFormat,
         capabilities,
         browseOptions,
+        searchSortOptions,
         priceHistory: (
           if .priceHistory == null then null else {
             supportedIntervals: .priceHistory.supportedIntervals,
@@ -423,12 +424,23 @@ ENV
   search)
     market="${1:?market required}"
     query="${2:-}"
-    limit="${3:-20}"
-    offset="${4:-0}"
+    sort=""
+    limit="20"
+    offset="0"
+    if [[ -n "${3:-}" ]]; then
+      if [[ "${3}" =~ ^[0-9]+$ ]]; then
+        limit="${3}"
+        offset="${4:-0}"
+      else
+        sort="${3}"
+        limit="${4:-20}"
+        offset="${5:-0}"
+      fi
+    fi
     if [[ -z "$query" ]]; then
-      json_get "/markets/${market}/browse?limit=${limit}&offset=${offset}"
+      json_get "/markets/${market}/browse?limit=${limit}&offset=${offset}${sort:+&sort=$(encode "$sort")}"
     else
-      json_get "/markets/${market}/search?q=$(encode "$query")&limit=${limit}&offset=${offset}"
+      json_get "/markets/${market}/search?q=$(encode "$query")&limit=${limit}&offset=${offset}${sort:+&sort=$(encode "$sort")}"
     fi
     ;;
   constraints)

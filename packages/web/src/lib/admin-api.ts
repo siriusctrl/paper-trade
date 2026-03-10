@@ -64,6 +64,7 @@ export type MarketInfo = {
   capabilities: string[];
   referenceFormat: string;
   browseOptions: BrowseOption[];
+  searchSortOptions: BrowseOption[];
   priceHistory: MarketPriceHistoryInfo | null;
 };
 
@@ -96,6 +97,11 @@ export type MarketReferenceResult = {
   liquidity?: number;
   endDate?: string | null;
   metadata?: Record<string, unknown>;
+};
+
+export type DiscoveryResponse = {
+  results: MarketReferenceResult[];
+  hasMore: boolean;
 };
 
 export type QuoteData = {
@@ -358,6 +364,28 @@ export const createAdminApiClient = ({
 }) => {
   const request = <TResponse>(path: string, init?: RequestInit) =>
     requestJson<TResponse>(path, { adminKey, onAuthError, init });
+  const buildDiscoveryPath = ({
+    marketId,
+    query,
+    sort,
+    limit,
+    offset,
+  }: {
+    marketId: string;
+    query?: string;
+    sort?: string;
+    limit: number;
+    offset: number;
+  }) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (query) params.set("q", query);
+    if (sort) params.set("sort", sort);
+    const endpoint = query ? "search" : "browse";
+    return `/api/markets/${marketId}/${endpoint}?${params.toString()}`;
+  };
 
   return {
     getMarkets: () => request<{ markets: MarketInfo[] }>("/api/markets"),
@@ -367,14 +395,10 @@ export const createAdminApiClient = ({
     getUserPortfolio: (userId: string) => request<PortfolioData>(`/api/admin/users/${userId}/portfolio`),
     getUserTimeline: (userId: string, { limit, offset }: { limit: number; offset: number }) =>
       request<TimelineResponse>(`/api/admin/users/${userId}/timeline?limit=${limit}&offset=${offset}`),
-    searchMarketReferences: (marketId: string, query: string, limit = 20, offset = 0) =>
-      request<{ results: MarketReferenceResult[] }>(
-        `/api/markets/${marketId}/search?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`,
-      ),
+    searchMarketReferences: (marketId: string, query: string, limit = 20, offset = 0, sort?: string) =>
+      request<DiscoveryResponse>(buildDiscoveryPath({ marketId, query, sort, limit, offset })),
     browseMarketReferences: (marketId: string, sort: string | undefined, limit = 20, offset = 0) =>
-      request<{ results: MarketReferenceResult[] }>(
-        `/api/markets/${marketId}/browse?limit=${limit}&offset=${offset}${sort ? `&sort=${encodeURIComponent(sort)}` : ""}`,
-      ),
+      request<DiscoveryResponse>(buildDiscoveryPath({ marketId, sort, limit, offset })),
     getQuote: (marketId: string, reference: string) =>
       request<QuoteData>(`/api/markets/${marketId}/quote?reference=${encodeURIComponent(reference)}`),
     getTradingConstraints: (marketId: string, reference: string) =>
@@ -414,6 +438,8 @@ export const createAdminApiClient = ({
     getSymbolTrades: (userId: string, market: string, symbol: string, limit = 50) =>
       request<{ trades: TradeMarker[] }>(
         `/api/admin/users/${userId}/symbol-trades?market=${encodeURIComponent(market)}&symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
-      ),
+    ),
   };
 };
+
+export type AdminApiClient = ReturnType<typeof createAdminApiClient>;

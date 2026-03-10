@@ -221,9 +221,9 @@ const browseSortRank = (sort: string, preview: MarketReference): number => {
 
   if (sort === "newest") {
     const createdAt = typeof preview.metadata?.createdAt === "string" ? preview.metadata.createdAt : null;
-    if (!createdAt) return Number.NEGATIVE_INFINITY;
+    if (!createdAt) return Number.POSITIVE_INFINITY;
     const ts = Date.parse(createdAt);
-    return Number.isFinite(ts) ? -ts : Number.NEGATIVE_INFINITY;
+    return Number.isFinite(ts) ? -ts : Number.POSITIVE_INFINITY;
   }
 
   if (sort === "liquidity") {
@@ -247,6 +247,7 @@ export class PolymarketAdapter implements MarketAdapter {
   readonly priceRange: [number, number] = [0.01, 0.99];
   readonly capabilities = ["search", "browse", "quote", "orderbook", "resolve", "priceHistory"] as const;
   readonly browseOptions = POLYMARKET_BROWSE_OPTIONS;
+  readonly searchSortOptions = POLYMARKET_BROWSE_OPTIONS;
   readonly priceHistory = POLYMARKET_PRICE_HISTORY;
 
   private readonly cache = new TtlCache(GENERAL_CACHE_MAX_ENTRIES);
@@ -334,25 +335,98 @@ export class PolymarketAdapter implements MarketAdapter {
       endDate:
         (typeof market.endDate === "string" ? market.endDate : null) ?? extras.endDate ?? null,
       metadata:
-        conditionId || outcomes.length > 0 || outcomePrices.length > 0 || extras.createdAt || extras.eventTitle
+        conditionId ||
+        outcomes.length > 0 ||
+        outcomePrices.length > 0 ||
+        typeof market.createdAt === "string" ||
+        extras.createdAt ||
+        extras.eventTitle
           ? {
             conditionId,
             outcomes,
             outcomePrices,
             defaultOutcome,
             eventTitle: extras.eventTitle ?? null,
-            createdAt: extras.createdAt ?? null,
+            createdAt: (typeof market.createdAt === "string" ? market.createdAt : null) ?? extras.createdAt ?? null,
           }
           : undefined,
     };
   }
 
-  private async fetchMarketBySlug(slug: string): Promise<UnknownObject | null> {
-    return this.cache.remember(`market-by-slug:${slug}`, {
+  private needsSearchPreviewEnrichment(preview: MarketReference, sort: string | null): boolean {
+    const createdAt =
+      preview.metadata && typeof preview.metadata.createdAt === "string"
+        ? preview.metadata.createdAt
+        : null;
+
+    if (preview.volume === undefined || preview.liquidity === undefined) {
+      return true;
+    }
+
+    if (!preview.endDate || !Number.isFinite(Date.parse(preview.endDate))) {
+      return true;
+    }
+
+    if (sort === "newest" && (!createdAt || !Number.isFinite(Date.parse(createdAt)))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async enrichSearchPreview(preview: MarketReference, sort: string | null = null): Promise<MarketReference> {
+    if (!this.needsSearchPreviewEnrichment(preview, sort)) {
+      return preview;
+    }
+
+    const eventTitle =
+      preview.metadata && typeof preview.metadata.eventTitle === "string"
+        ? preview.metadata.eventTitle
+        : null;
+    const createdAt =
+      preview.metadata && typeof preview.metadata.createdAt === "string"
+        ? preview.metadata.createdAt
+        : null;
+
+    let market: UnknownObject | null;
+    try {
+      market = CONDITION_ID_PATTERN.test(preview.reference)
+        ? await this.fetchMarketByConditionId(preview.reference)
+        : await this.fetchMarketBySlug(preview.reference);
+    } catch {
+      return preview;
+    }
+
+    if (!market) {
+      return preview;
+    }
+
+    const enriched = this.marketToPreview(market, {
+      eventTitle,
+      endDate: preview.endDate ?? null,
+      createdAt,
+    });
+
+    if (!enriched) {
+      return preview;
+    }
+
+    return {
+      ...preview,
+      ...enriched,
+      metadata: {
+        ...(preview.metadata ?? {}),
+        ...(enriched.metadata ?? {}),
+      },
+    };
+  }
+
+  private async fetchSingleMarket(cacheKey: string, queryKey: string, queryValue: string): Promise<UnknownObject | null> {
+    return this.cache.remember(cacheKey, {
       ttlMs: SEARCH_TTL_MS,
       load: async () => {
         const url = new URL("/markets", this.gammaBaseUrl);
-        url.searchParams.set("slug", slug);
+        url.searchParams.set(queryKey, queryValue);
         url.searchParams.set("limit", "1");
 
         const raw = await fetchJson<unknown>(url.toString());
@@ -367,50 +441,105 @@ export class PolymarketAdapter implements MarketAdapter {
         return market;
       },
     });
+  }
+
+  private async fetchMarketBySlug(slug: string): Promise<UnknownObject | null> {
+    return this.fetchSingleMarket(`market-by-slug:${slug}`, "slug", slug);
   }
 
   private async fetchMarketByConditionId(conditionId: string): Promise<UnknownObject | null> {
-    return this.cache.remember(`market-by-condition:${conditionId}`, {
-      ttlMs: SEARCH_TTL_MS,
-      load: async () => {
-        const url = new URL("/markets", this.gammaBaseUrl);
-        url.searchParams.set("conditionId", conditionId);
-        url.searchParams.set("limit", "1");
-
-        const raw = await fetchJson<unknown>(url.toString());
-        const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
-          ? (raw[0] as UnknownObject)
-          : null;
-
-        if (market) {
-          this.cacheMarketSymbolMappings(market);
-        }
-
-        return market;
-      },
-    });
+    return this.fetchSingleMarket(`market-by-condition:${conditionId}`, "conditionId", conditionId);
   }
 
   private async fetchMarketByTokenId(tokenId: string): Promise<UnknownObject | null> {
-    return this.cache.remember(`market-by-token:${tokenId}`, {
-      ttlMs: SEARCH_TTL_MS,
-      load: async () => {
-        const url = new URL("/markets", this.gammaBaseUrl);
-        url.searchParams.set("clob_token_ids", tokenId);
-        url.searchParams.set("limit", "1");
+    return this.fetchSingleMarket(`market-by-token:${tokenId}`, "clob_token_ids", tokenId);
+  }
 
-        const raw = await fetchJson<unknown>(url.toString());
-        const market = Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "object" && raw[0] !== null
-          ? (raw[0] as UnknownObject)
-          : null;
+  private buildEventMarketPreviews(
+    events: unknown[],
+    extrasForEvent: (eventRecord: UnknownObject) => {
+      liquidity?: number | null;
+      endDate?: string | null;
+      createdAt?: string | null;
+      eventTitle?: string | null;
+    },
+  ): MarketReference[] {
+    const previews: MarketReference[] = [];
+    const seen = new Set<string>();
 
-        if (market) {
-          this.cacheMarketSymbolMappings(market);
+    for (const event of events) {
+      if (typeof event !== "object" || event === null) {
+        continue;
+      }
+
+      const eventRecord = event as UnknownObject;
+      const eventMarkets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
+      const extras = extrasForEvent(eventRecord);
+
+      for (const market of eventMarkets) {
+        if (typeof market !== "object" || market === null) {
+          continue;
         }
 
-        return market;
-      },
+        const preview = this.marketToPreview(market as UnknownObject, extras);
+        if (!preview || seen.has(preview.reference)) {
+          continue;
+        }
+
+        seen.add(preview.reference);
+        previews.push(preview);
+      }
+    }
+
+    return previews;
+  }
+
+  private async collectPaginatedPreviews({
+    maxPages,
+    loadPage,
+    stopAfter,
+  }: {
+    maxPages: number;
+    loadPage: (page: number) => Promise<BrowsePage>;
+    stopAfter?: number;
+  }): Promise<MarketReference[]> {
+    const collected: MarketReference[] = [];
+    const seen = new Set<string>();
+    let hasMore = true;
+
+    for (let page = 1; page <= maxPages && hasMore; page += 1) {
+      const nextPage = await loadPage(page);
+      hasMore = nextPage.hasMore;
+
+      for (const preview of nextPage.previews) {
+        if (seen.has(preview.reference)) {
+          continue;
+        }
+        seen.add(preview.reference);
+        collected.push(preview);
+
+        if (stopAfter !== undefined && collected.length >= stopAfter) {
+          return collected;
+        }
+      }
+    }
+
+    return collected;
+  }
+
+  private sortDiscoveryPreviews(previews: MarketReference[], sort: string): MarketReference[] {
+    return [...previews].sort((left, right) => {
+      const leftRank = browseSortRank(sort, left);
+      const rightRank = browseSortRank(sort, right);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.name.localeCompare(right.name);
     });
+  }
+
+  private async hydrateDiscoveryPreviews(previews: MarketReference[], sort: string | null = null): Promise<MarketReference[]> {
+    return Promise.all(previews.map((preview) => this.enrichSearchPreview(preview, sort)));
   }
 
   private async fetchSearchPreviewPage(query: string, page: number): Promise<BrowsePage> {
@@ -437,31 +566,9 @@ export class PolymarketAdapter implements MarketAdapter {
 
     const response = raw as UnknownObject;
     const events = Array.isArray(response.events) ? response.events : [];
-    const previews: MarketReference[] = [];
-    const seen = new Set<string>();
-
-    for (const event of events) {
-      if (typeof event !== "object" || event === null) {
-        continue;
-      }
-
-      const eventRecord = event as UnknownObject;
-      const eventTitle = typeof eventRecord.title === "string" ? eventRecord.title : null;
-      const eventMarkets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
-      for (const market of eventMarkets) {
-        if (typeof market !== "object" || market === null) {
-          continue;
-        }
-
-        const preview = this.marketToPreview(market as UnknownObject, { eventTitle });
-        if (!preview || seen.has(preview.reference)) {
-          continue;
-        }
-
-        seen.add(preview.reference);
-        previews.push(preview);
-      }
-    }
+    const previews = this.buildEventMarketPreviews(events, (eventRecord) => ({
+      eventTitle: typeof eventRecord.title === "string" ? eventRecord.title : null,
+    }));
 
     const pagination =
       typeof response.pagination === "object" && response.pagination !== null
@@ -491,38 +598,12 @@ export class PolymarketAdapter implements MarketAdapter {
       return { previews: [], hasMore: false };
     }
 
-    const previews: MarketReference[] = [];
-    const seen = new Set<string>();
-    for (const event of raw) {
-      if (typeof event !== "object" || event === null) {
-        continue;
-      }
-
-      const eventRecord = event as UnknownObject;
-      const liquidity = parseNumber(eventRecord.liquidity);
-      const endDate = typeof eventRecord.endDate === "string" ? eventRecord.endDate : null;
-      const createdAt = typeof eventRecord.createdAt === "string" ? eventRecord.createdAt : null;
-      const eventTitle = typeof eventRecord.title === "string" ? eventRecord.title : null;
-      const markets = Array.isArray(eventRecord.markets) ? eventRecord.markets : [];
-      for (const market of markets) {
-        if (typeof market !== "object" || market === null) {
-          continue;
-        }
-
-        const preview = this.marketToPreview(market as UnknownObject, {
-          liquidity,
-          endDate,
-          createdAt,
-          eventTitle,
-        });
-        if (!preview || seen.has(preview.reference)) {
-          continue;
-        }
-
-        seen.add(preview.reference);
-        previews.push(preview);
-      }
-    }
+    const previews = this.buildEventMarketPreviews(raw, (eventRecord) => ({
+      liquidity: parseNumber(eventRecord.liquidity),
+      endDate: typeof eventRecord.endDate === "string" ? eventRecord.endDate : null,
+      createdAt: typeof eventRecord.createdAt === "string" ? eventRecord.createdAt : null,
+      eventTitle: typeof eventRecord.title === "string" ? eventRecord.title : null,
+    }));
 
     const result = {
       previews,
@@ -615,29 +696,27 @@ export class PolymarketAdapter implements MarketAdapter {
       return this.browse({ limit: options?.limit, offset: options?.offset });
     }
 
+    const explicitSort =
+      options?.sort && POLYMARKET_BROWSE_OPTIONS.some((option) => option.value === options.sort)
+        ? options.sort
+        : null;
     const limit = options?.limit ?? 20;
     const offset = options?.offset ?? 0;
     const desiredCount = limit + offset;
-    const results: MarketReference[] = [];
-    const seen = new Set<string>();
-    let hasMore = true;
+    const results = await this.collectPaginatedPreviews({
+      maxPages: SEARCH_MAX_PAGES,
+      loadPage: (page) => this.fetchSearchPreviewPage(normalizedQuery, page),
+      ...(explicitSort === null ? { stopAfter: desiredCount } : {}),
+    });
 
-    for (let page = 1; page <= SEARCH_MAX_PAGES && hasMore && results.length < desiredCount; page += 1) {
-      const nextPage = await this.fetchSearchPreviewPage(normalizedQuery, page);
-      hasMore = nextPage.hasMore;
-      for (const preview of nextPage.previews) {
-        if (seen.has(preview.reference)) {
-          continue;
-        }
-        seen.add(preview.reference);
-        results.push(preview);
-        if (results.length >= desiredCount) {
-          break;
-        }
-      }
+    if (explicitSort === null) {
+      return this.hydrateDiscoveryPreviews(results.slice(offset, offset + limit));
     }
 
-    return results.slice(offset, offset + limit);
+    const hydrated = await this.hydrateDiscoveryPreviews(results, explicitSort);
+    const sorted = this.sortDiscoveryPreviews(hydrated, explicitSort);
+
+    return sorted.slice(offset, offset + limit);
   }
 
   async browse(options?: BrowseOptions): Promise<MarketReference[]> {
@@ -651,30 +730,11 @@ export class PolymarketAdapter implements MarketAdapter {
     const sorted = await this.discoveryCache.remember(cacheKey, {
       ttlMs: this.browseCacheTtlMs,
       load: async () => {
-        const collected: MarketReference[] = [];
-        const seen = new Set<string>();
-        let hasMore = true;
-
-        for (let page = 1; page <= BROWSE_MAX_EVENT_PAGES && hasMore; page += 1) {
-          const nextPage = await this.fetchBrowseEventPage(page);
-          hasMore = nextPage.hasMore;
-          for (const preview of nextPage.previews) {
-            if (seen.has(preview.reference)) {
-              continue;
-            }
-            seen.add(preview.reference);
-            collected.push(preview);
-          }
-        }
-
-        return [...collected].sort((left, right) => {
-          const leftRank = browseSortRank(sort, left);
-          const rightRank = browseSortRank(sort, right);
-          if (leftRank !== rightRank) {
-            return leftRank - rightRank;
-          }
-          return left.name.localeCompare(right.name);
+        const collected = await this.collectPaginatedPreviews({
+          maxPages: BROWSE_MAX_EVENT_PAGES,
+          loadPage: (page) => this.fetchBrowseEventPage(page),
         });
+        return this.sortDiscoveryPreviews(collected, sort);
       },
     });
 

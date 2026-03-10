@@ -6,7 +6,7 @@ A self-hosted paper trading engine with a clean REST API. Simulated trading acro
 
 - **Market agnostic** — unified API across all markets, discover capabilities at runtime
 - **Polymarket** — prediction market trading with live odds from the CLOB API
-- **Hyperliquid** — perpetual futures with reference-level fractional size precision and max leverage limits
+- **Hyperliquid** — perpetual futures with reference-level fractional size precision, max leverage limits, and dex-prefixed builder listings
 - **Extensible** — add new markets by implementing a simple adapter interface
 - **Agent-friendly** — skill-based integration with version-aware SSE events, self-describing market capabilities
 - **Decision transparency** — every action requires reasoning; journal + timeline for full audit trail
@@ -83,8 +83,11 @@ Notes:
 - Search and browse surfaces now return lightweight market references. Execution endpoints (`quote`, `orderbook`, `resolve`, order placement) accept those references directly.
 - Discovery is intentionally separate from execution: `browse` and `search` help humans and agents find candidates quickly, then adapters lazily normalize the chosen `reference` only when a quote or order is requested.
 - For Polymarket, discovery references are typically market slugs. The adapter resolves those slugs into outcome token ids behind the scenes when you ask for quotes or place orders.
-- Hyperliquid derives `quantityStep` and fractional support from `szDecimals`, and enforces per-reference `maxLeverage`.
-- Browse sort options are market-specific and discoverable from `GET /api/markets`. Polymarket exposes `volume`, `liquidity`, `endingSoon`, and `newest`; Hyperliquid exposes `price`.
+- Polymarket search hydrates sparse search previews with market detail when Gamma search results omit volume or liquidity, so discovery cards can still show richer metrics.
+- Hyperliquid derives `quantityStep` and fractional support from `szDecimals`, enforces per-reference `maxLeverage`, and search covers builder-deployed perp dex listings such as `xyz:NVDA` and `vntl:OPENAI`.
+- Search now accepts an optional `sort`. Without it, adapters can apply a market-specific default ranking. When a market supports explicit search sorting, `GET /api/markets` exposes `searchSortOptions` for runtime discovery.
+- Browse sort options and explicit search sort options are market-specific and discoverable from `GET /api/markets`. Polymarket exposes `volume`, `liquidity`, `endingSoon`, and `newest`; Hyperliquid exposes `price`, `volume`, and `openInterest`.
+- `browse` and `search` now return `{ results, hasMore }`, so clients and agents do not need to infer pagination from page size. Unsupported `sort` values are rejected with `400 INVALID_INPUT` instead of silently falling back.
 
 ### Market Discovery
 
@@ -94,6 +97,7 @@ Typical discovery flow:
 GET /api/markets
 GET /api/markets/:market/browse?sort=<market-specific-sort>
 GET /api/markets/:market/search?q=iran
+GET /api/markets/:market/search?q=nvda&sort=volume
 GET /api/markets/:market/quote?reference=<reference>
 GET /api/markets/:market/price-history?reference=<reference>&interval=1h&lookback=7d
 POST /api/orders
@@ -107,10 +111,11 @@ Quote responses include convenience fields for agents:
 
 The platform now treats `reference` as the single external identifier across markets:
 - Polymarket: usually a slug during discovery, resolved lazily to a token id for execution
-- Hyperliquid: usually a ticker such as `BTC`
+- Hyperliquid: a ticker such as `BTC`, or a dex-prefixed builder-perp reference such as `xyz:NVDA` or `vntl:OPENAI`
 - Future markets: whatever adapter-specific identifier makes the most sense externally
 
 `GET /api/markets` also exposes market-specific `priceHistory` defaults so humans and agents can discover:
+- `searchSortOptions`
 - `supportedIntervals` and `nativeIntervals`
 - `defaultInterval`
 - `supportedLookbacks` and per-interval `defaultLookbacks`

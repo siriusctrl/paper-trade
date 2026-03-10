@@ -115,12 +115,14 @@ export type MarketDescriptor = {
   priceRange: [number, number] | null;
   capabilities: readonly MarketCapability[];
   browseOptions: readonly BrowseOption[];
+  searchSortOptions: readonly BrowseOption[];
   priceHistory: PriceHistorySupport | null;
 };
 
 export type SearchOptions = {
   limit?: number;
   offset?: number;
+  sort?: string;
 };
 
 export type BrowseOption = {
@@ -154,6 +156,7 @@ export interface MarketAdapter {
   readonly priceRange: [number, number] | null;
   readonly capabilities: readonly MarketCapability[];
   readonly browseOptions?: readonly BrowseOption[];
+  readonly searchSortOptions?: readonly BrowseOption[];
   readonly priceHistory?: PriceHistorySupport | null;
 
   search(query: string, options?: SearchOptions): Promise<MarketReference[]>;

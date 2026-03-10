@@ -11,6 +11,7 @@ import {
   placeOrderSchema,
   registerSchema,
   reasoningSchema,
+  searchMarketQuerySchema,
 } from "../src/schemas.js";
 
 describe("schemas", () => {
@@ -89,6 +90,13 @@ describe("schemas", () => {
     expect(multiQuoteQuerySchema.parse({ references: "abc,def,abc" })).toEqual({ references: ["abc", "def"] });
     expect(multiQuoteQuerySchema.safeParse({ references: "" }).success).toBe(false);
     expect(multiQuoteQuerySchema.safeParse({ references: "x".repeat(1) }).success).toBe(true);
+    expect(searchMarketQuerySchema.parse({ q: "nvda" })).toEqual({ q: "nvda", sort: undefined, limit: 20, offset: 0 });
+    expect(searchMarketQuerySchema.parse({ q: "nvda", sort: "volume", limit: "5", offset: "1" })).toEqual({
+      q: "nvda",
+      sort: "volume",
+      limit: 5,
+      offset: 1,
+    });
   });
 
   it("validates journal and admin amount payloads", () => {

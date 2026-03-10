@@ -101,19 +101,27 @@ Rules:
 ### Search and browse contract
 
 - `search` requires a non-empty `q`
+- `search` accepts an optional `sort`
 - `browse` is explicit and accepts a market-specific `sort` string
-- browse options are discoverable from `GET /api/markets`
-- both endpoints return lightweight discovery records shaped like:
+- browse options and explicit search sort options are discoverable from `GET /api/markets`
+- invalid `sort` values return `400 INVALID_INPUT`
+- adapters may enrich sparse upstream search previews before returning discovery results
+- both endpoints return paginated discovery payloads shaped like:
 
 ```json
 {
-  "reference": "btc",
-  "name": "BTC-PERP",
-  "price": 94321.1,
-  "volume": 12003455.2,
-  "liquidity": 882100.4,
-  "endDate": null,
-  "metadata": {}
+  "results": [
+    {
+      "reference": "btc",
+      "name": "BTC-PERP",
+      "price": 94321.1,
+      "volume": 12003455.2,
+      "liquidity": 882100.4,
+      "endDate": null,
+      "metadata": {}
+    }
+  ],
+  "hasMore": true
 }
 ```
 
@@ -125,6 +133,7 @@ Rules:
 `GET /api/markets` returns per-market discovery metadata, including:
 - `capabilities`
 - `browseOptions`
+- `searchSortOptions`
 - `priceHistory` or `null`
 
 When present, `priceHistory` includes:

@@ -28,12 +28,7 @@ import {
   type TradingConstraints,
   isAdminAuthError,
 } from "../lib/admin-api";
-import {
-  clearDiscoveryCacheEntry,
-  readDiscoveryCache,
-  type DiscoveryCacheRequest,
-  writeDiscoveryCache,
-} from "../lib/discovery-cache";
+import { useMarketDiscovery } from "../lib/useMarketDiscovery";
 
 type OrderResult = { ok: boolean; message: string } | null;
 const DEFAULT_CHART_INTERVALS: PriceHistoryInterval[] = ["1m", "5m", "1h", "4h", "1d"];
@@ -45,21 +40,8 @@ type ClosePrefill = {
   side: "buy" | "sell";
 } | null;
 
-const DISCOVERY_PAGE_SIZE = 20;
-
 const getErrorMessage = (error: unknown, fallback: string): string => {
   return error instanceof Error ? error.message : fallback;
-};
-
-const mergeReferences = (
-  previous: MarketReferenceResult[],
-  incoming: MarketReferenceResult[],
-): MarketReferenceResult[] => {
-  const merged = new Map(previous.map((item) => [item.reference, item] as const));
-  for (const item of incoming) {
-    merged.set(item.reference, item);
-  }
-  return Array.from(merged.values());
 };
 
 export const TradePage = () => {
@@ -79,12 +61,6 @@ export const TradePage = () => {
 
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [selectedMarket, setSelectedMarket] = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [browseSort, setBrowseSort] = useState("");
-  const [searchResults, setSearchResults] = useState<MarketReferenceResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMoreResults, setHasMoreResults] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<MarketReferenceResult | null>(null);
   const [quote, setQuote] = useState<QuoteData | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
@@ -116,9 +92,7 @@ export const TradePage = () => {
   const [chartLoading, setChartLoading] = useState(false);
   const [chartInterval, setChartInterval] = useState<PriceHistoryInterval>("1h");
 
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const agentDropdownRef = useRef<HTMLDivElement>(null);
-  const discoveryRequestRef = useRef(0);
 
   const selectedAgentInfo = useMemo(
     () => agents.find((agent) => agent.userId === selectedAgent) ?? null,
@@ -129,6 +103,26 @@ export const TradePage = () => {
     () => markets.find((entry) => entry.id === selectedMarket) ?? null,
     [markets, selectedMarket],
   );
+  const {
+    searchQuery,
+    setSearchQuery,
+    browseSort,
+    setBrowseSort,
+    searchSort,
+    setSearchSort,
+    results: searchResults,
+    loading: searchLoading,
+    loadingMore,
+    hasMore: hasMoreResults,
+    reset: resetDiscovery,
+    refresh: refreshDiscovery,
+    loadMore: loadMoreDiscoveries,
+  } = useMarketDiscovery({
+    client,
+    selectedMarket,
+    selectedMarketInfo,
+    onError: setError,
+  });
   const chartIntervals = useMemo(() => {
     const priceHistory = selectedMarketInfo?.priceHistory;
     const supported = priceHistory?.supportedIntervals;
@@ -141,7 +135,6 @@ export const TradePage = () => {
   }, [selectedMarketInfo]);
 
   const isPerpMarket = Boolean(selectedMarketInfo?.capabilities.includes("funding"));
-  const discoveryMode = searchQuery.trim().length > 0 ? "search" : "browse";
 
   useEffect(() => {
     if (!chartIntervals.includes(chartInterval)) {
@@ -170,12 +163,10 @@ export const TradePage = () => {
     setQuote(null);
     setConstraints(null);
     setQuoteLoading(false);
-    setSearchResults([]);
-    setHasMoreResults(false);
-    setSearchQuery("");
+    resetDiscovery();
     setOrderResult(null);
     setClosePrefill(null);
-  }, []);
+  }, [resetDiscovery]);
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -196,103 +187,6 @@ export const TradePage = () => {
       }
     }
   }, [client, selectedAgent]);
-
-  const loadDiscoveries = useCallback(
-    async ({
-      marketId,
-      query,
-      sort,
-      offset = 0,
-      append = false,
-      force = false,
-    }: {
-      marketId: string;
-      query: string;
-      sort?: string;
-      offset?: number;
-      append?: boolean;
-      force?: boolean;
-    }) => {
-      if (!marketId) {
-        return;
-      }
-
-      const requestId = ++discoveryRequestRef.current;
-      const trimmedQuery = query.trim();
-      const cacheRequest: DiscoveryCacheRequest = {
-        marketId,
-        query: trimmedQuery,
-        sort,
-        limit: DISCOVERY_PAGE_SIZE,
-        offset,
-      };
-      const cached = force ? null : readDiscoveryCache(cacheRequest);
-      const shouldShowLoader = force || cached === null;
-
-      if (force) {
-        clearDiscoveryCacheEntry(cacheRequest);
-      }
-
-      if (cached) {
-        setSearchResults((previous) => (append ? mergeReferences(previous, cached.results) : cached.results));
-        setHasMoreResults(cached.hasMore);
-        setSearchLoading(false);
-        setLoadingMore(false);
-      }
-
-      if (shouldShowLoader) {
-        if (append) {
-          setLoadingMore(true);
-          setSearchLoading(false);
-        } else {
-          setSearchLoading(true);
-          setLoadingMore(false);
-        }
-      }
-
-      try {
-        const payload = trimmedQuery
-          ? await client.searchMarketReferences(marketId, trimmedQuery, DISCOVERY_PAGE_SIZE, offset)
-          : await client.browseMarketReferences(marketId, sort, DISCOVERY_PAGE_SIZE, offset);
-
-        const nextResults = payload.results;
-        writeDiscoveryCache(cacheRequest, {
-          results: nextResults,
-          hasMore: nextResults.length === DISCOVERY_PAGE_SIZE,
-        });
-
-        if (requestId !== discoveryRequestRef.current) {
-          return;
-        }
-
-        setSearchResults((previous) => (append ? mergeReferences(previous, nextResults) : nextResults));
-        setHasMoreResults(nextResults.length === DISCOVERY_PAGE_SIZE);
-      } catch (searchError) {
-        if (requestId !== discoveryRequestRef.current) {
-          return;
-        }
-        if (isAdminAuthError(searchError)) {
-          return;
-        }
-        if (!cached && !append) {
-          setSearchResults([]);
-          setHasMoreResults(false);
-        }
-        if (!cached || force) {
-          setError(getErrorMessage(searchError, "Failed to load market references"));
-        }
-      } finally {
-        if (requestId === discoveryRequestRef.current) {
-          if (append) {
-            setLoadingMore(false);
-          } else {
-            setSearchLoading(false);
-          }
-        }
-      }
-    },
-    [client],
-  );
 
   useEffect(() => {
     if (!adminKey) {
@@ -331,46 +225,6 @@ export const TradePage = () => {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  useEffect(() => {
-    const browseOptions = selectedMarketInfo?.browseOptions ?? [];
-    if (browseOptions.length === 0) {
-      if (browseSort !== "") {
-        setBrowseSort("");
-      }
-      return;
-    }
-
-    if (!browseOptions.some((option) => option.value === browseSort)) {
-      setBrowseSort(browseOptions[0]?.value ?? "");
-    }
-  }, [browseSort, selectedMarketInfo]);
-
-  useEffect(() => {
-    if (!selectedMarket) {
-      return;
-    }
-
-    if (searchTimerRef.current) {
-      clearTimeout(searchTimerRef.current);
-    }
-
-    const trimmedQuery = searchQuery.trim();
-    if (trimmedQuery.length === 0) {
-      void loadDiscoveries({ marketId: selectedMarket, query: "", sort: browseSort });
-      return;
-    }
-
-    searchTimerRef.current = setTimeout(() => {
-      void loadDiscoveries({ marketId: selectedMarket, query: trimmedQuery, sort: browseSort });
-    }, 350);
-
-    return () => {
-      if (searchTimerRef.current) {
-        clearTimeout(searchTimerRef.current);
-      }
-    };
-  }, [browseSort, loadDiscoveries, searchQuery, selectedMarket]);
 
   useEffect(() => {
     if (!selectedAsset || !selectedMarket) {
@@ -681,44 +535,22 @@ export const TradePage = () => {
 
       <div className="grid items-start gap-5 lg:grid-cols-[1fr_420px]">
         <MarketSearchPanel
-          markets={markets}
-          selectedMarket={selectedMarket}
+          marketName={selectedMarketInfo?.name ?? "market"}
           selectedAsset={selectedAsset}
           searchQuery={searchQuery}
           searchResults={searchResults}
           searchLoading={searchLoading}
           browseSort={browseSort}
+          searchSort={searchSort}
           browseOptions={selectedMarketInfo?.browseOptions ?? []}
+          searchSortOptions={selectedMarketInfo?.searchSortOptions ?? []}
           hasMoreResults={hasMoreResults}
           loadingMore={loadingMore}
-          onSelectMarket={(marketId) => {
-            setSelectedMarket(marketId);
-            clearSelectionState();
-          }}
           onSearchQueryChange={setSearchQuery}
-          onSearch={() => {
-            if (searchTimerRef.current) {
-              clearTimeout(searchTimerRef.current);
-            }
-            void loadDiscoveries({
-              marketId: selectedMarket,
-              query: searchQuery.trim(),
-              sort: browseSort,
-              force: true,
-            });
-          }}
-          onBrowseSortChange={(nextSort) => {
-            setBrowseSort(nextSort);
-          }}
-          onLoadMore={() => {
-            void loadDiscoveries({
-              marketId: selectedMarket,
-              query: searchQuery.trim(),
-              sort: browseSort,
-              offset: searchResults.length,
-              append: true,
-            });
-          }}
+          onSearch={refreshDiscovery}
+          onBrowseSortChange={setBrowseSort}
+          onSearchSortChange={setSearchSort}
+          onLoadMore={loadMoreDiscoveries}
           onSelectAsset={handleSelectAsset}
         />
 

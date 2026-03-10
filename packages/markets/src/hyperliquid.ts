@@ -30,6 +30,8 @@ const META_TTL_MS = 300_000;
 const FUNDING_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
+const HOUR_MS = 3_600_000;
+const DEFAULT_PERP_DEX_CACHE_KEY = "default";
 
 const CANDLE_TTL_MS: Record<string, number> = {
     "1m": 60_000,
@@ -56,8 +58,6 @@ const HYPERLIQUID_PRICE_HISTORY: PriceHistorySupport = {
 };
 
 const DEFAULT_API_URL = "https://api.hyperliquid.xyz/info";
-
-type UnknownObject = Record<string, unknown>;
 
 const parseNumber = (value: unknown): number | null => {
     if (typeof value === "number" && !Number.isNaN(value)) return value;
@@ -110,6 +110,10 @@ type MetaResponse = {
     universe: MetaUniverse[];
 };
 
+type PerpDexDescriptor = {
+    name: string;
+};
+
 type L2BookResponse = {
     levels: Array<Array<{ px: string; sz: string; n: number }>>;
 };
@@ -132,6 +136,19 @@ type PredictedFundingEntry = {
 type CurrentFundingParseResult = {
     matchedCoin: boolean;
     entry: PredictedFundingEntry | null;
+};
+
+type DiscoveryMetric = "price" | "volume" | "openInterest";
+
+type HyperliquidDiscoveryContext = {
+    ctxMap: Map<string, AssetContext>;
+    midPrices: Record<string, string>;
+    ctxAvailable: boolean;
+};
+
+type HyperliquidDiscoveryEntry = {
+    asset: MetaUniverse;
+    index: number;
 };
 
 const parseEpochMs = (value: unknown): number | null => {
@@ -192,11 +209,12 @@ const parseLegacyShapeFundingEntry = (data: unknown[], normalizedSymbol: string)
 export class HyperliquidAdapter implements MarketAdapter {
     readonly marketId = "hyperliquid";
     readonly displayName = "Hyperliquid";
-    readonly description = "Crypto perpetual futures — no expiry, funding rate every hour";
-    readonly referenceFormat = "Ticker (e.g. BTC, ETH, SOL)";
+    readonly description = "Perpetual futures across Hyperliquid dexes with hourly funding";
+    readonly referenceFormat = "Ticker or dex-prefixed ticker (e.g. BTC, xyz:NVDA, vntl:OPENAI)";
     readonly priceRange: [number, number] | null = null;
     readonly capabilities = ["search", "browse", "quote", "orderbook", "funding", "priceHistory"] as const;
     readonly browseOptions = HYPERLIQUID_BROWSE_OPTIONS;
+    readonly searchSortOptions = HYPERLIQUID_BROWSE_OPTIONS;
     readonly priceHistory = HYPERLIQUID_PRICE_HISTORY;
 
     private readonly apiUrl: string;
@@ -210,6 +228,53 @@ export class HyperliquidAdapter implements MarketAdapter {
         this.browseCacheTtlMs = options.browseCacheTtlMs ?? DEFAULT_BROWSE_CACHE_TTL_MS;
     }
 
+    private getDexCacheKey(dex: string | null): string {
+        return dex ?? DEFAULT_PERP_DEX_CACHE_KEY;
+    }
+
+    private buildDexRequest(type: string, dex: string | null, extra?: Record<string, unknown>): Record<string, unknown> {
+        return dex === null ? { type, ...(extra ?? {}) } : { type, dex, ...(extra ?? {}) };
+    }
+
+    private async getPerpDexes(): Promise<Array<string | null>> {
+        return this.cache.remember("perpDexs", {
+            ttlMs: META_TTL_MS,
+            load: async () => {
+                const data = await postInfo<unknown[]>(this.apiUrl, { type: "perpDexs" }, this.requestTimeoutMs);
+                if (!Array.isArray(data)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid perpDexs response from Hyperliquid");
+                }
+
+                const dexs: Array<string | null> = [];
+                let sawDefaultDex = false;
+
+                for (const entry of data) {
+                    if (entry === null) {
+                        sawDefaultDex = true;
+                        dexs.push(null);
+                        continue;
+                    }
+
+                    if (typeof entry !== "object" || entry === null || typeof (entry as PerpDexDescriptor).name !== "string") {
+                        throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid perpDexs response from Hyperliquid");
+                    }
+
+                    const name = (entry as PerpDexDescriptor).name.trim();
+                    if (name.length === 0) {
+                        throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid perpDexs response from Hyperliquid");
+                    }
+                    dexs.push(name);
+                }
+
+                if (!sawDefaultDex) {
+                    dexs.unshift(null);
+                }
+
+                return dexs;
+            },
+        });
+    }
+
     private buildTradingConstraints(asset: MetaUniverse): TradingConstraints {
         const decimals = Math.max(0, Math.trunc(asset.szDecimals));
         const quantityStep = decimals === 0 ? 1 : Number((10 ** -decimals).toFixed(decimals));
@@ -221,21 +286,75 @@ export class HyperliquidAdapter implements MarketAdapter {
         };
     }
 
-    private async findMetaBySymbol(symbol: string): Promise<MetaUniverse> {
-        const candidate = symbol.trim().replace(/[-_\s]*perp$/i, "").toUpperCase();
-        const universe = await this.getMeta();
-        const matched = universe.find((asset) => asset.name.toUpperCase() === candidate);
-        if (!matched) {
-            throw new MarketAdapterError("SYMBOL_NOT_FOUND", `Unknown Hyperliquid symbol: ${symbol}`);
-        }
-        return matched;
+    private withRequestedReference<T extends { reference: string }>(payload: T, reference: string): T {
+        return payload.reference === reference ? payload : { ...payload, reference };
     }
 
-    private async getMeta(): Promise<MetaUniverse[]> {
-        return this.cache.remember("meta", {
+    private compareMetricDesc(left: number | null, right: number | null): number {
+        if (left === null && right === null) return 0;
+        if (left === null) return 1;
+        if (right === null) return -1;
+        if (left === right) return 0;
+        return right - left;
+    }
+
+    private getSearchRelevance(reference: string, query: string): number {
+        const normalizedReference = reference.toLowerCase();
+        const normalizedQuery = query.toLowerCase().trim();
+        const separator = normalizedReference.indexOf(":");
+        const symbol = separator >= 0 ? normalizedReference.slice(separator + 1) : normalizedReference;
+
+        if (normalizedReference === normalizedQuery) return 700;
+        if (symbol === normalizedQuery) return 650;
+        if (normalizedReference.startsWith(normalizedQuery)) return 500;
+        if (symbol.startsWith(normalizedQuery)) return 450;
+        if (symbol.includes(normalizedQuery)) return 300;
+        if (normalizedReference.includes(normalizedQuery)) return 250;
+        return 0;
+    }
+
+    private findMetaMatches(universe: MetaUniverse[], candidate: string): {
+        exact: MetaUniverse | null;
+        suffixMatches: MetaUniverse[];
+    } {
+        const exact = universe.find((asset) => asset.name.toUpperCase() === candidate) ?? null;
+        const suffixMatches = universe.filter((asset) => {
+            const upperName = asset.name.toUpperCase();
+            const separator = upperName.indexOf(":");
+            return separator >= 0 && upperName.slice(separator + 1) === candidate;
+        });
+        return { exact, suffixMatches };
+    }
+
+    private async findMetaBySymbol(symbol: string): Promise<MetaUniverse> {
+        const candidate = symbol.trim().replace(/[-_\s]*perp$/i, "").toUpperCase();
+        const defaultMatches = this.findMetaMatches(await this.getMeta(), candidate);
+        if (defaultMatches.exact) {
+            return defaultMatches.exact;
+        }
+
+        const allMatches = this.findMetaMatches(await this.getAllMeta(), candidate);
+        if (allMatches.exact) {
+            return allMatches.exact;
+        }
+        if (allMatches.suffixMatches.length === 1) {
+            return allMatches.suffixMatches[0];
+        }
+        if (allMatches.suffixMatches.length > 1) {
+            throw new MarketAdapterError(
+                "SYMBOL_NOT_FOUND",
+                `Ambiguous Hyperliquid symbol: ${symbol}. Use a dex-prefixed reference such as ${allMatches.suffixMatches[0].name}`,
+            );
+        }
+
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", `Unknown Hyperliquid symbol: ${symbol}`);
+    }
+
+    private async getMetaForDex(dex: string | null): Promise<MetaUniverse[]> {
+        return this.cache.remember(`meta:${this.getDexCacheKey(dex)}`, {
             ttlMs: META_TTL_MS,
             load: async () => {
-                const data = await postInfo<MetaResponse>(this.apiUrl, { type: "meta" }, this.requestTimeoutMs);
+                const data = await postInfo<MetaResponse>(this.apiUrl, this.buildDexRequest("meta", dex), this.requestTimeoutMs);
 
                 if (!data || !Array.isArray(data.universe)) {
                     throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid meta response from Hyperliquid");
@@ -244,6 +363,29 @@ export class HyperliquidAdapter implements MarketAdapter {
                 return data.universe;
             },
         });
+    }
+
+    private async getMeta(): Promise<MetaUniverse[]> {
+        return this.getMetaForDex(null);
+    }
+
+    private async getAllMeta(): Promise<MetaUniverse[]> {
+        const dexs = await this.getPerpDexes();
+        const responses = await Promise.allSettled(dexs.map((dex) => this.getMetaForDex(dex)));
+        const universes: MetaUniverse[] = [];
+        let fulfilled = 0;
+
+        for (const response of responses) {
+            if (response.status !== "fulfilled") continue;
+            fulfilled += 1;
+            universes.push(...response.value);
+        }
+
+        if (fulfilled === 0) {
+            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid meta response from Hyperliquid");
+        }
+
+        return universes;
     }
 
     private async getL2Book(symbol: string): Promise<L2BookResponse> {
@@ -279,135 +421,221 @@ export class HyperliquidAdapter implements MarketAdapter {
         return this.buildTradingConstraints(matched);
     }
 
-    private async getAssetContexts(): Promise<Map<string, AssetContext>> {
-        return this.cache.remember("assetCtxs", {
+    private async getAssetContextsForDex(dex: string | null): Promise<[MetaResponse, AssetContext[]]> {
+        return this.cache.remember(`assetCtxs:${this.getDexCacheKey(dex)}`, {
             ttlMs: QUOTE_TTL_MS,
             load: async () => {
-                const data = await postInfo<[MetaResponse, unknown[]]>(this.apiUrl, {
-                    type: "metaAndAssetCtxs",
-                }, this.requestTimeoutMs);
+                const data = await postInfo<[MetaResponse, unknown[]]>(
+                    this.apiUrl,
+                    this.buildDexRequest("metaAndAssetCtxs", dex),
+                    this.requestTimeoutMs,
+                );
 
                 if (!Array.isArray(data) || data.length < 2 || !Array.isArray(data[1])) {
                     throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid metaAndAssetCtxs response from Hyperliquid");
                 }
-
-                const meta = data[0] as MetaResponse;
-                const ctxs = data[1] as AssetContext[];
-                const map = new Map<string, AssetContext>();
-                for (let i = 0; i < meta.universe.length && i < ctxs.length; i++) {
-                    map.set(meta.universe[i].name, ctxs[i]);
+                if (!data[0] || !Array.isArray((data[0] as MetaResponse).universe)) {
+                    throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid metaAndAssetCtxs response from Hyperliquid");
                 }
-                return map;
+
+                return [data[0] as MetaResponse, data[1] as AssetContext[]];
             },
         });
     }
 
-    private async listReferences({ query, sort }: { query?: string; sort: string }): Promise<{
-        results: MarketReference[];
-        ctxAvailable: boolean;
-    }> {
-        const universe = await this.getMeta();
-        const lowerQuery = query?.toLowerCase().trim() ?? "";
-        const listed = universe.filter((asset) => !asset.isDelisted);
+    private async getAssetContexts(): Promise<Map<string, AssetContext>> {
+        const [meta, ctxs] = await this.getAssetContextsForDex(null);
+        const map = new Map<string, AssetContext>();
+        for (let i = 0; i < meta.universe.length && i < ctxs.length; i++) {
+            map.set(meta.universe[i].name, ctxs[i]);
+        }
+        return map;
+    }
 
-        const filtered = lowerQuery
-            ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
-            : listed;
+    private async getAllAssetContexts(): Promise<Map<string, AssetContext>> {
+        const dexs = await this.getPerpDexes();
+        const responses = await Promise.allSettled(dexs.map((dex) => this.getAssetContextsForDex(dex)));
+        const map = new Map<string, AssetContext>();
+        let fulfilled = 0;
 
-        // Fetch asset contexts for enrichment (price, volume, OI, funding)
+        for (const response of responses) {
+            if (response.status !== "fulfilled") continue;
+            fulfilled += 1;
+            const [meta, ctxs] = response.value;
+            for (let i = 0; i < meta.universe.length && i < ctxs.length; i++) {
+                map.set(meta.universe[i].name, ctxs[i]);
+            }
+        }
+
+        if (fulfilled === 0) {
+            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid metaAndAssetCtxs response from Hyperliquid");
+        }
+
+        return map;
+    }
+
+    private async loadDiscoveryContext(includeAllDexes: boolean): Promise<HyperliquidDiscoveryContext> {
         let ctxMap = new Map<string, AssetContext>();
         let ctxAvailable = false;
         try {
-            ctxMap = await this.getAssetContexts();
+            ctxMap = includeAllDexes ? await this.getAllAssetContexts() : await this.getAssetContexts();
             ctxAvailable = true;
         } catch {
             // asset contexts are optional enrichment; proceed without them
         }
 
-        // Fallback: if asset contexts failed, still try allMids for price
         let midPrices: Record<string, string> = {};
         if (!ctxAvailable) {
             try {
-                midPrices = await this.getAllMids();
+                midPrices = includeAllDexes ? await this.getAllDexMids() : await this.getAllMids();
             } catch {
                 // price fallback is also optional
             }
         }
 
-        const getCtxNumber = (coin: string, field: keyof AssetContext): number | null => {
-            const ctx = ctxMap.get(coin);
-            return ctx ? parseNumber(ctx[field]) : null;
+        return {
+            ctxMap,
+            midPrices,
+            ctxAvailable,
         };
+    }
 
-        const getPrice = (coin: string): number | null => {
-            const ctx = ctxMap.get(coin);
-            if (ctx) {
-                return parseNumber(ctx.midPx) ?? parseNumber(ctx.markPx) ?? null;
-            }
-            // Fallback to allMids when contexts are unavailable
-            return parseNumber(midPrices[coin]) ?? null;
-        };
+    private getDiscoveryCtxNumber(context: HyperliquidDiscoveryContext, coin: string, field: keyof AssetContext): number | null {
+        const ctx = context.ctxMap.get(coin);
+        return ctx ? parseNumber(ctx[field]) : null;
+    }
 
-        const sorted = filtered.map((asset, index) => ({ asset, index }));
-        if (!lowerQuery) {
-            if (sort === "volume") {
-                sorted.sort((left, right) => {
-                    const leftVol = getCtxNumber(left.asset.name, "dayNtlVlm");
-                    const rightVol = getCtxNumber(right.asset.name, "dayNtlVlm");
-                    if (leftVol !== null && rightVol !== null && leftVol !== rightVol) {
-                        return rightVol - leftVol;
-                    }
-                    return left.index - right.index;
-                });
-            } else if (sort === "openInterest") {
-                sorted.sort((left, right) => {
-                    const leftOI = getCtxNumber(left.asset.name, "openInterest");
-                    const rightOI = getCtxNumber(right.asset.name, "openInterest");
-                    if (leftOI !== null && rightOI !== null && leftOI !== rightOI) {
-                        return rightOI - leftOI;
-                    }
-                    return left.index - right.index;
-                });
-            } else {
-                // default: sort by price descending
-                sorted.sort((left, right) => {
-                    const leftPrice = getPrice(left.asset.name);
-                    const rightPrice = getPrice(right.asset.name);
-                    if (leftPrice !== null && rightPrice !== null && leftPrice !== rightPrice) {
-                        return rightPrice - leftPrice;
-                    }
-                    return left.index - right.index;
-                });
-            }
-        } else {
-            sorted.sort((left, right) => left.asset.name.localeCompare(right.asset.name));
+    private getDiscoveryPrice(context: HyperliquidDiscoveryContext, coin: string): number | null {
+        const ctx = context.ctxMap.get(coin);
+        if (ctx) {
+            return parseNumber(ctx.midPx) ?? parseNumber(ctx.markPx) ?? null;
         }
+        return parseNumber(context.midPrices[coin]) ?? null;
+    }
 
-        const toReference = (asset: MetaUniverse): MarketReference => {
-            const ctx = ctxMap.get(asset.name);
-            const price = getPrice(asset.name) ?? undefined;
-            const volume = parseNumber(ctx?.dayNtlVlm) ?? undefined;
-            const oi = parseNumber(ctx?.openInterest) ?? undefined;
-            const funding = parseNumber(ctx?.funding) ?? undefined;
+    private getDiscoveryMetric(context: HyperliquidDiscoveryContext, asset: MetaUniverse, metric: DiscoveryMetric): number | null {
+        if (metric === "price") return this.getDiscoveryPrice(context, asset.name);
+        if (metric === "volume") return this.getDiscoveryCtxNumber(context, asset.name, "dayNtlVlm");
+        return this.getDiscoveryCtxNumber(context, asset.name, "openInterest");
+    }
 
-            return {
-                reference: asset.name,
-                name: `${asset.name}-PERP`,
-                price,
-                volume,
-                openInterest: oi,
-                metadata: {
-                    szDecimals: asset.szDecimals,
-                    maxLeverage: asset.maxLeverage,
-                    ...this.buildTradingConstraints(asset),
-                    ...(funding !== undefined ? { funding } : {}),
-                },
-            };
-        };
+    private sortBrowseEntries(entries: HyperliquidDiscoveryEntry[], sort: string | undefined, context: HyperliquidDiscoveryContext): void {
+        const metric: DiscoveryMetric = sort === "volume" || sort === "openInterest" ? sort : "price";
+        entries.sort((left, right) => {
+            const comparison = this.compareMetricDesc(
+                this.getDiscoveryMetric(context, left.asset, metric),
+                this.getDiscoveryMetric(context, right.asset, metric),
+            );
+            if (comparison !== 0) {
+                return comparison;
+            }
+            return left.index - right.index;
+        });
+    }
+
+    private sortSearchEntries(
+        entries: HyperliquidDiscoveryEntry[],
+        query: string,
+        sort: string | undefined,
+        context: HyperliquidDiscoveryContext,
+    ): void {
+        const requestedMetric = sort === "price" || sort === "volume" || sort === "openInterest" ? sort : null;
+
+        entries.sort((left, right) => {
+            const leftRelevance = this.getSearchRelevance(left.asset.name, query);
+            const rightRelevance = this.getSearchRelevance(right.asset.name, query);
+
+            if (requestedMetric) {
+                const metricComparison = this.compareMetricDesc(
+                    this.getDiscoveryMetric(context, left.asset, requestedMetric),
+                    this.getDiscoveryMetric(context, right.asset, requestedMetric),
+                );
+                if (metricComparison !== 0) {
+                    return metricComparison;
+                }
+            } else {
+                if (leftRelevance !== rightRelevance) {
+                    return rightRelevance - leftRelevance;
+                }
+
+                const volumeComparison = this.compareMetricDesc(
+                    this.getDiscoveryMetric(context, left.asset, "volume"),
+                    this.getDiscoveryMetric(context, right.asset, "volume"),
+                );
+                if (volumeComparison !== 0) {
+                    return volumeComparison;
+                }
+
+                const oiComparison = this.compareMetricDesc(
+                    this.getDiscoveryMetric(context, left.asset, "openInterest"),
+                    this.getDiscoveryMetric(context, right.asset, "openInterest"),
+                );
+                if (oiComparison !== 0) {
+                    return oiComparison;
+                }
+
+                const priceComparison = this.compareMetricDesc(
+                    this.getDiscoveryMetric(context, left.asset, "price"),
+                    this.getDiscoveryMetric(context, right.asset, "price"),
+                );
+                if (priceComparison !== 0) {
+                    return priceComparison;
+                }
+            }
+
+            if (leftRelevance !== rightRelevance) {
+                return rightRelevance - leftRelevance;
+            }
+
+            return left.asset.name.localeCompare(right.asset.name);
+        });
+    }
+
+    private toDiscoveryReference(context: HyperliquidDiscoveryContext, asset: MetaUniverse): MarketReference {
+        const ctx = context.ctxMap.get(asset.name);
+        const price = this.getDiscoveryPrice(context, asset.name) ?? undefined;
+        const volume = parseNumber(ctx?.dayNtlVlm) ?? undefined;
+        const oi = parseNumber(ctx?.openInterest) ?? undefined;
+        const funding = parseNumber(ctx?.funding) ?? undefined;
 
         return {
-            results: sorted.map((entry) => toReference(entry.asset)),
-            ctxAvailable,
+            reference: asset.name,
+            name: `${asset.name}-PERP`,
+            price,
+            volume,
+            openInterest: oi,
+            metadata: {
+                szDecimals: asset.szDecimals,
+                maxLeverage: asset.maxLeverage,
+                ...this.buildTradingConstraints(asset),
+                ...(funding !== undefined ? { funding } : {}),
+            },
+        };
+    }
+
+    private async listReferences({ query, sort }: { query?: string; sort?: string }): Promise<{
+        results: MarketReference[];
+        ctxAvailable: boolean;
+    }> {
+        const lowerQuery = query?.toLowerCase().trim() ?? "";
+        const includeAllDexes = lowerQuery.length > 0;
+        const universe = includeAllDexes ? await this.getAllMeta() : await this.getMeta();
+        const listed = universe.filter((asset) => !asset.isDelisted);
+        const filtered = lowerQuery
+            ? listed.filter((asset) => asset.name.toLowerCase().includes(lowerQuery))
+            : listed;
+        const context = await this.loadDiscoveryContext(includeAllDexes);
+        const sorted = filtered.map((asset, index) => ({ asset, index }));
+
+        if (lowerQuery) {
+            this.sortSearchEntries(sorted, lowerQuery, sort, context);
+        } else {
+            this.sortBrowseEntries(sorted, sort, context);
+        }
+
+        return {
+            results: sorted.map((entry) => this.toDiscoveryReference(context, entry.asset)),
+            ctxAvailable: context.ctxAvailable,
         };
     }
 
@@ -425,7 +653,7 @@ export class HyperliquidAdapter implements MarketAdapter {
         },
     ): Promise<MarketReference[]> {
         const isBrowse = !query || query.trim().length === 0;
-        const normalizedSort = sort ?? "price";
+        const normalizedSort = isBrowse ? (sort ?? "price") : sort;
 
         if (isBrowse) {
             const cacheKey = `browse-result:${normalizedSort}`;
@@ -453,6 +681,7 @@ export class HyperliquidAdapter implements MarketAdapter {
     async search(query: string, options?: SearchOptions): Promise<MarketReference[]> {
         return this.buildReferences({
             query,
+            sort: options?.sort,
             limit: options?.limit,
             offset: options?.offset,
         });
@@ -467,10 +696,36 @@ export class HyperliquidAdapter implements MarketAdapter {
     }
 
     private async getAllMids(): Promise<Record<string, string>> {
-        return this.cache.remember("allMids", {
+        return this.cache.remember(`allMids:${this.getDexCacheKey(null)}`, {
             ttlMs: QUOTE_TTL_MS,
             load: () => postInfo<Record<string, string>>(this.apiUrl, { type: "allMids" }, this.requestTimeoutMs),
         });
+    }
+
+    private async getAllMidsForDex(dex: string | null): Promise<Record<string, string>> {
+        return this.cache.remember(`allMids:${this.getDexCacheKey(dex)}`, {
+            ttlMs: QUOTE_TTL_MS,
+            load: () => postInfo<Record<string, string>>(this.apiUrl, this.buildDexRequest("allMids", dex), this.requestTimeoutMs),
+        });
+    }
+
+    private async getAllDexMids(): Promise<Record<string, string>> {
+        const dexs = await this.getPerpDexes();
+        const responses = await Promise.allSettled(dexs.map((dex) => this.getAllMidsForDex(dex)));
+        const mids: Record<string, string> = {};
+        let fulfilled = 0;
+
+        for (const response of responses) {
+            if (response.status !== "fulfilled") continue;
+            fulfilled += 1;
+            Object.assign(mids, response.value);
+        }
+
+        if (fulfilled === 0) {
+            throw new MarketAdapterError("UPSTREAM_ERROR", "Invalid allMids response from Hyperliquid");
+        }
+
+        return mids;
     }
 
     private async getPredictedFundings(): Promise<unknown[]> {
@@ -490,11 +745,31 @@ export class HyperliquidAdapter implements MarketAdapter {
         });
     }
 
+    private async getFundingRateFromAssetContext(reference: string, normalizedSymbol: string): Promise<FundingRate> {
+        const ctxMap = normalizedSymbol.includes(":") ? await this.getAllAssetContexts() : await this.getAssetContexts();
+        const ctx = ctxMap.get(normalizedSymbol);
+        const rate = parseNumber(ctx?.funding);
+        if (rate === null) {
+            throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No funding rate data for ${normalizedSymbol}`);
+        }
+
+        // Hyperliquid funding settles hourly. predictedFundings only covers the first
+        // perp dex, so builder-deployed perps fall back to the current asset context.
+        const nextFundingAt = new Date(Math.floor(Date.now() / HOUR_MS) * HOUR_MS + HOUR_MS).toISOString();
+
+        return {
+            reference,
+            rate,
+            nextFundingAt,
+            timestamp: new Date().toISOString(),
+        };
+    }
+
     async getQuote(reference: string): Promise<Quote> {
         const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `quote:${normalizedSymbol}`;
         const cached = this.cache.get<Quote>(cacheKey);
-        if (cached) return cached;
+        if (cached) return this.withRequestedReference(cached, reference);
 
         const book = await this.getL2Book(normalizedSymbol);
         const bids = book.levels[0] ?? [];
@@ -528,7 +803,7 @@ export class HyperliquidAdapter implements MarketAdapter {
         const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `ob:${normalizedSymbol}`;
         const cached = this.cache.get<Orderbook>(cacheKey);
-        if (cached) return cached;
+        if (cached) return this.withRequestedReference(cached, reference);
 
         const book = await this.getL2Book(normalizedSymbol);
         const rawBids = book.levels[0] ?? [];
@@ -562,7 +837,13 @@ export class HyperliquidAdapter implements MarketAdapter {
         const normalizedSymbol = await this.normalizeReference(reference);
         const cacheKey = `funding:${normalizedSymbol}`;
         const cached = this.cache.get<FundingRate>(cacheKey);
-        if (cached) return cached;
+        if (cached) return this.withRequestedReference(cached, reference);
+
+        if (normalizedSymbol.includes(":")) {
+            const fundingRate = await this.getFundingRateFromAssetContext(reference, normalizedSymbol);
+            this.cache.set(cacheKey, fundingRate, FUNDING_TTL_MS);
+            return fundingRate;
+        }
 
         const data = await this.getPredictedFundings();
 
@@ -572,7 +853,9 @@ export class HyperliquidAdapter implements MarketAdapter {
             (currentShape.matchedCoin ? null : parseLegacyShapeFundingEntry(data, normalizedSymbol));
 
         if (!entry) {
-            throw new MarketAdapterError("SYMBOL_NOT_FOUND", `No funding rate data for ${normalizedSymbol}`);
+            const fundingRate = await this.getFundingRateFromAssetContext(reference, normalizedSymbol);
+            this.cache.set(cacheKey, fundingRate, FUNDING_TTL_MS);
+            return fundingRate;
         }
 
         const rate = parseNumber(entry.fundingRate);

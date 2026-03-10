@@ -20,6 +20,9 @@
 - Execution reads and order placement accept the same `reference`; the adapter resolves it internally to a tradable token id.
 - Capabilities: `search`, `browse`, `quote`, `orderbook`, `resolve`, `priceHistory`.
 - Browse sorts: `volume`, `liquidity`, `endingSoon`, `newest`.
+- Explicit search sorts: `volume`, `liquidity`, `endingSoon`, `newest`.
+- Default query search keeps relevance ordering unless the caller explicitly sends `sort`.
+- Search may hydrate sparse Gamma search previews with market detail so `volume`, `liquidity`, `endDate`, and `createdAt` can still appear in discovery cards.
 - Price range is usually `0.01` to `0.99`.
 - Quantity is integer-only: `quantityStep = 1`, `supportsFractional = false`.
 - Bearish views are usually expressed by buying the opposite outcome token, not by shorting.
@@ -30,10 +33,12 @@
 
 ## Hyperliquid (`hyperliquid`)
 
-- Discovery and execution `reference` is usually a ticker such as `BTC`.
-- Aliases like `btc`, `btc-perp`, or mixed case are normalized internally.
+- Discovery and execution `reference` can be a plain ticker such as `BTC` or a dex-prefixed builder-perp reference such as `xyz:NVDA` or `vntl:OPENAI`.
+- Aliases like `btc`, `btc-perp`, or mixed case are normalized internally. Unique builder symbols can also resolve without the prefix, but ambiguous names should keep the returned `dex:SYMBOL` reference.
 - Capabilities: `search`, `browse`, `quote`, `orderbook`, `funding`, `priceHistory`.
-- Browse sorts: `price`.
+- Browse sorts: `price`, `volume`, `openInterest`.
+- Explicit search sorts: `price`, `volume`, `openInterest`.
+- Default query search ranking is relevance first, then `volume`, then `openInterest`, then `price`.
 - Quantity precision is per-symbol and derived from `szDecimals`.
 - `maxLeverage` is enforced per symbol.
 - Funding applies hourly and affects realized account balance over time.

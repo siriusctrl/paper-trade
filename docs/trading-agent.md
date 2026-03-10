@@ -260,7 +260,7 @@ Pragmatic starting defaults:
 Use a repeatable sequence:
 1. read `.state/watchlist.md`
 2. `GET /api/markets`
-3. read each market's `browseOptions` and `priceHistory` defaults
+3. read each market's `browseOptions`, `searchSortOptions`, and `priceHistory` defaults
 4. `GET /api/markets/:market/browse`
 5. optional `GET /api/markets/:market/search` when the agent has a concrete query
 6. keep the returned `reference` for the candidate you want to investigate
@@ -279,9 +279,10 @@ A few design facts help agents make better decisions.
 
 - unimarket is simulation-first; it does not place real exchange trades in core flows
 - discovery surfaces return market `reference` values; execution endpoints accept the same reference and let adapters normalize it internally
-- `GET /api/markets` also advertises per-market `priceHistory` defaults so the agent can choose valid intervals and lookbacks without hardcoding them
+- `GET /api/markets` also advertises per-market `searchSortOptions` and `priceHistory` defaults so the agent can discover valid sort overrides, intervals, and lookbacks without hardcoding them
 - the agent should treat `reference` as the only external market identifier it needs to persist between discovery and execution
 - on Polymarket, a discovery `reference` is usually a slug preview, not an already-resolved token id
+- when `searchSortOptions` is empty, keep the market's default search ranking instead of guessing sort keys
 - markets without `funding` behave like spot inventory
 - prediction-market bearish views are expressed by buying the opposite outcome token, not by opening a naked short
 - markets with `funding` behave like perp markets with leverage, funding, and liquidation

@@ -35,13 +35,26 @@ describe("PolymarketAdapter", () => {
                   question: "Will Iran close the Strait of Hormuz?",
                   conditionId: `0x${"a".repeat(64)}`,
                   lastTradePrice: "0.57",
-                  volume24hr: "12345",
                 },
               ],
             },
           ],
           pagination: { hasMore: false },
         });
+      }
+      if (url === "https://gamma.example/markets?slug=iran-hormuz&limit=1") {
+        return jsonResponse([
+          {
+            slug: "iran-hormuz",
+            question: "Will Iran close the Strait of Hormuz?",
+            conditionId: `0x${"a".repeat(64)}`,
+            lastTradePrice: "0.57",
+            volume24hr: "12345",
+            liquidity: "54321",
+            endDate: "2026-03-12T00:00:00.000Z",
+            createdAt: "2026-03-01T00:00:00.000Z",
+          },
+        ]);
       }
       throw new Error(`Unexpected fetch url: ${url}`);
     });
@@ -56,18 +69,19 @@ describe("PolymarketAdapter", () => {
       name: "Will Iran close the Strait of Hormuz?",
       price: 0.57,
       volume: 12345,
-      endDate: null,
+      liquidity: 54321,
+      endDate: "2026-03-12T00:00:00.000Z",
       metadata: {
         conditionId: `0x${"a".repeat(64)}`,
         outcomes: [],
         outcomePrices: [],
         defaultOutcome: null,
         eventTitle: "Iran event",
-        createdAt: null,
+        createdAt: "2026-03-01T00:00:00.000Z",
       },
     });
     expect(second).toEqual(first);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("browses active markets from events and sorts them locally", async () => {
@@ -563,6 +577,259 @@ describe("PolymarketAdapter", () => {
       defaultOutcome: "Yes",
     });
     expect(results[1]).toMatchObject({ name: "Fallback title", price: 0.33, liquidity: 100 });
+  });
+
+  it("enriches sparse search previews with market detail metrics", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "Election event",
+              markets: [
+                {
+                  slug: "fed-march",
+                  question: "Will the Fed cut in March?",
+                  conditionId: `0x${"3".repeat(64)}`,
+                  lastTradePrice: "0.44",
+                },
+              ],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=fed-march&limit=1") {
+        return jsonResponse([
+          {
+            slug: "fed-march",
+            question: "Will the Fed cut in March?",
+            conditionId: `0x${"3".repeat(64)}`,
+            lastTradePrice: "0.44",
+            volume24hr: "8800",
+            liquidity: "12000",
+            endDate: "2026-03-31T00:00:00.000Z",
+            createdAt: "2026-03-01T00:00:00.000Z",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("fed");
+
+    expect(results).toMatchObject([
+      {
+        reference: "fed-march",
+        price: 0.44,
+        volume: 8800,
+        liquidity: 12000,
+        endDate: "2026-03-31T00:00:00.000Z",
+        metadata: {
+          eventTitle: "Election event",
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("supports explicit sort for search results across paginated previews", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      if (url.origin === "https://gamma.example" && url.pathname === "/search-v2") {
+        const page = url.searchParams.get("page");
+        if (page === "1") {
+          return jsonResponse({
+            events: [
+              {
+                title: "Rates",
+                markets: [
+                  {
+                    slug: "fed-april",
+                    question: "Will the Fed cut by April?",
+                    conditionId: `0x${"4".repeat(64)}`,
+                    lastTradePrice: "0.51",
+                  },
+                ],
+              },
+            ],
+            pagination: { hasMore: true },
+          });
+        }
+        if (page === "2") {
+          return jsonResponse({
+            events: [
+              {
+                title: "Rates",
+                markets: [
+                  {
+                    slug: "fed-may",
+                    question: "Will the Fed cut by May?",
+                    conditionId: `0x${"5".repeat(64)}`,
+                    lastTradePrice: "0.64",
+                  },
+                ],
+              },
+            ],
+            pagination: { hasMore: false },
+          });
+        }
+      }
+      if (String(input) === "https://gamma.example/markets?slug=fed-april&limit=1") {
+        return jsonResponse([
+          {
+            slug: "fed-april",
+            question: "Will the Fed cut by April?",
+            conditionId: `0x${"4".repeat(64)}`,
+            lastTradePrice: "0.51",
+            volume24hr: "100",
+            liquidity: "900",
+            endDate: "2026-04-30T00:00:00.000Z",
+            createdAt: "2026-03-01T00:00:00.000Z",
+          },
+        ]);
+      }
+      if (String(input) === "https://gamma.example/markets?slug=fed-may&limit=1") {
+        return jsonResponse([
+          {
+            slug: "fed-may",
+            question: "Will the Fed cut by May?",
+            conditionId: `0x${"5".repeat(64)}`,
+            lastTradePrice: "0.64",
+            volume24hr: "10000",
+            liquidity: "1200",
+            endDate: "2026-05-31T00:00:00.000Z",
+            createdAt: "2026-03-05T00:00:00.000Z",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${String(input)}`);
+    });
+
+    const adapter = makeAdapter();
+    const defaultResults = await adapter.search("fed", { limit: 1, offset: 0 });
+    const volumeSorted = await adapter.search("fed", { limit: 1, offset: 0, sort: "volume" });
+
+    expect(defaultResults.map((row) => row.reference)).toEqual(["fed-april"]);
+    expect(volumeSorted.map((row) => row.reference)).toEqual(["fed-may"]);
+  });
+
+  it("hydrates partially populated previews before explicit liquidity sorting", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "Rates",
+              markets: [
+                {
+                  slug: "needs-hydration",
+                  question: "Needs hydration",
+                  conditionId: `0x${"6".repeat(64)}`,
+                  lastTradePrice: "0.42",
+                  volume24hr: "500",
+                },
+                {
+                  slug: "already-liquid",
+                  question: "Already liquid",
+                  conditionId: `0x${"7".repeat(64)}`,
+                  lastTradePrice: "0.51",
+                  volume24hr: "400",
+                  liquidity: "900",
+                  endDate: "2026-04-30T00:00:00.000Z",
+                  createdAt: "2026-03-01T00:00:00.000Z",
+                },
+              ],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=needs-hydration&limit=1") {
+        return jsonResponse([
+          {
+            slug: "needs-hydration",
+            question: "Needs hydration",
+            conditionId: `0x${"6".repeat(64)}`,
+            lastTradePrice: "0.42",
+            volume24hr: "500",
+            liquidity: "1500",
+            endDate: "2026-04-15T00:00:00.000Z",
+            createdAt: "2026-03-02T00:00:00.000Z",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("rates", { sort: "liquidity", limit: 2, offset: 0 });
+
+    expect(results.map((row) => row.reference)).toEqual(["needs-hydration", "already-liquid"]);
+    expect(results[0]).toMatchObject({
+      liquidity: 1500,
+      endDate: "2026-04-15T00:00:00.000Z",
+      metadata: { createdAt: "2026-03-02T00:00:00.000Z" },
+    });
+  });
+
+  it("pushes newest-sorted results with missing createdAt behind dated results", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://gamma.example/search-v2")) {
+        return jsonResponse({
+          events: [
+            {
+              title: "Elections",
+              markets: [
+                {
+                  slug: "missing-created",
+                  question: "Missing createdAt",
+                  conditionId: `0x${"8".repeat(64)}`,
+                  lastTradePrice: "0.49",
+                  volume24hr: "300",
+                  liquidity: "1200",
+                  endDate: "2026-11-01T00:00:00.000Z",
+                },
+                {
+                  slug: "dated-market",
+                  question: "Dated market",
+                  conditionId: `0x${"9".repeat(64)}`,
+                  lastTradePrice: "0.57",
+                  volume24hr: "320",
+                  liquidity: "1000",
+                  endDate: "2026-11-02T00:00:00.000Z",
+                  createdAt: "2026-03-05T00:00:00.000Z",
+                },
+              ],
+            },
+          ],
+          pagination: { hasMore: false },
+        });
+      }
+      if (url === "https://gamma.example/markets?slug=missing-created&limit=1") {
+        return jsonResponse([
+          {
+            slug: "missing-created",
+            question: "Missing createdAt",
+            conditionId: `0x${"8".repeat(64)}`,
+            lastTradePrice: "0.49",
+            volume24hr: "300",
+            liquidity: "1200",
+            endDate: "2026-11-01T00:00:00.000Z",
+          },
+        ]);
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const adapter = makeAdapter();
+    const results = await adapter.search("market", { sort: "newest", limit: 2, offset: 0 });
+
+    expect(results.map((row) => row.reference)).toEqual(["dated-market", "missing-created"]);
   });
 
   it("supports endingSoon, newest, liquidity, and fallback browse sorting", async () => {

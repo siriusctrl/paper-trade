@@ -25,7 +25,7 @@ Base URL: `http://<host>:3100/api`
   - `/api/markets/:market/resolve`
   - `/api/markets/:market/price-history`
   - `POST /api/orders`
-- Use `browse` for blank exploration. `search` requires a non-empty `q`.
+- Use `browse` for blank exploration. `search` requires a non-empty `q` and accepts an optional `sort` when the market advertises `searchSortOptions`.
 - Use `references=a,b,c` for batch quote, orderbook, and funding reads.
 - Include `Idempotency-Key` on retryable writes.
 
@@ -50,6 +50,7 @@ Each market descriptor includes:
 - `id`, `name`, `description`, `referenceFormat`
 - `capabilities`
 - `browseOptions`
+- `searchSortOptions`
 - `priceHistory` or `null`
 
 `priceHistory` includes:
@@ -67,23 +68,34 @@ Each market descriptor includes:
 ```http
 GET /api/markets/{market}/browse?sort=volume&limit=20&offset=0
 GET /api/markets/{market}/search?q=iran&limit=20&offset=0
+GET /api/markets/{market}/search?q=nvda&sort=volume&limit=20&offset=0
 ```
 
-Both return lightweight discovery records:
+Both return paginated discovery payloads:
 
 ```json
 {
-  "reference": "iran-hormuz",
-  "name": "Will Iran close the Strait of Hormuz?",
-  "price": 0.57,
-  "volume": 12345,
-  "liquidity": 9000,
-  "endDate": null,
-  "metadata": {}
+  "results": [
+    {
+      "reference": "iran-hormuz",
+      "name": "Will Iran close the Strait of Hormuz?",
+      "price": 0.57,
+      "volume": 12345,
+      "liquidity": 9000,
+      "endDate": null,
+      "metadata": {}
+    }
+  ],
+  "hasMore": true
 }
 ```
 
 Persist `reference`; adapters normalize it lazily during market-data reads and order placement.
+
+Notes:
+- If `searchSortOptions` is empty, keep the market's default search ranking.
+- Unsupported `sort` values return `400 INVALID_INPUT`; do not guess sort keys that were not advertised by `GET /api/markets`.
+- Some adapters enrich sparse upstream search previews before returning discovery records. Do not assume missing `volume`, `liquidity`, or `endDate` in one response means the market can never provide them.
 
 ## Market Reads
 

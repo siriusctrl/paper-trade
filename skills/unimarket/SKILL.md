@@ -14,10 +14,11 @@ Authentication:
 ## Fast Path
 
 1. Register once with helper `register-safe` when you need unattended credential bootstrap, or `POST /api/auth/register` for raw API use.
-2. Discover market IDs, capabilities, browse sorts, and price-history defaults with `markets-summary` or `GET /api/markets`.
+2. Discover market IDs, capabilities, browse sorts, explicit search sort options, and price-history defaults with `markets-summary` or `GET /api/markets`.
 3. Browse or search candidates:
    - `GET /api/markets/{market}/browse`
    - `GET /api/markets/{market}/search?q=...`
+   - optional override: `GET /api/markets/{market}/search?q=...&sort=...`
 4. Persist the returned `reference`; treat it as the only external market identifier.
 5. Read execution and sizing context before trading:
    - `GET /api/markets/{market}/trading-constraints?reference=...`
@@ -29,8 +30,9 @@ Authentication:
 
 ## Operating Rules
 
-- Discover `market`, `browseOptions`, and `priceHistory` support from `GET /api/markets`; do not hardcode markets, references, or intervals.
+- Discover `market`, `browseOptions`, `searchSortOptions`, and `priceHistory` support from `GET /api/markets`; do not hardcode markets, references, intervals, or sort keys.
 - Prefer `browse` for blank exploration; use `search` only with a concrete non-empty query.
+- When `searchSortOptions` is empty, rely on the market's default search ranking. When explicit search sort options exist, send `sort` only when you intentionally want to override the default ranking.
 - Use `reference` everywhere in public market-data and order endpoints.
 - Read `priceHistory.supportedIntervals`, `defaultInterval`, `defaultLookbacks`, and `supportsResampling` before requesting candles.
 - Prefer `interval + lookback` for routine trend checks.
