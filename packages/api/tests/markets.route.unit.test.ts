@@ -95,6 +95,62 @@ describe("createMarketRoutes", () => {
     await expect(resolve.json()).resolves.toMatchObject({ error: { code: "CAPABILITY_NOT_SUPPORTED" } });
   });
 
+  it("keeps quote responses lean and does not trigger implicit funding lookups", async () => {
+    const adapter = {
+      capabilities: ["quote", "funding"],
+      getQuote: vi.fn(async (reference: string) => ({
+        reference,
+        price: reference === "btc" ? 100 : 50,
+        bid: reference === "btc" ? 99 : undefined,
+        ask: reference === "btc" ? 101 : undefined,
+        timestamp: "2026-03-08T00:00:00.000Z",
+      })),
+      getFundingRate: vi.fn(),
+    };
+    const registry = { list: () => [], get: () => adapter };
+    const app = makeApp(registry);
+
+    const quote = await app.request("/markets/mock/quote?reference=btc");
+    expect(quote.status).toBe(200);
+    await expect(quote.json()).resolves.toEqual({
+      reference: "btc",
+      price: 100,
+      bid: 99,
+      ask: 101,
+      mid: 100,
+      spreadAbs: 2,
+      spreadBps: 200,
+      timestamp: "2026-03-08T00:00:00.000Z",
+    });
+
+    const quotes = await app.request("/markets/mock/quotes?references=btc,eth");
+    expect(quotes.status).toBe(200);
+    await expect(quotes.json()).resolves.toEqual({
+      quotes: [
+        {
+          reference: "btc",
+          price: 100,
+          bid: 99,
+          ask: 101,
+          mid: 100,
+          spreadAbs: 2,
+          spreadBps: 200,
+          timestamp: "2026-03-08T00:00:00.000Z",
+        },
+        {
+          reference: "eth",
+          price: 50,
+          mid: 50,
+          spreadAbs: null,
+          spreadBps: null,
+          timestamp: "2026-03-08T00:00:00.000Z",
+        },
+      ],
+      errors: [],
+    });
+    expect(adapter.getFundingRate).not.toHaveBeenCalled();
+  });
+
   it("maps batch quote, orderbook, and funding errors per reference", async () => {
     const adapter = {
       capabilities: ["quote", "orderbook", "funding"],
@@ -109,7 +165,15 @@ describe("createMarketRoutes", () => {
         throw "weird";
       }),
       getFundingRate: vi.fn(async (reference: string) => {
-        if (reference === "btc") return { reference, rate: 0.01, nextFundingAt: "2026-03-07T01:00:00.000Z", timestamp: "2026-03-07T00:00:00.000Z" };
+        if (reference === "btc") {
+          return {
+            reference,
+            rate: 0.01,
+            nextFundingAt: "2026-03-07T01:00:00.000Z",
+            timestamp: "2026-03-07T00:00:00.000Z",
+            direction: "long_pays_short" as const,
+          };
+        }
         if (reference === "eth") throw new MarketAdapterError("SYMBOL_NOT_FOUND", "missing funding");
         throw new Error("funding exploded");
       }),
@@ -137,7 +201,13 @@ describe("createMarketRoutes", () => {
 
     const fundings = await app.request("/markets/mock/fundings?references=btc,eth,sol");
     await expect(fundings.json()).resolves.toEqual({
-      fundings: [{ reference: "btc", rate: 0.01, nextFundingAt: "2026-03-07T01:00:00.000Z", timestamp: "2026-03-07T00:00:00.000Z" }],
+      fundings: [{
+        reference: "btc",
+        rate: 0.01,
+        nextFundingAt: "2026-03-07T01:00:00.000Z",
+        timestamp: "2026-03-07T00:00:00.000Z",
+        direction: "long_pays_short",
+      }],
       errors: [
         { reference: "eth", error: { code: "SYMBOL_NOT_FOUND", message: "missing funding" } },
         { reference: "sol", error: { code: "INTERNAL_ERROR", message: "funding exploded" } },
@@ -195,7 +265,16 @@ describe("createMarketRoutes", () => {
       searchSortOptions: [{ value: "volume", label: "Volume" }],
       browseOptions: [{ value: "price", label: "Price" }],
       search: vi.fn().mockResolvedValue([
-        { reference: "a", name: "A" },
+        {
+          reference: "a",
+          name: "A",
+          fundingPreview: {
+            rate: 0.0025,
+            nextFundingAt: "2026-03-08T01:00:00.000Z",
+            timestamp: "2026-03-08T00:00:00.000Z",
+            direction: "long_pays_short" as const,
+          },
+        },
         { reference: "b", name: "B" },
         { reference: "c", name: "C" },
       ]),
@@ -211,7 +290,16 @@ describe("createMarketRoutes", () => {
     expect(searchResponse.status).toBe(200);
     await expect(searchResponse.json()).resolves.toEqual({
       results: [
-        { reference: "a", name: "A" },
+        {
+          reference: "a",
+          name: "A",
+          fundingPreview: {
+            rate: 0.0025,
+            nextFundingAt: "2026-03-08T01:00:00.000Z",
+            timestamp: "2026-03-08T00:00:00.000Z",
+            direction: "long_pays_short",
+          },
+        },
         { reference: "b", name: "B" },
       ],
       hasMore: true,

@@ -12,6 +12,7 @@ import {
     type BrowseOption,
     type BrowseOptions,
     type FundingRate,
+    type FundingPreview,
     type MarketAdapter,
     type MarketReference,
     type Orderbook,
@@ -22,6 +23,7 @@ import {
     type Quote,
     type SearchOptions,
     type TradingConstraints,
+    fundingDirectionFromRate,
 } from "./types.js";
 
 const QUOTE_TTL_MS = 5_000;
@@ -66,6 +68,19 @@ const parseNumber = (value: unknown): number | null => {
         return Number.isNaN(parsed) ? null : parsed;
     }
     return null;
+};
+
+const getNextHourlyFundingAt = (now = Date.now()): string => {
+    return new Date(Math.floor(now / HOUR_MS) * HOUR_MS + HOUR_MS).toISOString();
+};
+
+const buildFundingPreview = (rate: number, nextFundingAt: string, timestamp = new Date().toISOString()): FundingPreview => {
+    return {
+        rate,
+        nextFundingAt,
+        timestamp,
+        direction: fundingDirectionFromRate(rate),
+    };
 };
 
 const postInfo = async <T>(apiUrl: string, body: Record<string, unknown>, timeoutMs: number): Promise<T> => {
@@ -597,6 +612,7 @@ export class HyperliquidAdapter implements MarketAdapter {
         const volume = parseNumber(ctx?.dayNtlVlm) ?? undefined;
         const oi = parseNumber(ctx?.openInterest) ?? undefined;
         const funding = parseNumber(ctx?.funding) ?? undefined;
+        const fundingPreview = funding === undefined ? undefined : buildFundingPreview(funding, getNextHourlyFundingAt());
 
         return {
             reference: asset.name,
@@ -604,6 +620,7 @@ export class HyperliquidAdapter implements MarketAdapter {
             price,
             volume,
             openInterest: oi,
+            fundingPreview,
             metadata: {
                 szDecimals: asset.szDecimals,
                 maxLeverage: asset.maxLeverage,
@@ -755,13 +772,12 @@ export class HyperliquidAdapter implements MarketAdapter {
 
         // Hyperliquid funding settles hourly. predictedFundings only covers the first
         // perp dex, so builder-deployed perps fall back to the current asset context.
-        const nextFundingAt = new Date(Math.floor(Date.now() / HOUR_MS) * HOUR_MS + HOUR_MS).toISOString();
+        const nextFundingAt = getNextHourlyFundingAt();
+        const preview = buildFundingPreview(rate, nextFundingAt);
 
         return {
             reference,
-            rate,
-            nextFundingAt,
-            timestamp: new Date().toISOString(),
+            ...preview,
         };
     }
 
@@ -870,9 +886,7 @@ export class HyperliquidAdapter implements MarketAdapter {
 
         const fundingRate: FundingRate = {
             reference,
-            rate,
-            nextFundingAt: new Date(nextFundingTimeMs).toISOString(),
-            timestamp: new Date().toISOString(),
+            ...buildFundingPreview(rate, new Date(nextFundingTimeMs).toISOString()),
         };
 
         this.cache.set(cacheKey, fundingRate, FUNDING_TTL_MS);

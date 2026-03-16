@@ -370,6 +370,7 @@ describe("HyperliquidAdapter", () => {
     expect(btcFunding.reference).toBe("btc-perp");
     expect(btcFunding.rate).toBe(0.0001);
     expect(btcFunding.nextFundingAt).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(btcFunding.direction).toBe("long_pays_short");
   });
 
   it("returns the caller's reference when cached quote, orderbook, and funding entries are reused", async () => {
@@ -445,6 +446,7 @@ describe("HyperliquidAdapter", () => {
       reference: "vntl:OPENAI",
       rate: 0.0000173865,
       nextFundingAt: "2026-03-10T05:00:00.000Z",
+      direction: "long_pays_short",
     });
     const predictedFundingCalls = fetchSpy.mock.calls.filter(([, init]) => {
       const body = JSON.parse((init as RequestInit).body as string);
@@ -556,6 +558,7 @@ describe("HyperliquidAdapter", () => {
     const legacyFunding = await legacyAdapter.getFundingRate("ETH");
     expect(legacyFunding.rate).toBe(0.0002);
     expect(legacyFunding.nextFundingAt).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(legacyFunding.direction).toBe("long_pays_short");
 
     vi.restoreAllMocks();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -686,7 +689,7 @@ describe("HyperliquidAdapter", () => {
     expect(results?.[3]?.openInterest).toBe(80_000);
   });
 
-  it("populates volume and metadata on browse results", async () => {
+  it("populates volume, metadata, and funding previews on browse results", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const body = JSON.parse((init as RequestInit).body as string);
       if (body.type === "meta") return jsonResponse(META_RESPONSE);
@@ -702,6 +705,10 @@ describe("HyperliquidAdapter", () => {
     expect(btc?.volume).toBe(5_000_000_000);
     expect(btc?.openInterest).toBe(80_000);
     expect(btc?.metadata?.funding).toBe(0.0001);
+    expect(btc?.fundingPreview).toMatchObject({
+      rate: 0.0001,
+      direction: "long_pays_short",
+    });
   });
 
   it("falls back to allMids for price when metaAndAssetCtxs fails", async () => {

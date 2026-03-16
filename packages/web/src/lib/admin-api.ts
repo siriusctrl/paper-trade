@@ -88,6 +88,15 @@ export type BrowseOption = {
   label: string;
 };
 
+export type FundingDirection = "long_pays_short" | "short_pays_long" | "neutral";
+
+export type FundingPreview = {
+  rate: number;
+  nextFundingAt: string;
+  timestamp: string;
+  direction: FundingDirection;
+};
+
 export type MarketReferenceResult = {
   reference: string;
   name: string;
@@ -96,6 +105,7 @@ export type MarketReferenceResult = {
   openInterest?: number;
   liquidity?: number;
   endDate?: string | null;
+  fundingPreview?: FundingPreview;
   metadata?: Record<string, unknown>;
 };
 
@@ -113,6 +123,11 @@ export type QuoteData = {
   spreadAbs: number | null;
   spreadBps: number | null;
   timestamp: string;
+  fundingPreview?: FundingPreview;
+};
+
+export type FundingData = FundingPreview & {
+  reference: string;
 };
 
 export type TradingConstraints = {
@@ -137,6 +152,7 @@ export type PortfolioPosition = {
   currentPrice: number | null;
   marketValue: number | null;
   unrealizedPnl: number | null;
+  accumulatedFunding: number;
   leverage: number | null;
 };
 
@@ -401,6 +417,8 @@ export const createAdminApiClient = ({
       request<DiscoveryResponse>(buildDiscoveryPath({ marketId, sort, limit, offset })),
     getQuote: (marketId: string, reference: string) =>
       request<QuoteData>(`/api/markets/${marketId}/quote?reference=${encodeURIComponent(reference)}`),
+    getFunding: (marketId: string, reference: string) =>
+      request<FundingData>(`/api/markets/${marketId}/funding?reference=${encodeURIComponent(reference)}`),
     getTradingConstraints: (marketId: string, reference: string) =>
       request<{ reference: string; constraints: TradingConstraints }>(
         `/api/markets/${marketId}/trading-constraints?reference=${encodeURIComponent(reference)}`,

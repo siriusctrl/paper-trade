@@ -83,6 +83,12 @@ Both return paginated discovery payloads:
       "volume": 12345,
       "liquidity": 9000,
       "endDate": null,
+      "fundingPreview": {
+        "rate": 0.0001,
+        "nextFundingAt": "2026-03-16T10:00:00.000Z",
+        "timestamp": "2026-03-16T09:42:00.000Z",
+        "direction": "long_pays_short"
+      },
       "metadata": {}
     }
   ],
@@ -96,6 +102,7 @@ Notes:
 - If `searchSortOptions` is empty, keep the market's default search ranking.
 - Unsupported `sort` values return `400 INVALID_INPUT`; do not guess sort keys that were not advertised by `GET /api/markets`.
 - Some adapters enrich sparse upstream search previews before returning discovery records. Do not assume missing `volume`, `liquidity`, or `endDate` in one response means the market can never provide them.
+- funding-capable markets may include `fundingPreview`; treat it as a preview signal and re-read `funding` before acting on stale data
 
 ## Market Reads
 
@@ -125,6 +132,7 @@ Response fields:
 - `spreadAbs`
 - `spreadBps`
 - `timestamp`
+- quote reads stay lean; use discovery `fundingPreview` or explicit `funding` reads for carry information
 
 ### Batch quotes
 
@@ -147,6 +155,13 @@ GET /api/markets/{market}/resolve?reference={reference}
 ```
 
 Only call `funding` or `resolve` when the market advertises the capability.
+
+Funding response fields:
+- `reference`
+- `rate`
+- `nextFundingAt`
+- `timestamp`
+- `direction`: `long_pays_short`, `short_pays_long`, or `neutral`
 
 ### Price history
 

@@ -143,6 +143,7 @@ const fundingAdapter: MarketAdapter = {
       rate: 0.0002,
       nextFundingAt: "2026-01-01T01:00:00.000Z",
       timestamp: new Date().toISOString(),
+      direction: "long_pays_short" as const,
     };
   },
   getTradingConstraints: async () => ({
@@ -675,6 +676,7 @@ describe("api integration", () => {
       reference: "btc-perp",
       rate: 0.0002,
       nextFundingAt: "2026-01-01T01:00:00.000Z",
+      direction: "long_pays_short",
     });
 
     const fundingConstraintsResponse = await authedJson(

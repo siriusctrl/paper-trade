@@ -6,7 +6,8 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { formatCurrency } from "../../lib/admin";
-import type { MarketReferenceResult, PriceHistoryInterval, QuoteData, TradingConstraints } from "../../lib/admin-api";
+import { describeFundingDirection, formatFundingRate, formatFundingTime } from "../../lib/funding";
+import type { FundingPreview, MarketReferenceResult, PriceHistoryInterval, QuoteData, TradingConstraints } from "../../lib/admin-api";
 
 type OrderResult = { ok: boolean; message: string } | null;
 
@@ -15,6 +16,7 @@ export const TradeTicketCard = ({
   quote,
   quoteLoading,
   constraints,
+  fundingPreview,
   isPerpMarket,
   orderSide,
   orderType,
@@ -43,6 +45,7 @@ export const TradeTicketCard = ({
   quote: QuoteData | null;
   quoteLoading: boolean;
   constraints: TradingConstraints | null;
+  fundingPreview: FundingPreview | null;
   isPerpMarket: boolean;
   orderSide: "buy" | "sell";
   orderType: "market" | "limit";
@@ -91,6 +94,13 @@ export const TradeTicketCard = ({
         ? (quote.ask ?? quote.price)
         : (quote.bid ?? quote.price)
     : null;
+  const fundingRateTone = fundingPreview
+    ? fundingPreview.rate > 0
+      ? "text-rose-600 dark:text-rose-400"
+      : fundingPreview.rate < 0
+        ? "text-emerald-600 dark:text-emerald-400"
+        : "text-muted-foreground"
+    : "text-muted-foreground";
 
   return (
     <Card className="animate-in fade-in-0 border-primary/25 bg-card/55 backdrop-blur-xl duration-200">
@@ -162,6 +172,27 @@ export const TradeTicketCard = ({
                 Max Lev: {constraints.maxLeverage}×
               </Badge>
             ) : null}
+          </div>
+        ) : null}
+
+        {isPerpMarket ? (
+          <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Funding</p>
+                <p className="text-sm font-medium text-foreground">
+                  {describeFundingDirection(fundingPreview?.direction, fundingPreview?.rate)}
+                </p>
+              </div>
+              <span className={`font-mono text-sm font-semibold ${fundingRateTone}`}>
+                {fundingPreview ? formatFundingRate(fundingPreview.rate) : "N/A"}
+              </span>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {fundingPreview
+                ? `Next funding ${formatFundingTime(fundingPreview.nextFundingAt)}.`
+                : "Funding preview is currently unavailable for this contract."}
+            </p>
           </div>
         ) : null}
 

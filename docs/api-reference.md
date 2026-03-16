@@ -118,6 +118,12 @@ Rules:
       "volume": 12003455.2,
       "liquidity": 882100.4,
       "endDate": null,
+      "fundingPreview": {
+        "rate": 0.0001,
+        "nextFundingAt": "2026-03-16T10:00:00.000Z",
+        "timestamp": "2026-03-16T09:42:00.000Z",
+        "direction": "long_pays_short"
+      },
       "metadata": {}
     }
   ],
@@ -127,6 +133,7 @@ Rules:
 
 - discovery results are not required to be execution-ready exchange ids
 - adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, `price-history`, or order placement is called
+- funding-capable markets may include a structured `fundingPreview` on discovery results when preview data is available
 
 ### Market descriptor notes
 
@@ -189,6 +196,21 @@ Notes:
 - `price` is the execution-facing reference price
 - `mid` falls back to `price` when either side is missing
 - `spreadAbs` and `spreadBps` are `null` when both sides are not available
+- use discovery `fundingPreview` for shortlist preparation and `GET /api/markets/:market/funding` for an explicit fresh funding read
+
+### Funding response
+
+Example:
+
+```json
+{
+  "reference": "BTC",
+  "rate": 0.0001,
+  "nextFundingAt": "2026-03-08T01:00:00.000Z",
+  "timestamp": "2026-03-08T00:00:00.000Z",
+  "direction": "long_pays_short"
+}
+```
 
 ### Price history response
 

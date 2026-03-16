@@ -75,17 +75,23 @@ const resetDatabase = async (): Promise<void> => {
 
 const buildFundingAdapter = (options: {
   marketId: string;
-  getFundingRate: (symbol: string) => Promise<{ symbol: string; rate: number; nextFundingAt: string; timestamp: string }>;
-  getQuote?: (symbol: string) => Promise<{ symbol: string; price: number; bid?: number; ask?: number; timestamp: string }>;
+  getFundingRate: (symbol: string) => Promise<{
+    reference: string;
+    rate: number;
+    nextFundingAt: string;
+    timestamp: string;
+    direction: "long_pays_short" | "short_pays_long" | "neutral";
+  }>;
+  getQuote?: (symbol: string) => Promise<{ reference: string; price: number; bid?: number; ask?: number; timestamp: string }>;
 }): MarketAdapter => ({
   marketId: options.marketId,
   displayName: options.marketId,
   description: `${options.marketId} adapter`,
-  symbolFormat: "mock",
+  referenceFormat: "mock",
   priceRange: null,
   capabilities: ["quote", "funding"],
   search: async () => [],
-  getQuote: options.getQuote ?? (async (symbol) => ({ symbol, price: 100, bid: 99, ask: 101, timestamp: new Date().toISOString() })),
+  getQuote: options.getQuote ?? (async (symbol) => ({ reference: symbol, price: 100, bid: 99, ask: 101, timestamp: new Date().toISOString() })),
   getFundingRate: options.getFundingRate,
 });
 
@@ -128,10 +134,11 @@ describe("funding collector integration", () => {
       buildFundingAdapter({
         marketId: "funding-ok",
         getFundingRate: async (symbol) => ({
-          symbol,
+          reference: symbol,
           rate: 0.01,
           nextFundingAt: "2026-03-01T01:00:00.000Z",
           timestamp: "2026-03-01T00:30:00.000Z",
+          direction: "long_pays_short",
         }),
       }),
     );
@@ -183,10 +190,11 @@ describe("funding collector integration", () => {
           const nextFundingAt = windows[Math.min(call, windows.length - 1)]!;
           call += 1;
           return {
-            symbol,
+            reference: symbol,
             rate: 0.01,
             nextFundingAt,
             timestamp: "2026-03-01T00:30:00.000Z",
+            direction: "long_pays_short",
           };
         },
       }),

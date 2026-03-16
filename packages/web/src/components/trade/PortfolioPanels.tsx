@@ -37,7 +37,12 @@ export const PortfolioPanels = ({
       {portfolio && portfolio.positions.length > 0 ? (
         <Card className="animate-in fade-in-0 border-border/50 bg-card/45 duration-200">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Open Positions</CardTitle>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-sm">Open Positions</CardTitle>
+              <span className={`text-[10px] font-semibold ${portfolio.totalFunding >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
+                Funding {formatSignedCurrency(portfolio.totalFunding)}
+              </span>
+            </div>
           </CardHeader>
           <CardContent className="space-y-2">
             {portfolio.positions.slice(0, 8).map((position) => (
@@ -70,6 +75,11 @@ export const PortfolioPanels = ({
                     {position.unrealizedPnl !== null ? (
                       <p className={position.unrealizedPnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
                         {formatSignedCurrency(position.unrealizedPnl)}
+                      </p>
+                    ) : null}
+                    {position.accumulatedFunding !== 0 ? (
+                      <p className={position.accumulatedFunding >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
+                        Funding {formatSignedCurrency(position.accumulatedFunding)}
                       </p>
                     ) : null}
                   </div>

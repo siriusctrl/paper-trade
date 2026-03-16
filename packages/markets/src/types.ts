@@ -68,7 +68,17 @@ export type MarketReference = {
   openInterest?: number;
   liquidity?: number;
   endDate?: string | null;
+  fundingPreview?: FundingPreview;
   metadata?: Record<string, unknown>;
+};
+
+export type FundingDirection = "long_pays_short" | "short_pays_long" | "neutral";
+
+export type FundingPreview = {
+  rate: number;
+  nextFundingAt: string;
+  timestamp: string;
+  direction: FundingDirection;
 };
 
 export type Quote = {
@@ -78,6 +88,7 @@ export type Quote = {
   ask?: number;
   volume?: number;
   timestamp: string;
+  fundingPreview?: FundingPreview;
 };
 
 export type OrderbookLevel = {
@@ -105,6 +116,7 @@ export type FundingRate = {
   rate: number;
   nextFundingAt: string;
   timestamp: string;
+  direction: FundingDirection;
 };
 
 export type MarketDescriptor = {
@@ -179,3 +191,9 @@ export class MarketAdapterError extends Error {
     this.code = code;
   }
 }
+
+export const fundingDirectionFromRate = (rate: number): FundingDirection => {
+  if (rate > 0) return "long_pays_short";
+  if (rate < 0) return "short_pays_long";
+  return "neutral";
+};

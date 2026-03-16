@@ -1,5 +1,10 @@
 import { browseMarketQuerySchema, multiQuoteQuerySchema, priceHistoryQuerySchema, quoteQuerySchema, searchMarketQuerySchema } from "@unimarket/core";
-import { MarketAdapterError, type MarketRegistry, type TradingConstraints } from "@unimarket/markets";
+import {
+  MarketAdapterError,
+  type MarketRegistry,
+  type Quote,
+  type TradingConstraints,
+} from "@unimarket/markets";
 import { Hono } from "hono";
 
 import type { AppVariables } from "../platform/auth.js";
@@ -27,7 +32,7 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
 
   const roundMetric = (value: number): number => Number(value.toFixed(12));
 
-  const enrichQuote = <TQuote extends { price: number; bid?: number; ask?: number }>(quote: TQuote) => {
+  const enrichQuote = (quote: Quote) => {
     const bid = quote.bid;
     const ask = quote.ask;
     const hasBid = typeof bid === "number" && Number.isFinite(bid);
@@ -165,7 +170,7 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
         return jsonError(c, 400, "CAPABILITY_NOT_SUPPORTED", "quote is not supported for this market");
       }
 
-      const settled = await Promise.allSettled(parsed.data.references.map(async (reference) => adapter.getQuote(reference)));
+      const settled = await Promise.allSettled(parsed.data.references.map(async (reference) => enrichQuote(await adapter.getQuote(reference))));
       const quotes: unknown[] = [];
       const errors: Array<{ reference: string; error: { code: string; message: string } }> = [];
 
@@ -175,7 +180,7 @@ export const createMarketRoutes = (registry: MarketRegistry) => {
         if (!reference || !result) continue;
 
         if (result.status === "fulfilled") {
-          quotes.push(enrichQuote(result.value));
+          quotes.push(result.value);
           continue;
         }
 

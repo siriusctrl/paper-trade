@@ -24,22 +24,23 @@ const buildFundingAdapter = (quotePrice: number): MarketAdapter => ({
   marketId: "hyperliquid",
   displayName: "Hyperliquid",
   description: "mock funding market",
-  symbolFormat: "ticker",
+  referenceFormat: "ticker",
   priceRange: null,
   capabilities: ["quote", "funding", "search"],
   search: async () => [],
   getQuote: async (symbol) => ({
-    symbol,
+    reference: symbol,
     price: quotePrice,
     bid: quotePrice - 1,
     ask: quotePrice + 1,
     timestamp: new Date().toISOString(),
   }),
   getFundingRate: async (symbol) => ({
-    symbol,
+    reference: symbol,
     rate: 0.0001,
     nextFundingAt: new Date(Date.now() + 60_000).toISOString(),
     timestamp: new Date().toISOString(),
+    direction: "long_pays_short",
   }),
 });
 

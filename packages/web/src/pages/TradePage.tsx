@@ -19,6 +19,7 @@ import {
   type PlaceOrderInput,
   type PriceHistoryInterval,
   type PriceHistoryLookback,
+  type FundingPreview,
   type PortfolioData,
   type PortfolioPosition,
   type QuoteData,
@@ -52,6 +53,7 @@ export const TradePage = () => {
   const [quote, setQuote] = useState<QuoteData | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [constraints, setConstraints] = useState<TradingConstraints | null>(null);
+  const [fundingPreview, setFundingPreview] = useState<FundingPreview | null>(null);
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgent, setSelectedAgent] = useState("");
@@ -149,6 +151,7 @@ export const TradePage = () => {
     setSelectedAsset(null);
     setQuote(null);
     setConstraints(null);
+    setFundingPreview(null);
     setQuoteLoading(false);
     resetDiscovery();
     setOrderResult(null);
@@ -217,19 +220,24 @@ export const TradePage = () => {
     if (!selectedAsset || !selectedMarket) {
       setQuote(null);
       setConstraints(null);
+      setFundingPreview(null);
       return;
     }
 
     setQuote(null);
     setConstraints(null);
+    setFundingPreview(selectedAsset.fundingPreview ?? null);
     setQuoteLoading(true);
     let active = true;
 
     void (async () => {
       try {
-        const [nextQuote, constraintsResponse] = await Promise.all([
+        const [nextQuote, constraintsResponse, nextFunding] = await Promise.all([
           client.getQuote(selectedMarket, selectedAsset.reference),
           client.getTradingConstraints(selectedMarket, selectedAsset.reference),
+          isPerpMarket
+            ? client.getFunding(selectedMarket, selectedAsset.reference).catch(() => null)
+            : Promise.resolve(null),
         ]);
 
         if (!active) {
@@ -238,6 +246,14 @@ export const TradePage = () => {
 
         setQuote(nextQuote);
         setConstraints(constraintsResponse.constraints);
+        if (nextFunding) {
+          setFundingPreview({
+            rate: nextFunding.rate,
+            nextFundingAt: nextFunding.nextFundingAt,
+            timestamp: nextFunding.timestamp,
+            direction: nextFunding.direction,
+          });
+        }
       } catch (fetchError) {
         if (!active) {
           return;
@@ -258,7 +274,7 @@ export const TradePage = () => {
     return () => {
       active = false;
     };
-  }, [client, selectedAsset, selectedMarket]);
+  }, [client, isPerpMarket, selectedAsset, selectedMarket]);
 
   useEffect(() => {
     if (!selectedAgent || !adminKey) {
@@ -401,6 +417,7 @@ export const TradePage = () => {
       setSelectedAsset(null);
       setQuote(null);
       setConstraints(null);
+      setFundingPreview(null);
 
       const nextPortfolio = await client.getUserPortfolio(selectedAgent);
       setPortfolio(nextPortfolio);
@@ -420,6 +437,7 @@ export const TradePage = () => {
     setSelectedAsset(asset);
     setQuote(null);
     setConstraints(null);
+    setFundingPreview(asset.fundingPreview ?? null);
     setQuoteLoading(true);
     setOrderResult(null);
     setClosePrefill(null);
@@ -446,6 +464,7 @@ export const TradePage = () => {
     setOrderResult(null);
     setQuote(null);
     setConstraints(null);
+    setFundingPreview(null);
     setQuoteLoading(true);
   };
 
@@ -548,6 +567,7 @@ export const TradePage = () => {
               quote={quote}
               quoteLoading={quoteLoading}
               constraints={constraints}
+              fundingPreview={fundingPreview}
               isPerpMarket={isPerpMarket}
               orderSide={orderSide}
               orderType={orderType}
