@@ -24,6 +24,8 @@ export const TradeTicketCard = ({
   constraints,
   fundingPreview,
   isPerpMarket,
+  buyLabel,
+  sellLabel,
   orderSide,
   orderType,
   quantity,
@@ -53,6 +55,8 @@ export const TradeTicketCard = ({
   constraints: TradingConstraints | null;
   fundingPreview: FundingPreview | null;
   isPerpMarket: boolean;
+  buyLabel: string;
+  sellLabel: string;
   orderSide: "buy" | "sell";
   orderType: "market" | "limit";
   quantity: string;
@@ -217,7 +221,7 @@ export const TradeTicketCard = ({
               onClick={() => onOrderSideChange("buy")}
             >
               <TrendingUp className="h-3.5 w-3.5" />
-              Buy
+              {buyLabel}
             </Button>
             <Button
               id="btn-sell"
@@ -227,7 +231,7 @@ export const TradeTicketCard = ({
               onClick={() => onOrderSideChange("sell")}
             >
               <TrendingDown className="h-3.5 w-3.5" />
-              Sell
+              {sellLabel}
             </Button>
           </div>
 
@@ -343,7 +347,7 @@ export const TradeTicketCard = ({
             onClick={onSubmit}
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}
-            {orderSide === "buy" ? "Buy" : "Sell"} {orderType === "limit" ? "Limit" : "Market"}
+            {orderSide === "buy" ? buyLabel : sellLabel} {orderType === "limit" ? "Limit" : "Market"}
           </Button>
 
           {orderResult ? (

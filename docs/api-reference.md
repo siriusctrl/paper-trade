@@ -137,6 +137,7 @@ Rules:
 - adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, `price-history`, or order placement is called
 - funding-capable markets may include a structured `fundingPreview` on discovery results when preview data is available
 - `annualizedRate` is a simple APR reference derived from the market funding cadence, not a compounded yield
+- Polymarket discovery metadata may include `outcomeTokenIds` aligned with `outcomes`, which lets dashboards map outcome buttons like `Yes` and `No` to concrete token references
 
 ### Market descriptor notes
 

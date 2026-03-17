@@ -75,6 +75,7 @@ describe("PolymarketAdapter", () => {
         conditionId: `0x${"a".repeat(64)}`,
         outcomes: [],
         outcomePrices: [],
+        outcomeTokenIds: [],
         defaultOutcome: null,
         eventTitle: "Iran event",
         createdAt: "2026-03-01T00:00:00.000Z",
@@ -563,6 +564,22 @@ describe("PolymarketAdapter", () => {
           });
         }
       }
+      if (String(input) === "https://gamma.example/markets?slug=dup-market&limit=1") {
+        return jsonResponse([
+          {
+            slug: "dup-market",
+            question: "Duplicate once",
+            conditionId: conditionOne,
+            lastTradePrice: "0.5",
+            volume24hr: "250",
+            liquidity: "1000",
+            endDate: "2026-04-01T00:00:00.000Z",
+            clobTokenIds: '["111","222"]',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.5","0.5"]',
+          },
+        ]);
+      }
       throw new Error(`Unexpected fetch url: ${String(input)}`);
     });
 
@@ -574,6 +591,7 @@ describe("PolymarketAdapter", () => {
       conditionId: conditionOne,
       outcomes: ["Yes", "No"],
       outcomePrices: [0.5, 0.5],
+      outcomeTokenIds: ["111", "222"],
       defaultOutcome: "Yes",
     });
     expect(results[1]).toMatchObject({ name: "Fallback title", price: 0.33, liquidity: 100 });

@@ -106,6 +106,7 @@ Notes:
 - Some adapters enrich sparse upstream search previews before returning discovery records. Do not assume missing `volume`, `liquidity`, or `endDate` in one response means the market can never provide them.
 - funding-capable markets may include `fundingPreview`; treat it as a preview signal and re-read `funding` before acting on stale data
 - `annualizedRate` is a simple APR reference derived from the market funding cadence, not a compounded yield
+- Polymarket discovery metadata may include `outcomeTokenIds` aligned with `outcomes`, so UIs can map `Yes` and `No` outcome picks to concrete token references
 
 ## Market Reads
 

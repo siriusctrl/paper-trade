@@ -27,6 +27,7 @@ import {
   type TradingConstraints,
   isAdminAuthError,
 } from "../lib/admin-api";
+import { resolveTradeIntent } from "../lib/trade-intent";
 import { useAdminSession } from "../lib/useAdminSession";
 import { useMarketDiscovery } from "../lib/useMarketDiscovery";
 
@@ -124,6 +125,11 @@ export const TradePage = () => {
   }, [selectedMarketInfo]);
 
   const isPerpMarket = Boolean(selectedMarketInfo?.capabilities.includes("funding"));
+  const tradeIntent = useMemo(
+    () => resolveTradeIntent(selectedMarket, selectedAsset, orderSide),
+    [orderSide, selectedAsset, selectedMarket],
+  );
+  const activeTradeReference = tradeIntent?.reference ?? selectedAsset?.reference ?? null;
 
   useEffect(() => {
     if (!chartIntervals.includes(chartInterval)) {
@@ -217,7 +223,7 @@ export const TradePage = () => {
   }, []);
 
   useEffect(() => {
-    if (!selectedAsset || !selectedMarket) {
+    if (!selectedAsset || !selectedMarket || !activeTradeReference) {
       setQuote(null);
       setConstraints(null);
       setFundingPreview(null);
@@ -233,10 +239,10 @@ export const TradePage = () => {
     void (async () => {
       try {
         const [nextQuote, constraintsResponse, nextFunding] = await Promise.all([
-          client.getQuote(selectedMarket, selectedAsset.reference),
-          client.getTradingConstraints(selectedMarket, selectedAsset.reference),
+          client.getQuote(selectedMarket, activeTradeReference),
+          client.getTradingConstraints(selectedMarket, activeTradeReference),
           isPerpMarket
-            ? client.getFunding(selectedMarket, selectedAsset.reference).catch(() => null)
+            ? client.getFunding(selectedMarket, activeTradeReference).catch(() => null)
             : Promise.resolve(null),
         ]);
 
@@ -276,7 +282,7 @@ export const TradePage = () => {
     return () => {
       active = false;
     };
-  }, [client, isPerpMarket, selectedAsset, selectedMarket]);
+  }, [activeTradeReference, client, isPerpMarket, selectedAsset, selectedMarket]);
 
   useEffect(() => {
     if (!selectedAgent || !adminKey) {
@@ -297,13 +303,13 @@ export const TradePage = () => {
   }, [adminKey, client, selectedAgent]);
 
   useEffect(() => {
-    if (!selectedAsset || !selectedMarket) {
+    if (!selectedAsset || !selectedMarket || !activeTradeReference) {
       return;
     }
 
     const interval = setInterval(async () => {
       try {
-        setQuote(await client.getQuote(selectedMarket, selectedAsset.reference));
+        setQuote(await client.getQuote(selectedMarket, activeTradeReference));
       } catch (fetchError) {
         if (!isAdminAuthError(fetchError)) {
           setQuote(null);
@@ -312,11 +318,11 @@ export const TradePage = () => {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [client, selectedAsset, selectedMarket]);
+  }, [activeTradeReference, client, selectedAsset, selectedMarket]);
 
   // ─── Fetch price history and trade markers when asset or interval changes ───
   useEffect(() => {
-    if (!selectedAsset || !selectedMarket) {
+    if (!selectedAsset || !selectedMarket || !activeTradeReference) {
       setCandles([]);
       setTradeMarkers([]);
       return;
@@ -338,7 +344,7 @@ export const TradePage = () => {
           ?? priceHistory.defaultLookbacks[priceHistory.defaultInterval]
           ?? "7d";
 
-        const historyResponse = await client.getPriceHistory(selectedMarket, selectedAsset.reference, {
+        const historyResponse = await client.getPriceHistory(selectedMarket, activeTradeReference, {
           interval: chartInterval,
           lookback: defaultLookback as PriceHistoryLookback,
         });
@@ -361,7 +367,7 @@ export const TradePage = () => {
     return () => {
       active = false;
     };
-  }, [chartInterval, client, selectedAsset, selectedMarket, selectedMarketInfo]);
+  }, [activeTradeReference, chartInterval, client, selectedAsset, selectedMarket, selectedMarketInfo]);
 
   const handleCreateTrader = async () => {
     if (!newTraderName.trim()) {
@@ -386,7 +392,7 @@ export const TradePage = () => {
   };
 
   const handlePlaceOrder = async () => {
-    if (!selectedAgent || !selectedAsset || !selectedMarket || !quantity || !reasoning.trim()) {
+    if (!selectedAgent || !selectedAsset || !selectedMarket || !activeTradeReference || !tradeIntent || !quantity || !reasoning.trim()) {
       return;
     }
 
@@ -395,8 +401,8 @@ export const TradePage = () => {
 
     const order: PlaceOrderInput = {
       market: selectedMarket,
-      reference: selectedAsset.reference,
-      side: orderSide,
+      reference: activeTradeReference,
+      side: tradeIntent.side,
       type: orderType,
       quantity: Number(quantity),
       reasoning: reasoning.trim(),
@@ -410,7 +416,7 @@ export const TradePage = () => {
       const createdOrder = await client.placeUserOrder(selectedAgent, order);
       setOrderResult({
         ok: true,
-        message: `Order ${createdOrder.status}: ${createdOrder.side} ${createdOrder.quantity} @ ${createdOrder.filledPrice ?? createdOrder.limitPrice ?? "market"}`,
+        message: `Order ${createdOrder.status}: ${tradeIntent.actionLabel} ${createdOrder.quantity} @ ${createdOrder.filledPrice ?? createdOrder.limitPrice ?? "market"}`,
       });
       setQuantity("");
       setLimitPrice("");
@@ -437,6 +443,7 @@ export const TradePage = () => {
 
   const handleSelectAsset = (asset: MarketReferenceResult) => {
     setSelectedAsset(asset);
+    setOrderSide("buy");
     setQuote(null);
     setConstraints(null);
     setFundingPreview(asset.fundingPreview ?? null);
@@ -571,6 +578,8 @@ export const TradePage = () => {
               constraints={constraints}
               fundingPreview={fundingPreview}
               isPerpMarket={isPerpMarket}
+              buyLabel={tradeIntent?.buyLabel ?? "Buy"}
+              sellLabel={tradeIntent?.sellLabel ?? "Sell"}
               orderSide={orderSide}
               orderType={orderType}
               quantity={quantity}

@@ -323,6 +323,7 @@ export class PolymarketAdapter implements MarketAdapter {
     const conditionId = typeof market.conditionId === "string" ? market.conditionId : null;
     const outcomes = parseStringArray(market.outcomes);
     const outcomePrices = parseNumberArray(market.outcomePrices);
+    const outcomeTokenIds = parseStringArray(market.clobTokenIds);
     const defaultOutcome = outcomes[0] ?? null;
     const fallbackPrice = outcomePrices.length > 0 ? outcomePrices[0] : null;
 
@@ -338,6 +339,7 @@ export class PolymarketAdapter implements MarketAdapter {
         conditionId ||
         outcomes.length > 0 ||
         outcomePrices.length > 0 ||
+        outcomeTokenIds.length > 0 ||
         typeof market.createdAt === "string" ||
         extras.createdAt ||
         extras.eventTitle
@@ -345,6 +347,7 @@ export class PolymarketAdapter implements MarketAdapter {
             conditionId,
             outcomes,
             outcomePrices,
+            outcomeTokenIds,
             defaultOutcome,
             eventTitle: extras.eventTitle ?? null,
             createdAt: (typeof market.createdAt === "string" ? market.createdAt : null) ?? extras.createdAt ?? null,
@@ -358,6 +361,14 @@ export class PolymarketAdapter implements MarketAdapter {
       preview.metadata && typeof preview.metadata.createdAt === "string"
         ? preview.metadata.createdAt
         : null;
+    const outcomes =
+      preview.metadata && Array.isArray(preview.metadata.outcomes)
+        ? preview.metadata.outcomes.filter((item): item is string => typeof item === "string")
+        : [];
+    const outcomeTokenIds =
+      preview.metadata && Array.isArray(preview.metadata.outcomeTokenIds)
+        ? preview.metadata.outcomeTokenIds.filter((item): item is string => typeof item === "string")
+        : [];
 
     if (preview.volume === undefined || preview.liquidity === undefined) {
       return true;
@@ -368,6 +379,10 @@ export class PolymarketAdapter implements MarketAdapter {
     }
 
     if (sort === "newest" && (!createdAt || !Number.isFinite(Date.parse(createdAt)))) {
+      return true;
+    }
+
+    if (outcomes.length > 0 && outcomeTokenIds.length === 0) {
       return true;
     }
 
