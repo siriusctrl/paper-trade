@@ -261,6 +261,11 @@ GET /api/journal?limit=20&offset=0
 
 Use these reads to avoid duplicate pending orders, understand current exposure, and persist decision traces.
 
+Portfolio payload notes:
+- positions may include `symbolName` when the market adapter can resolve a human-readable label for `symbol`
+- prediction-market positions may include `side` with outcome labels such as `Yes` or `No`
+- `openOrders` and `recentOrders` may include `symbolName` and `outcome` for the same resolved symbol metadata
+
 ## SSE
 
 ```http

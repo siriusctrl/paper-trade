@@ -10,6 +10,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db/client.js";
 import { accounts, fundingPayments, orders, perpPositionState, positions } from "../db/schema.js";
+import { formatResolvedSymbolLabel, resolveSymbolsByMarketWithCache } from "../symbol-metadata.js";
 
 type AccountRow = typeof accounts.$inferSelect;
 type PositionRow = typeof positions.$inferSelect;
@@ -44,6 +45,22 @@ export type AccountPortfolioModel = {
   totalValue: number;
   totalPnl: number;
   totalFunding: number;
+};
+
+export type PresentedPortfolioPosition = EnrichedPositionRow & {
+  symbolName: string | null;
+  side: string | null;
+};
+
+export type PresentedPortfolioOrder = OrderRow & {
+  symbolName: string | null;
+  outcome: string | null;
+};
+
+export type PresentedAccountPortfolioModel = Omit<AccountPortfolioModel, "positions" | "openOrders" | "recentOrders"> & {
+  positions: PresentedPortfolioPosition[];
+  openOrders: PresentedPortfolioOrder[];
+  recentOrders: PresentedPortfolioOrder[];
 };
 
 const finalizeAccountPortfolioModel = ({
@@ -94,6 +111,32 @@ const loadFundingByAccountAndSymbol = async (accountIds: string[]): Promise<Map<
     fundingByKey.set(`${row.accountId}:${row.market}:${row.symbol}`, Number((row.total ?? 0).toFixed(6)));
   }
   return fundingByKey;
+};
+
+const collectSymbolsByMarket = (
+  portfolio: AccountPortfolioModel,
+): Map<string, Set<string>> => {
+  const symbolsByMarket = new Map<string, Set<string>>();
+  const append = (market: string, symbol: string): void => {
+    const current = symbolsByMarket.get(market);
+    if (current) {
+      current.add(symbol);
+    } else {
+      symbolsByMarket.set(market, new Set([symbol]));
+    }
+  };
+
+  for (const position of portfolio.positions) {
+    append(position.market, position.symbol);
+  }
+  for (const order of portfolio.openOrders) {
+    append(order.market, order.symbol);
+  }
+  for (const order of portfolio.recentOrders) {
+    append(order.market, order.symbol);
+  }
+
+  return symbolsByMarket;
 };
 
 const enrichPositions = async ({
@@ -242,6 +285,44 @@ export const buildAccountPortfolioModel = async ({
     openOrders,
     recentOrders,
   });
+};
+
+export const presentAccountPortfolioModel = async ({
+  portfolio,
+  registry,
+}: {
+  portfolio: AccountPortfolioModel;
+  registry: MarketRegistry;
+}): Promise<PresentedAccountPortfolioModel> => {
+  const symbolResolutionByMarket = await resolveSymbolsByMarketWithCache(
+    registry,
+    collectSymbolsByMarket(portfolio),
+  );
+
+  const presentPosition = (position: EnrichedPositionRow): PresentedPortfolioPosition => {
+    const resolution = symbolResolutionByMarket.get(position.market);
+    return {
+      ...position,
+      symbolName: formatResolvedSymbolLabel(resolution, position.symbol),
+      side: resolution?.outcomes.get(position.symbol) ?? null,
+    };
+  };
+
+  const presentOrder = (order: OrderRow): PresentedPortfolioOrder => {
+    const resolution = symbolResolutionByMarket.get(order.market);
+    return {
+      ...order,
+      symbolName: formatResolvedSymbolLabel(resolution, order.symbol),
+      outcome: resolution?.outcomes.get(order.symbol) ?? null,
+    };
+  };
+
+  return {
+    ...portfolio,
+    positions: portfolio.positions.map(presentPosition),
+    openOrders: portfolio.openOrders.map(presentOrder),
+    recentOrders: portfolio.recentOrders.map(presentOrder),
+  };
 };
 
 export const buildAccountPortfolioModelsByAccount = async ({

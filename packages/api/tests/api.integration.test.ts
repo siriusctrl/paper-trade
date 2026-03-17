@@ -2353,6 +2353,26 @@ describe("api integration", () => {
 
     const resolveSpy = vi.spyOn(polymarketAdapter, "resolveSymbolNames");
 
+    const userPortfolioResponse = await authedJson("/api/account/portfolio", user.apiKey);
+    expect(userPortfolioResponse.status).toBe(200);
+    const userPortfolioPayload = await userPortfolioResponse.json();
+    expect(userPortfolioPayload.positions).toHaveLength(1);
+    expect(userPortfolioPayload.positions[0]).toMatchObject({
+      symbol: "0x-meta-no",
+      symbolName: "Resolved 0x-meta-no — No",
+      side: "No",
+    });
+
+    const adminPortfolioResponse = await authedJson(`/api/admin/users/${user.userId}/portfolio`, "admin_test_key");
+    expect(adminPortfolioResponse.status).toBe(200);
+    const adminPortfolioPayload = await adminPortfolioResponse.json();
+    expect(adminPortfolioPayload.positions).toHaveLength(1);
+    expect(adminPortfolioPayload.positions[0]).toMatchObject({
+      symbol: "0x-meta-no",
+      symbolName: "Resolved 0x-meta-no — No",
+      side: "No",
+    });
+
     const firstOverviewResponse = await authedJson("/api/admin/overview", "admin_test_key");
     expect(firstOverviewResponse.status).toBe(200);
     const firstOverviewPayload = await firstOverviewResponse.json();

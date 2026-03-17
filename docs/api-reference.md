@@ -18,6 +18,13 @@ This reference lists the current HTTP and SSE surfaces. For system behavior and 
 | `GET` | `/api/account/portfolio` | key | Get balances, open positions, open orders, unrealized PnL, funding totals, and perp risk fields |
 | `GET` | `/api/account/timeline` | key | Get the user's unified audit feed |
 
+### `GET /api/account/portfolio`
+
+Portfolio read-model notes:
+- position rows may include `symbolName` when the market adapter can resolve a human-readable label for `symbol`
+- prediction-market position rows may include `side` with the resolved outcome label such as `Yes` or `No`
+- order rows in `openOrders` and `recentOrders` may include `symbolName` and `outcome` for the same reason
+
 ### `GET /api/account/timeline`
 
 Query params:
@@ -327,6 +334,7 @@ All admin endpoints require `Authorization: Bearer <ADMIN_API_KEY>`.
 Admin read-model notes:
 - `GET /api/admin/overview` is read-only and does not write equity snapshots as a side effect
 - `GET /api/admin/equity-history` is backed by the background equity snapshotter worker
+- `GET /api/admin/users/:id/portfolio` mirrors the user portfolio read-model, including optional `symbolName`, prediction-market `side`, and order-level `outcome` labels when adapters can resolve them
 
 Admin order-placement notes:
 - `POST /api/admin/users/:id/orders` accepts the same payload shape as `POST /api/orders`

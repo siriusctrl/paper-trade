@@ -465,7 +465,7 @@ export const TradePage = () => {
     setSelectedMarket(position.market);
     setSelectedAsset({
       reference: position.symbol,
-      name: position.symbol,
+      name: position.symbolName ?? position.symbol,
     });
     setOrderSide(position.quantity > 0 ? "sell" : "buy");
     setOrderType("market");

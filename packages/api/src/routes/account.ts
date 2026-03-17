@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import type { AppVariables } from "../platform/auth.js";
 import { jsonError } from "../platform/errors.js";
 import { getUserAccountScope, parseQuery, requireNonAdminUserId, withErrorHandling } from "../platform/helpers.js";
-import { buildAccountPortfolioModel } from "../services/portfolio-read.js";
+import { buildAccountPortfolioModel, presentAccountPortfolioModel } from "../services/portfolio-read.js";
 import { buildTimelineEvents } from "../timeline.js";
 
 export const createAccountRoutes = (registry: MarketRegistry) => {
@@ -48,13 +48,16 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
         tolerateQuoteFailures: false,
         includeMissingAdapterAsUnpriced: false,
       });
+      const presented = await presentAccountPortfolioModel({ portfolio, registry });
 
       return c.json({
-        accountId: portfolio.accountId,
-        balance: portfolio.balance,
-        positions: portfolio.positions.map((position) => ({
+        accountId: presented.accountId,
+        balance: presented.balance,
+        positions: presented.positions.map((position) => ({
           market: position.market,
           symbol: position.symbol,
+          symbolName: position.symbolName,
+          side: position.side,
           quantity: position.quantity,
           avgCost: position.avgCost,
           currentPrice: position.currentPrice,
@@ -68,10 +71,11 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
           maintenanceMargin: position.maintenanceMargin ?? undefined,
           liquidationPrice: position.liquidationPrice ?? null,
         })),
-        openOrders: portfolio.openOrders,
-        totalValue: portfolio.totalValue,
-        totalPnl: portfolio.totalPnl,
-        totalFunding: portfolio.totalFunding,
+        openOrders: presented.openOrders,
+        recentOrders: presented.recentOrders,
+        totalValue: presented.totalValue,
+        totalPnl: presented.totalPnl,
+        totalFunding: presented.totalFunding,
       });
     }),
   );

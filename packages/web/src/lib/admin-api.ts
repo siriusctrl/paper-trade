@@ -149,6 +149,8 @@ export type AgentOption = {
 export type PortfolioPosition = {
   market: string;
   symbol: string;
+  symbolName?: string | null;
+  side?: string | null;
   quantity: number;
   avgCost: number;
   currentPrice: number | null;
@@ -162,6 +164,8 @@ export type PortfolioOrder = {
   id: string;
   market: string;
   symbol: string;
+  symbolName?: string | null;
+  outcome?: string | null;
   side: string;
   type: string;
   quantity: number;

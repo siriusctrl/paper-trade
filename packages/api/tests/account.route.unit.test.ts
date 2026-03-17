@@ -17,11 +17,13 @@ const loadRoutes = async (opts: {
       balance: opts.account?.balance ?? 0,
       positions: [],
       openOrders: [],
+      recentOrders: [],
       totalValue: 0,
       totalPnl: 0,
       totalFunding: 0,
     },
   );
+  const presentAccountPortfolioModel = vi.fn(async ({ portfolio }: { portfolio: Record<string, unknown> }) => portfolio);
   const buildTimelineEvents = vi.fn().mockResolvedValue(opts.timeline ?? []);
 
   vi.doMock("../src/platform/helpers.js", () => ({
@@ -42,7 +44,7 @@ const loadRoutes = async (opts: {
     },
     withErrorHandling: (fn: (c: unknown) => Promise<Response>) => fn,
   }));
-  vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel }));
+  vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel, presentAccountPortfolioModel }));
   vi.doMock("../src/timeline.js", () => ({ buildTimelineEvents }));
   vi.doMock("../src/platform/errors.js", () => ({
     jsonError: (_c: unknown, status: number, code: string, message: string) =>
@@ -101,6 +103,7 @@ describe("account routes", () => {
           },
         ],
         openOrders: [{ id: "ord_1" }],
+        recentOrders: [{ id: "ord_recent" }],
         totalValue: 105,
         totalPnl: 0,
         totalFunding: 1,
@@ -133,6 +136,7 @@ describe("account routes", () => {
         },
       ],
       openOrders: [{ id: "ord_1" }],
+      recentOrders: [{ id: "ord_recent" }],
       totalValue: 105,
       totalPnl: 0,
       totalFunding: 1,

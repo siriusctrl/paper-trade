@@ -9,6 +9,32 @@ import type { AgentOption, PortfolioData, PortfolioPosition } from "../../lib/ad
 
 const RECENT_PAGE_SIZE = 5;
 
+const normalizeOutcome = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const outcomeBadgeClass = (outcome: string): string => {
+  const normalized = outcome.toLowerCase();
+  if (normalized === "yes") {
+    return "text-emerald-600 dark:text-emerald-400";
+  }
+  if (normalized === "no") {
+    return "text-rose-600 dark:text-rose-400";
+  }
+  return "text-muted-foreground";
+};
+
+const renderOrderActionLabel = (side: string, outcome: string | null | undefined): string => {
+  const normalizedOutcome = normalizeOutcome(outcome);
+  if (!normalizedOutcome) {
+    return side.toUpperCase();
+  }
+
+  return `${side.toUpperCase()} ${normalizedOutcome.toUpperCase()}`;
+};
+
 export const PortfolioPanels = ({
   selectedAgent,
   portfolio,
@@ -52,16 +78,29 @@ export const PortfolioPanels = ({
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <p className="max-w-[120px] truncate font-mono font-medium">{position.symbol}</p>
+                    <p className="max-w-[180px] truncate font-medium" title={position.symbolName ?? position.symbol}>
+                      {position.symbolName ?? position.symbol}
+                    </p>
                     {position.leverage && position.leverage > 1 ? (
                       <span className="rounded bg-amber-500/15 px-1 py-px text-[10px] font-semibold tabular-nums text-amber-600 dark:text-amber-400">
                         {position.leverage}×
                       </span>
                     ) : null}
                   </div>
+                  {position.symbolName ? (
+                    <p className="max-w-[180px] truncate font-mono text-[10px] text-muted-foreground/60" title={position.symbol}>
+                      {position.symbol}
+                    </p>
+                  ) : null}
                   <div className="flex items-center gap-1">
-                    <span className={`text-[10px] font-semibold ${position.quantity > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>
-                      {position.quantity > 0 ? "LONG" : "SHORT"}
+                    <span className={`text-[10px] font-semibold ${
+                      position.side
+                        ? outcomeBadgeClass(position.side)
+                        : position.quantity > 0
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-rose-600 dark:text-rose-400"
+                    }`}>
+                      {position.side ? position.side.toUpperCase() : position.quantity > 0 ? "LONG" : "SHORT"}
                     </span>
                     <span className="text-muted-foreground/40">·</span>
                     <span className="capitalize text-muted-foreground">{position.market}</span>
@@ -123,9 +162,18 @@ export const PortfolioPanels = ({
                       : "border-rose-500/40 text-rose-600 dark:text-rose-400"
                       }`}
                   >
-                    {order.side.toUpperCase()}
+                    {renderOrderActionLabel(order.side, order.outcome)}
                   </Badge>
-                  <span className="max-w-[100px] truncate font-mono">{order.symbol}</span>
+                  <div className="min-w-0">
+                    <p className="max-w-[160px] truncate" title={order.symbolName ?? order.symbol}>
+                      {order.symbolName ?? order.symbol}
+                    </p>
+                    {order.symbolName ? (
+                      <p className="max-w-[160px] truncate font-mono text-[10px] text-muted-foreground/60" title={order.symbol}>
+                        {order.symbol}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="text-right">
                   <p className="font-mono">
@@ -185,9 +233,18 @@ export const PortfolioPanels = ({
                       : "border-rose-500/40 text-rose-600 dark:text-rose-400"
                       }`}
                   >
-                    {order.side.toUpperCase()}
+                    {renderOrderActionLabel(order.side, order.outcome)}
                   </Badge>
-                  <span className="max-w-[100px] truncate font-mono">{order.symbol}</span>
+                  <div className="min-w-0">
+                    <p className="max-w-[160px] truncate" title={order.symbolName ?? order.symbol}>
+                      {order.symbolName ?? order.symbol}
+                    </p>
+                    {order.symbolName ? (
+                      <p className="max-w-[160px] truncate font-mono text-[10px] text-muted-foreground/60" title={order.symbol}>
+                        {order.symbol}
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="text-right">
                   <p className="font-mono">

@@ -121,7 +121,10 @@ const loadRoutes = async (options?: {
   vi.doMock("../src/services/admin-overview.js", () => ({ buildAdminOverviewModel: vi.fn().mockResolvedValue({}) }));
   vi.doMock("../src/services/equity-history.js", () => ({ buildEquityHistoryModel }));
   vi.doMock("../src/services/order-placement.js", () => ({ createOrderPlacementService: vi.fn(() => ({ placeOrderForAccount })) }));
-  vi.doMock("../src/services/portfolio-read.js", () => ({ buildAccountPortfolioModel: vi.fn().mockResolvedValue({}) }));
+  vi.doMock("../src/services/portfolio-read.js", () => ({
+    buildAccountPortfolioModel: vi.fn().mockResolvedValue({}),
+    presentAccountPortfolioModel: vi.fn(async ({ portfolio }: { portfolio: Record<string, unknown> }) => portfolio),
+  }));
   vi.doMock("../src/timeline.js", () => ({ buildTimelineEvents: vi.fn().mockResolvedValue([]) }));
   vi.doMock("../src/utils.js", () => ({ makeId: (prefix: string) => `${prefix}_1`, nowIso: () => "2026-03-07T00:00:00.000Z" }));
 

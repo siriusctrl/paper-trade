@@ -25,7 +25,7 @@ import { beginIdempotentRequest, storeIdempotentJsonResponse } from "../platform
 import { buildAdminOverviewModel } from "../services/admin-overview.js";
 import { buildEquityHistoryModel } from "../services/equity-history.js";
 import { createOrderPlacementService } from "../services/order-placement.js";
-import { buildAccountPortfolioModel } from "../services/portfolio-read.js";
+import { buildAccountPortfolioModel, presentAccountPortfolioModel } from "../services/portfolio-read.js";
 import { buildTimelineEvents } from "../timeline.js";
 import { makeId, nowIso } from "../utils.js";
 
@@ -171,18 +171,19 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
         tolerateQuoteFailures: true,
         includeMissingAdapterAsUnpriced: true,
       });
+      const presented = await presentAccountPortfolioModel({ portfolio, registry });
 
       return c.json({
         userId: userResult.user.id,
         userName: userResult.user.name,
-        accountId: portfolio.accountId,
-        balance: portfolio.balance,
-        positions: portfolio.positions,
-        openOrders: portfolio.openOrders,
-        recentOrders: portfolio.recentOrders,
-        totalValue: portfolio.totalValue,
-        totalPnl: portfolio.totalPnl,
-        totalFunding: portfolio.totalFunding,
+        accountId: presented.accountId,
+        balance: presented.balance,
+        positions: presented.positions,
+        openOrders: presented.openOrders,
+        recentOrders: presented.recentOrders,
+        totalValue: presented.totalValue,
+        totalPnl: presented.totalPnl,
+        totalFunding: presented.totalFunding,
       });
     }),
   );

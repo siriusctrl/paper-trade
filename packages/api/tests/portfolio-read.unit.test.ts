@@ -20,6 +20,7 @@ type LoadOptions = {
   recentOrders?: OrderRow[];
   perpStateRows?: PerpStateRow[];
   fundingRows?: Array<{ accountId: string; market: string; symbol: string; total: number }>;
+  resolvedSymbolsByMarket?: Record<string, { names?: Record<string, string>; outcomes?: Record<string, string> }>;
 };
 
 const loadModule = async (options: LoadOptions = {}) => {
@@ -72,6 +73,26 @@ const loadModule = async (options: LoadOptions = {}) => {
     orders: tables.orders,
     perpPositionState: tables.perpPositionState,
     fundingPayments: tables.fundingPayments,
+  }));
+  vi.doMock("../src/symbol-metadata.js", () => ({
+    resolveSymbolsByMarketWithCache: vi.fn(async () => new Map(
+      Object.entries(options.resolvedSymbolsByMarket ?? {}).map(([market, resolution]) => [
+        market,
+        {
+          names: new Map(Object.entries(resolution.names ?? {})),
+          outcomes: new Map(Object.entries(resolution.outcomes ?? {})),
+        },
+      ]),
+    )),
+    formatResolvedSymbolLabel: (
+      resolution: { names: Map<string, string>; outcomes: Map<string, string> } | null | undefined,
+      symbol: string,
+    ) => {
+      if (!resolution) return null;
+      const name = resolution.names.get(symbol);
+      const outcome = resolution.outcomes.get(symbol);
+      return name ? (outcome ? `${name} — ${outcome}` : name) : null;
+    },
   }));
 
   const mod = await import("../src/services/portfolio-read.js");
@@ -213,6 +234,77 @@ describe("portfolio-read", () => {
         expect.objectContaining({ market: "missing", symbol: "ABC", currentPrice: null, marketValue: null, unrealizedPnl: null }),
         expect.objectContaining({ market: "quoted", symbol: "XYZ", currentPrice: null, marketValue: null, unrealizedPnl: null }),
       ],
+    });
+  });
+
+  it("presents portfolio positions and orders with resolved symbol metadata", async () => {
+    const { presentAccountPortfolioModel } = await loadModule({
+      resolvedSymbolsByMarket: {
+        polymarket: {
+          names: { "111": "Will rates fall?" },
+          outcomes: { "111": "No" },
+        },
+      },
+    });
+
+    const result = await presentAccountPortfolioModel({
+      portfolio: {
+        accountId: "acct_1",
+        balance: 100,
+        positions: [
+          {
+            accountId: "acct_1",
+            market: "polymarket",
+            symbol: "111",
+            quantity: 2,
+            avgCost: 0.52,
+            currentPrice: 0.55,
+            quoteTimestamp: "2026-03-07T00:00:00.000Z",
+            unrealizedPnl: 0.06,
+            marketValue: 1.1,
+            accumulatedFunding: 0,
+            notional: null,
+            positionEquity: null,
+            leverage: null,
+            margin: null,
+            maintenanceMargin: null,
+            liquidationPrice: null,
+          },
+        ],
+        openOrders: [
+          {
+            id: "ord_1",
+            accountId: "acct_1",
+            market: "polymarket",
+            symbol: "111",
+            side: "buy",
+            type: "limit",
+            quantity: 1,
+            limitPrice: 0.5,
+            status: "pending",
+            filledPrice: null,
+            reasoning: "test",
+            cancelReasoning: null,
+            cancelledAt: null,
+            filledAt: null,
+            createdAt: "2026-03-07T00:00:00.000Z",
+          },
+        ],
+        recentOrders: [],
+        totalValue: 101.1,
+        totalPnl: 0.06,
+        totalFunding: 0,
+      },
+      registry: { get: vi.fn() } as never,
+    });
+
+    expect(result.positions[0]).toMatchObject({
+      symbolName: "Will rates fall? — No",
+      side: "No",
+    });
+    expect(result.openOrders[0]).toMatchObject({
+      symbolName: "Will rates fall? — No",
+      outcome: "No",
     });
   });
 
