@@ -19,7 +19,8 @@ describe("resolveTradeIntent", () => {
       sellLabel: "No",
       reference: "111",
       side: "buy",
-      actionLabel: "Yes",
+      actionLabel: "Buy Yes",
+      helperText: "Prediction markets express directional views by buying an outcome token. Use Sell from positions to reduce an existing token.",
     });
     expect(resolveTradeIntent("polymarket", asset, "sell")).toEqual({
       mode: "binary-outcome",
@@ -27,7 +28,8 @@ describe("resolveTradeIntent", () => {
       sellLabel: "No",
       reference: "222",
       side: "buy",
-      actionLabel: "No",
+      actionLabel: "Buy No",
+      helperText: "Prediction markets express directional views by buying an outcome token. Use Sell from positions to reduce an existing token.",
     });
   });
 
@@ -44,6 +46,7 @@ describe("resolveTradeIntent", () => {
       reference: "12345",
       side: "sell",
       actionLabel: "Sell",
+      helperText: null,
     });
   });
 });

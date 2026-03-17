@@ -26,6 +26,9 @@ export const TradeTicketCard = ({
   isPerpMarket,
   buyLabel,
   sellLabel,
+  executionSide,
+  selectionHint,
+  submitLabel,
   orderSide,
   orderType,
   quantity,
@@ -57,6 +60,9 @@ export const TradeTicketCard = ({
   isPerpMarket: boolean;
   buyLabel: string;
   sellLabel: string;
+  executionSide: "buy" | "sell";
+  selectionHint: string | null;
+  submitLabel: string;
   orderSide: "buy" | "sell";
   orderType: "market" | "limit";
   quantity: string;
@@ -100,7 +106,7 @@ export const TradeTicketCard = ({
   const executablePrice = quote
     ? orderType === "limit" && limitPrice
       ? Number(limitPrice)
-      : orderSide === "buy"
+      : executionSide === "buy"
         ? (quote.ask ?? quote.price)
         : (quote.bid ?? quote.price)
     : null;
@@ -234,6 +240,11 @@ export const TradeTicketCard = ({
               {sellLabel}
             </Button>
           </div>
+          {selectionHint ? (
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {selectionHint}
+            </p>
+          ) : null}
 
           <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border/50 p-1">
             <Button
@@ -347,7 +358,7 @@ export const TradeTicketCard = ({
             onClick={onSubmit}
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShoppingCart className="h-4 w-4" />}
-            {orderSide === "buy" ? buyLabel : sellLabel} {orderType === "limit" ? "Limit" : "Market"}
+            {submitLabel} {orderType === "limit" ? "Limit" : "Market"}
           </Button>
 
           {orderResult ? (

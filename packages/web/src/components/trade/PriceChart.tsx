@@ -158,7 +158,7 @@ export const PriceChart = ({
         return { bars, timeLabels, priceLabels, tradePoints, isUp, plotHeight };
     }, [candles, trades, width, interval]);
 
-    if (loading) {
+    if (loading && (!chartData || candles.length === 0)) {
         return (
             <div
                 className="flex items-center justify-center rounded-lg bg-muted/30"
@@ -181,12 +181,17 @@ export const PriceChart = ({
     }
 
     return (
-        <div className="rounded-lg bg-muted/30 p-2">
+        <div className="relative rounded-lg bg-muted/30 p-2">
+            {loading ? (
+                <div className="pointer-events-none absolute right-3 top-3 z-10 rounded-full bg-background/80 p-1.5 shadow-sm backdrop-blur-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/60" />
+                </div>
+            ) : null}
             <svg
                 width={width}
                 height={CHART_HEIGHT}
                 viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
-                className="overflow-visible"
+                className={`overflow-visible transition-opacity ${loading ? "opacity-70" : "opacity-100"}`}
             >
                 {/* Grid lines */}
                 {chartData.priceLabels.map((pl, i) => (

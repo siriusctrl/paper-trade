@@ -9,6 +9,7 @@ export type TradeIntent = {
   reference: string;
   side: PlaceOrderInput["side"];
   actionLabel: string;
+  helperText: string | null;
 };
 
 const parseStringArray = (value: unknown): string[] => {
@@ -75,7 +76,8 @@ export const resolveTradeIntent = (
       sellLabel: binaryOutcomeChoices[1]!.label,
       reference: activeChoice.reference,
       side: "buy",
-      actionLabel: activeChoice.label,
+      actionLabel: `Buy ${activeChoice.label}`,
+      helperText: "Prediction markets express directional views by buying an outcome token. Use Sell from positions to reduce an existing token.",
     };
   }
 
@@ -86,5 +88,6 @@ export const resolveTradeIntent = (
     reference: asset.reference,
     side: selection,
     actionLabel: selection === "buy" ? "Buy" : "Sell",
+    helperText: null,
   };
 };

@@ -83,6 +83,7 @@ export const TradePage = () => {
   const [chartInterval, setChartInterval] = useState<PriceHistoryInterval>("1h");
 
   const agentDropdownRef = useRef<HTMLDivElement>(null);
+  const loadedSelectionKeyRef = useRef<string | null>(null);
 
   const selectedAgentInfo = useMemo(
     () => agents.find((agent) => agent.userId === selectedAgent) ?? null,
@@ -227,12 +228,17 @@ export const TradePage = () => {
       setQuote(null);
       setConstraints(null);
       setFundingPreview(null);
+      loadedSelectionKeyRef.current = null;
       return;
     }
 
-    setQuote(null);
-    setConstraints(null);
-    setFundingPreview(selectedAsset.fundingPreview ?? null);
+    const selectionKey = `${selectedMarket}:${selectedAsset.reference}`;
+    const isSameSelection = loadedSelectionKeyRef.current === selectionKey;
+    if (!isSameSelection) {
+      setQuote(null);
+      setConstraints(null);
+      setFundingPreview(selectedAsset.fundingPreview ?? null);
+    }
     setQuoteLoading(true);
     let active = true;
 
@@ -262,13 +268,16 @@ export const TradePage = () => {
             annualizedRate: nextFunding.annualizedRate,
           });
         }
+        loadedSelectionKeyRef.current = selectionKey;
       } catch (fetchError) {
         if (!active) {
           return;
         }
 
-        setQuote(null);
-        setConstraints(null);
+        if (!isSameSelection) {
+          setQuote(null);
+          setConstraints(null);
+        }
         if (!isAdminAuthError(fetchError)) {
           setError(getErrorMessage(fetchError, "Failed to load quote"));
         }
@@ -580,6 +589,9 @@ export const TradePage = () => {
               isPerpMarket={isPerpMarket}
               buyLabel={tradeIntent?.buyLabel ?? "Buy"}
               sellLabel={tradeIntent?.sellLabel ?? "Sell"}
+              executionSide={tradeIntent?.side ?? orderSide}
+              selectionHint={tradeIntent?.helperText ?? null}
+              submitLabel={tradeIntent?.actionLabel ?? (orderSide === "buy" ? "Buy" : "Sell")}
               orderSide={orderSide}
               orderType={orderType}
               quantity={quantity}
