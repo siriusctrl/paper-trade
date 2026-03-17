@@ -252,6 +252,8 @@ export const TradePage = () => {
             nextFundingAt: nextFunding.nextFundingAt,
             timestamp: nextFunding.timestamp,
             direction: nextFunding.direction,
+            intervalHours: nextFunding.intervalHours,
+            annualizedRate: nextFunding.annualizedRate,
           });
         }
       } catch (fetchError) {

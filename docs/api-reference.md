@@ -122,7 +122,9 @@ Rules:
         "rate": 0.0001,
         "nextFundingAt": "2026-03-16T10:00:00.000Z",
         "timestamp": "2026-03-16T09:42:00.000Z",
-        "direction": "long_pays_short"
+        "direction": "long_pays_short",
+        "intervalHours": 1,
+        "annualizedRate": 0.876
       },
       "metadata": {}
     }
@@ -134,6 +136,7 @@ Rules:
 - discovery results are not required to be execution-ready exchange ids
 - adapters normalize the supplied `reference` lazily when `quote`, `orderbook`, `resolve`, `price-history`, or order placement is called
 - funding-capable markets may include a structured `fundingPreview` on discovery results when preview data is available
+- `annualizedRate` is a simple APR reference derived from the market funding cadence, not a compounded yield
 
 ### Market descriptor notes
 
@@ -208,7 +211,9 @@ Example:
   "rate": 0.0001,
   "nextFundingAt": "2026-03-08T01:00:00.000Z",
   "timestamp": "2026-03-08T00:00:00.000Z",
-  "direction": "long_pays_short"
+  "direction": "long_pays_short",
+  "intervalHours": 1,
+  "annualizedRate": 0.876
 }
 ```
 

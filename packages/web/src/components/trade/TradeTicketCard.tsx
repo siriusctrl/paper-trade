@@ -6,7 +6,13 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { formatCurrency } from "../../lib/admin";
-import { describeFundingDirection, formatFundingRate, formatFundingTime } from "../../lib/funding";
+import {
+  describeFundingDirection,
+  formatAnnualizedFundingRate,
+  formatFundingCadence,
+  formatFundingRate,
+  formatFundingTime,
+} from "../../lib/funding";
 import type { FundingPreview, MarketReferenceResult, PriceHistoryInterval, QuoteData, TradingConstraints } from "../../lib/admin-api";
 
 type OrderResult = { ok: boolean; message: string } | null;
@@ -193,6 +199,11 @@ export const TradeTicketCard = ({
                 ? `Next funding ${formatFundingTime(fundingPreview.nextFundingAt)}.`
                 : "Funding preview is currently unavailable for this contract."}
             </p>
+            {fundingPreview?.annualizedRate !== undefined ? (
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {`Reference APR ${formatAnnualizedFundingRate(fundingPreview.annualizedRate)} based on ${formatFundingCadence(fundingPreview.intervalHours)} funding cadence.`}
+              </p>
+            ) : null}
           </div>
         ) : null}
 

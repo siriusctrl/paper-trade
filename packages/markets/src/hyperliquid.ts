@@ -23,6 +23,7 @@ import {
     type Quote,
     type SearchOptions,
     type TradingConstraints,
+    annualizeFundingRate,
     fundingDirectionFromRate,
 } from "./types.js";
 
@@ -33,6 +34,7 @@ const FUNDING_TTL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_BROWSE_CACHE_TTL_MS = 300_000;
 const HOUR_MS = 3_600_000;
+const HYPERLIQUID_FUNDING_INTERVAL_HOURS = 1;
 const DEFAULT_PERP_DEX_CACHE_KEY = "default";
 
 const CANDLE_TTL_MS: Record<string, number> = {
@@ -75,11 +77,14 @@ const getNextHourlyFundingAt = (now = Date.now()): string => {
 };
 
 const buildFundingPreview = (rate: number, nextFundingAt: string, timestamp = new Date().toISOString()): FundingPreview => {
+    const annualizedRate = annualizeFundingRate(rate, HYPERLIQUID_FUNDING_INTERVAL_HOURS);
     return {
         rate,
         nextFundingAt,
         timestamp,
         direction: fundingDirectionFromRate(rate),
+        intervalHours: HYPERLIQUID_FUNDING_INTERVAL_HOURS,
+        annualizedRate: annualizedRate ?? undefined,
     };
 };
 

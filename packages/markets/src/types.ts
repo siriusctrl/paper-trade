@@ -79,6 +79,8 @@ export type FundingPreview = {
   nextFundingAt: string;
   timestamp: string;
   direction: FundingDirection;
+  intervalHours?: number;
+  annualizedRate?: number;
 };
 
 export type Quote = {
@@ -117,6 +119,8 @@ export type FundingRate = {
   nextFundingAt: string;
   timestamp: string;
   direction: FundingDirection;
+  intervalHours?: number;
+  annualizedRate?: number;
 };
 
 export type MarketDescriptor = {
@@ -196,4 +200,13 @@ export const fundingDirectionFromRate = (rate: number): FundingDirection => {
   if (rate > 0) return "long_pays_short";
   if (rate < 0) return "short_pays_long";
   return "neutral";
+};
+
+export const annualizeFundingRate = (rate: number, intervalHours: number): number | null => {
+  if (!Number.isFinite(rate) || !Number.isFinite(intervalHours) || intervalHours <= 0) {
+    return null;
+  }
+
+  const periodsPerYear = (24 / intervalHours) * 365;
+  return Number((rate * periodsPerYear).toFixed(6));
 };

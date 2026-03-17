@@ -87,7 +87,9 @@ Both return paginated discovery payloads:
         "rate": 0.0001,
         "nextFundingAt": "2026-03-16T10:00:00.000Z",
         "timestamp": "2026-03-16T09:42:00.000Z",
-        "direction": "long_pays_short"
+        "direction": "long_pays_short",
+        "intervalHours": 1,
+        "annualizedRate": 0.876
       },
       "metadata": {}
     }
@@ -103,6 +105,7 @@ Notes:
 - Unsupported `sort` values return `400 INVALID_INPUT`; do not guess sort keys that were not advertised by `GET /api/markets`.
 - Some adapters enrich sparse upstream search previews before returning discovery records. Do not assume missing `volume`, `liquidity`, or `endDate` in one response means the market can never provide them.
 - funding-capable markets may include `fundingPreview`; treat it as a preview signal and re-read `funding` before acting on stale data
+- `annualizedRate` is a simple APR reference derived from the market funding cadence, not a compounded yield
 
 ## Market Reads
 
@@ -162,6 +165,8 @@ Funding response fields:
 - `nextFundingAt`
 - `timestamp`
 - `direction`: `long_pays_short`, `short_pays_long`, or `neutral`
+- optional `intervalHours`
+- optional `annualizedRate`
 
 ### Price history
 

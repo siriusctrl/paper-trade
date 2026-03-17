@@ -172,6 +172,8 @@ describe("createMarketRoutes", () => {
             nextFundingAt: "2026-03-07T01:00:00.000Z",
             timestamp: "2026-03-07T00:00:00.000Z",
             direction: "long_pays_short" as const,
+            intervalHours: 1,
+            annualizedRate: 87.6,
           };
         }
         if (reference === "eth") throw new MarketAdapterError("SYMBOL_NOT_FOUND", "missing funding");
@@ -207,6 +209,8 @@ describe("createMarketRoutes", () => {
         nextFundingAt: "2026-03-07T01:00:00.000Z",
         timestamp: "2026-03-07T00:00:00.000Z",
         direction: "long_pays_short",
+        intervalHours: 1,
+        annualizedRate: 87.6,
       }],
       errors: [
         { reference: "eth", error: { code: "SYMBOL_NOT_FOUND", message: "missing funding" } },
@@ -273,6 +277,8 @@ describe("createMarketRoutes", () => {
             nextFundingAt: "2026-03-08T01:00:00.000Z",
             timestamp: "2026-03-08T00:00:00.000Z",
             direction: "long_pays_short" as const,
+            intervalHours: 1,
+            annualizedRate: 21.9,
           },
         },
         { reference: "b", name: "B" },
@@ -298,6 +304,8 @@ describe("createMarketRoutes", () => {
             nextFundingAt: "2026-03-08T01:00:00.000Z",
             timestamp: "2026-03-08T00:00:00.000Z",
             direction: "long_pays_short",
+            intervalHours: 1,
+            annualizedRate: 21.9,
           },
         },
         { reference: "b", name: "B" },

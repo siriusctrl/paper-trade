@@ -371,6 +371,8 @@ describe("HyperliquidAdapter", () => {
     expect(btcFunding.rate).toBe(0.0001);
     expect(btcFunding.nextFundingAt).toBe(new Date(1_700_000_000_000).toISOString());
     expect(btcFunding.direction).toBe("long_pays_short");
+    expect(btcFunding.intervalHours).toBe(1);
+    expect(btcFunding.annualizedRate).toBe(0.876);
   });
 
   it("returns the caller's reference when cached quote, orderbook, and funding entries are reused", async () => {
@@ -447,6 +449,8 @@ describe("HyperliquidAdapter", () => {
       rate: 0.0000173865,
       nextFundingAt: "2026-03-10T05:00:00.000Z",
       direction: "long_pays_short",
+      intervalHours: 1,
+      annualizedRate: 0.152306,
     });
     const predictedFundingCalls = fetchSpy.mock.calls.filter(([, init]) => {
       const body = JSON.parse((init as RequestInit).body as string);
@@ -708,6 +712,8 @@ describe("HyperliquidAdapter", () => {
     expect(btc?.fundingPreview).toMatchObject({
       rate: 0.0001,
       direction: "long_pays_short",
+      intervalHours: 1,
+      annualizedRate: 0.876,
     });
   });
 

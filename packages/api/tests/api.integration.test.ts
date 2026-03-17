@@ -144,6 +144,8 @@ const fundingAdapter: MarketAdapter = {
       nextFundingAt: "2026-01-01T01:00:00.000Z",
       timestamp: new Date().toISOString(),
       direction: "long_pays_short" as const,
+      intervalHours: 1,
+      annualizedRate: 1.752,
     };
   },
   getTradingConstraints: async () => ({
@@ -677,6 +679,8 @@ describe("api integration", () => {
       rate: 0.0002,
       nextFundingAt: "2026-01-01T01:00:00.000Z",
       direction: "long_pays_short",
+      intervalHours: 1,
+      annualizedRate: 1.752,
     });
 
     const fundingConstraintsResponse = await authedJson(

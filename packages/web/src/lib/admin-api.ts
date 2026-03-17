@@ -95,6 +95,8 @@ export type FundingPreview = {
   nextFundingAt: string;
   timestamp: string;
   direction: FundingDirection;
+  intervalHours?: number;
+  annualizedRate?: number;
 };
 
 export type MarketReferenceResult = {
