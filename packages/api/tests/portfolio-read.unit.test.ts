@@ -159,6 +159,15 @@ describe("portfolio-read", () => {
     expect(result.totalValue).toBe(86);
     expect(result.totalPnl).toBe(-14);
     expect(result.totalFunding).toBe(1.265432);
+    expect(result.valuation).toEqual({
+      status: "complete",
+      issueCount: 0,
+      issues: [],
+      pricedPositions: 2,
+      unpricedPositions: 0,
+      knownMarketValue: 36,
+      knownUnrealizedPnl: -14,
+    });
     expect(result.positions).toEqual([
       expect.objectContaining({
         market: "polymarket",
@@ -191,7 +200,7 @@ describe("portfolio-read", () => {
     ]);
   });
 
-  it("treats missing adapters and quote failures as unpriced only when configured", async () => {
+  it("supports strict failures and explicit partial valuation for missing adapters and quote failures", async () => {
     const options: LoadOptions = {
       positionRows: [
         { id: "pos_missing", accountId: "acct_1", market: "missing", symbol: "ABC", quantity: 1, avgCost: 10 },
@@ -217,19 +226,27 @@ describe("portfolio-read", () => {
       strict.buildAccountPortfolioModel({
         account: { id: "acct_1", userId: "usr_1", balance: 20 },
         registry: registry as never,
+        valuationMode: "strict",
       }),
-    ).rejects.toThrow("Quote lookup failed for quoted:XYZ");
+    ).rejects.toThrow("Market adapter not found for missing");
 
     await expect(
       tolerant.buildAccountPortfolioModel({
         account: { id: "acct_1", userId: "usr_1", balance: 20 },
         registry: registry as never,
-        tolerateQuoteFailures: true,
-        includeMissingAdapterAsUnpriced: true,
+        valuationMode: "partial",
       }),
     ).resolves.toMatchObject({
-      totalValue: 20,
-      totalPnl: 0,
+      totalValue: null,
+      totalPnl: null,
+      valuation: {
+        status: "partial",
+        issueCount: 2,
+        pricedPositions: 0,
+        unpricedPositions: 2,
+        knownMarketValue: 0,
+        knownUnrealizedPnl: 0,
+      },
       positions: [
         expect.objectContaining({ market: "missing", symbol: "ABC", currentPrice: null, marketValue: null, unrealizedPnl: null }),
         expect.objectContaining({ market: "quoted", symbol: "XYZ", currentPrice: null, marketValue: null, unrealizedPnl: null }),
@@ -294,6 +311,15 @@ describe("portfolio-read", () => {
         totalValue: 101.1,
         totalPnl: 0.06,
         totalFunding: 0,
+        valuation: {
+          status: "complete",
+          issueCount: 0,
+          issues: [],
+          pricedPositions: 1,
+          unpricedPositions: 0,
+          knownMarketValue: 1.1,
+          knownUnrealizedPnl: 0.06,
+        },
       },
       registry: { get: vi.fn() } as never,
     });
@@ -354,6 +380,14 @@ describe("portfolio-read", () => {
       totalValue: 19,
       totalPnl: 4,
       totalFunding: 0,
+      valuation: {
+        status: "complete",
+        issueCount: 0,
+        pricedPositions: 1,
+        unpricedPositions: 0,
+        knownMarketValue: 14,
+        knownUnrealizedPnl: 4,
+      },
       positions: [expect.objectContaining({ symbol: "YES", marketValue: 14, unrealizedPnl: 4 })],
     });
     expect(result.get("acct_2")).toMatchObject({
@@ -361,6 +395,14 @@ describe("portfolio-read", () => {
       totalValue: 110,
       totalPnl: 40,
       totalFunding: 3.25,
+      valuation: {
+        status: "complete",
+        issueCount: 0,
+        pricedPositions: 1,
+        unpricedPositions: 0,
+        knownMarketValue: 70,
+        knownUnrealizedPnl: 40,
+      },
       positions: [
         expect.objectContaining({
           symbol: "BTC",

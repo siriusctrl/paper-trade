@@ -103,9 +103,18 @@ export const AgentDetailPage = () => {
                 <Badge variant="outline">
                   {formatNumber(agent.totals.positions)} positions
                 </Badge>
-                <Badge variant={agent.totals.unrealizedPnl >= 0 ? "success" : "danger"}>
-                  {formatSignedCurrency(agent.totals.unrealizedPnl)}
-                </Badge>
+                {agent.totals.unrealizedPnl === null ? (
+                  <Badge variant="outline">PnL N/A</Badge>
+                ) : (
+                  <Badge variant={agent.totals.unrealizedPnl >= 0 ? "success" : "danger"}>
+                    {formatSignedCurrency(agent.totals.unrealizedPnl)}
+                  </Badge>
+                )}
+                {agent.valuation.status === "partial" ? (
+                  <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">
+                    Partial valuation
+                  </Badge>
+                ) : null}
               </div>
             </CardHeader>
           </Card>
@@ -124,7 +133,9 @@ export const AgentDetailPage = () => {
             <Card className="bg-card/55 hover:border-primary/30">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg">Portfolio Equity</CardTitle>
-                <CardDescription>Cash plus marked value</CardDescription>
+                <CardDescription>
+                  {agent.valuation.status === "partial" ? "Unknown until all open positions are priced" : "Cash plus marked value"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <p className="text-2xl font-semibold">{formatCurrency(agent.totals.equity)}</p>
@@ -138,9 +149,11 @@ export const AgentDetailPage = () => {
               <CardContent>
                 <p
                   className={
-                    agent.totals.unrealizedPnl >= 0
-                      ? "text-2xl font-semibold text-emerald-600 dark:text-emerald-400"
-                      : "text-2xl font-semibold text-rose-600 dark:text-rose-400"
+                    agent.totals.unrealizedPnl === null
+                      ? "text-2xl font-semibold text-muted-foreground"
+                      : agent.totals.unrealizedPnl >= 0
+                        ? "text-2xl font-semibold text-emerald-600 dark:text-emerald-400"
+                        : "text-2xl font-semibold text-rose-600 dark:text-rose-400"
                   }
                 >
                   {formatSignedCurrency(agent.totals.unrealizedPnl)}

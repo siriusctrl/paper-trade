@@ -60,6 +60,17 @@ export const PortfolioPanels = ({
 
   return (
     <>
+      {portfolio?.valuation.status === "partial" ? (
+        <Card className="animate-in fade-in-0 border-amber-500/40 bg-amber-500/10 duration-200">
+          <CardContent className="space-y-1 py-4 text-sm text-amber-700 dark:text-amber-300">
+            <p className="font-medium">Partial valuation</p>
+            <p>
+              {portfolio.valuation.unpricedPositions} positions are currently unpriced. Totals stay incomplete until quotes recover.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {portfolio && portfolio.positions.length > 0 ? (
         <Card className="animate-in fade-in-0 border-border/50 bg-card/45 duration-200">
           <CardHeader className="pb-2">

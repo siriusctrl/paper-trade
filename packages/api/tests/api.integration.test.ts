@@ -1350,6 +1350,18 @@ describe("api integration", () => {
     expect(filteredOrders.status).toBe(200);
     expect((await filteredOrders.json()).orders).toHaveLength(1);
 
+    const normalizeSpy = vi.spyOn(polymarketAdapter, "normalizeReference").mockImplementation(async (reference) => {
+      if (reference === "missing-alias") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", "No symbol available for missing-alias");
+      }
+      return reference === "alias-fill" ? "0x-market-fill" : reference;
+    });
+
+    const invalidFilteredOrders = await authedJson("/api/orders?market=polymarket&symbol=missing-alias", user.apiKey);
+    expect(invalidFilteredOrders.status).toBe(404);
+    expect((await invalidFilteredOrders.json()).error.code).toBe("SYMBOL_NOT_FOUND");
+    normalizeSpy.mockRestore();
+
     const positionsResponse = await authedJson("/api/positions", user.apiKey);
     expect(positionsResponse.status).toBe(200);
     const positionsPayload = await positionsResponse.json();
@@ -1545,6 +1557,7 @@ describe("api integration", () => {
     expect(portfolioPayload.positions).toHaveLength(1);
     expect(portfolioPayload.totalPnl).toBeCloseTo(0, 6);
     expect(portfolioPayload.totalFunding).toBe(0);
+    expect(portfolioPayload.valuation.status).toBe("complete");
     expect(portfolioPayload.positions[0].accumulatedFunding).toBe(0);
 
     const expectedBalance = Number((INITIAL_BALANCE - 20 * 0.52).toFixed(6));
@@ -1608,6 +1621,7 @@ describe("api integration", () => {
     expect(portfolioResponse.status).toBe(200);
     const portfolioPayload = await portfolioResponse.json();
     expect(portfolioPayload.totalFunding).toBe(2.25);
+    expect(portfolioPayload.valuation.status).toBe("complete");
     expect(portfolioPayload.positions).toHaveLength(1);
     expect(portfolioPayload.positions[0]).toMatchObject({
       market: "funding-only",
@@ -1712,7 +1726,7 @@ describe("api integration", () => {
     ).toBe(true);
   });
 
-  it("covers portfolio adapter-missing branch and journal tag deserialization fallback", async () => {
+  it("returns explicit partial portfolio valuation for missing adapters and still tolerates malformed journal tags", async () => {
     const user = await registerUser("portfolio-fallback-user");
 
     await db
@@ -1730,8 +1744,30 @@ describe("api integration", () => {
     const portfolioResponse = await authedJson(`/api/account/portfolio`, user.apiKey);
     expect(portfolioResponse.status).toBe(200);
     const portfolioPayload = await portfolioResponse.json();
-    expect(portfolioPayload.positions).toEqual([]);
-    expect(portfolioPayload.totalValue).toBe(INITIAL_BALANCE);
+    expect(portfolioPayload.positions).toHaveLength(1);
+    expect(portfolioPayload.positions[0]).toMatchObject({
+      market: "missing-market",
+      symbol: "0x-ghost",
+      quantity: 3,
+      currentPrice: null,
+      marketValue: null,
+      unrealizedPnl: null,
+    });
+    expect(portfolioPayload.totalValue).toBeNull();
+    expect(portfolioPayload.totalPnl).toBeNull();
+    expect(portfolioPayload.valuation).toMatchObject({
+      status: "partial",
+      issueCount: 1,
+      pricedPositions: 0,
+      unpricedPositions: 1,
+      knownMarketValue: 0,
+      knownUnrealizedPnl: 0,
+    });
+    expect(portfolioPayload.valuation.issues[0]).toMatchObject({
+      market: "missing-market",
+      symbol: "0x-ghost",
+      code: "MARKET_ADAPTER_NOT_FOUND",
+    });
 
     await db
       .insert(tables.journal)
@@ -2130,12 +2166,14 @@ describe("api integration", () => {
       positions: unknown[];
       recentOrders: unknown[];
       balance: number;
+      valuation: { status: string };
     };
     expect(initialPortfolioPayload.accountId).toBe(createdTrader.accountId);
     expect(initialPortfolioPayload.balance).toBe(INITIAL_BALANCE);
     expect(initialPortfolioPayload.openOrders).toEqual([]);
     expect(initialPortfolioPayload.positions).toEqual([]);
     expect(initialPortfolioPayload.recentOrders).toEqual([]);
+    expect(initialPortfolioPayload.valuation.status).toBe("complete");
 
     const mismatchedAccountOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
       method: "POST",
@@ -2252,6 +2290,7 @@ describe("api integration", () => {
       positions: Array<{ symbol: string; quantity: number; currentPrice: number | null }>;
       recentOrders: Array<{ id: string; symbol: string; status: string }>;
       balance: number;
+      valuation: { status: string };
     };
     expect(updatedPortfolioPayload.openOrders).toEqual([]);
     expect(updatedPortfolioPayload.positions).toHaveLength(1);
@@ -2266,6 +2305,21 @@ describe("api integration", () => {
       status: "filled",
     });
     expect(updatedPortfolioPayload.balance).toBeCloseTo(INITIAL_BALANCE - 1.04, 6);
+    expect(updatedPortfolioPayload.valuation.status).toBe("complete");
+
+    const adminNormalizeSpy = vi.spyOn(polymarketAdapter, "normalizeReference").mockImplementation(async (reference) => {
+      if (reference === "missing-trades-symbol") {
+        throw new MarketAdapterError("SYMBOL_NOT_FOUND", "No symbol available for missing-trades-symbol");
+      }
+      return reference === "alias-fill" ? "0x-market-fill" : reference;
+    });
+    const invalidSymbolTrades = await authedJson(
+      `/api/admin/users/${createdTrader.userId}/symbol-trades?market=polymarket&symbol=missing-trades-symbol&limit=20`,
+      "admin_test_key",
+    );
+    expect(invalidSymbolTrades.status).toBe(404);
+    expect((await invalidSymbolTrades.json()).error.code).toBe("SYMBOL_NOT_FOUND");
+    adminNormalizeSpy.mockRestore();
 
     const pendingAdminOrder = await authedJson(`/api/admin/users/${createdTrader.userId}/orders`, "admin_test_key", {
       method: "POST",
@@ -2528,6 +2582,8 @@ describe("api integration", () => {
     expect(overviewResponse.status).toBe(200);
     const overviewPayload = await overviewResponse.json();
     expect(overviewPayload.totals.users).toBeGreaterThanOrEqual(2);
+    expect(overviewPayload.valuation.status).toBe("partial");
+    expect(overviewPayload.totals.equity).toBeNull();
     expect(
       overviewPayload.markets.some((market: { marketId: string; unpricedPositions: number }) => {
         return market.marketId === "missing-market" && market.unpricedPositions >= 1;

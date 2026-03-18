@@ -173,8 +173,9 @@ export const buildAgentMix = (overview: OverviewResponse | null): AgentMixRow[] 
   }
 
   const sorted = [...overview.agents]
-    .sort((a, b) => b.totals.equity - a.totals.equity)
-    .map((agent) => ({ name: agent.userName, value: Number(agent.totals.equity.toFixed(6)) }));
+    .filter((agent) => agent.totals.equity !== null)
+    .sort((a, b) => (b.totals.equity ?? Number.NEGATIVE_INFINITY) - (a.totals.equity ?? Number.NEGATIVE_INFINITY))
+    .map((agent) => ({ name: agent.userName, value: Number((agent.totals.equity ?? 0).toFixed(6)) }));
 
   if (sorted.length <= 6) {
     return sorted;

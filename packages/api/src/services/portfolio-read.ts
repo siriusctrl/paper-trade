@@ -17,6 +17,31 @@ type PositionRow = typeof positions.$inferSelect;
 type OrderRow = typeof orders.$inferSelect;
 type PerpStateRow = typeof perpPositionState.$inferSelect;
 
+export type PortfolioValuationMode = "strict" | "partial";
+export type PortfolioValuationStatus = "complete" | "partial";
+export type PortfolioValuationIssueCode = "MARKET_ADAPTER_NOT_FOUND" | "QUOTE_UNAVAILABLE";
+
+export type PortfolioValuationIssue = {
+  scope: "position";
+  accountId: string;
+  market: string;
+  symbol: string;
+  code: PortfolioValuationIssueCode;
+  message: string;
+};
+
+export type PortfolioValuation = {
+  status: PortfolioValuationStatus;
+  issueCount: number;
+  issues: PortfolioValuationIssue[];
+  pricedPositions: number;
+  unpricedPositions: number;
+  knownMarketValue: number;
+  knownUnrealizedPnl: number;
+};
+
+export type PortfolioValuationSummary = Omit<PortfolioValuation, "issues">;
+
 export type EnrichedPositionRow = {
   accountId: string;
   market: string;
@@ -42,9 +67,10 @@ export type AccountPortfolioModel = {
   positions: EnrichedPositionRow[];
   openOrders: OrderRow[];
   recentOrders: OrderRow[];
-  totalValue: number;
-  totalPnl: number;
+  totalValue: number | null;
+  totalPnl: number | null;
   totalFunding: number;
+  valuation: PortfolioValuation;
 };
 
 export type PresentedPortfolioPosition = EnrichedPositionRow & {
@@ -66,16 +92,24 @@ export type PresentedAccountPortfolioModel = Omit<AccountPortfolioModel, "positi
 const finalizeAccountPortfolioModel = ({
   account,
   positions,
+  issues,
   openOrders = [],
   recentOrders = [],
 }: {
   account: AccountRow;
   positions: EnrichedPositionRow[];
+  issues: PortfolioValuationIssue[];
   openOrders?: OrderRow[];
   recentOrders?: OrderRow[];
 }): AccountPortfolioModel => {
-  const totalMarketValue = positions.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+  const knownMarketValue = Number(positions.reduce((sum, row) => sum + (row.marketValue ?? 0), 0).toFixed(6));
+  const knownUnrealizedPnl = Number(positions.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0).toFixed(6));
+  const unpricedPositions = positions.filter((row) => row.marketValue === null || row.unrealizedPnl === null).length;
+  const pricedPositions = positions.length - unpricedPositions;
   const totalFunding = positions.reduce((sum, row) => sum + row.accumulatedFunding, 0);
+  const valuationStatus: PortfolioValuationStatus = issues.length > 0 || unpricedPositions > 0 ? "partial" : "complete";
+  const totalValue = valuationStatus === "complete" ? Number((account.balance + knownMarketValue).toFixed(6)) : null;
+  const totalPnl = valuationStatus === "complete" ? knownUnrealizedPnl : null;
 
   return {
     accountId: account.id,
@@ -83,9 +117,18 @@ const finalizeAccountPortfolioModel = ({
     positions,
     openOrders,
     recentOrders,
-    totalValue: Number((account.balance + totalMarketValue).toFixed(6)),
-    totalPnl: Number(positions.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0).toFixed(6)),
+    totalValue,
+    totalPnl,
     totalFunding: Number(totalFunding.toFixed(6)),
+    valuation: {
+      status: valuationStatus,
+      issueCount: issues.length,
+      issues,
+      pricedPositions,
+      unpricedPositions,
+      knownMarketValue,
+      knownUnrealizedPnl,
+    },
   };
 };
 
@@ -139,22 +182,25 @@ const collectSymbolsByMarket = (
   return symbolsByMarket;
 };
 
+type QuoteLookup =
+  | { kind: "priced"; price: number; timestamp: string | null }
+  | { kind: "missing_adapter"; message: string }
+  | { kind: "quote_failed"; message: string };
+
 const enrichPositions = async ({
   registry,
   rows,
   perpStateByPositionId,
   fundingByKey,
-  tolerateQuoteFailures,
-  includeMissingAdapterAsUnpriced,
+  valuationMode,
 }: {
   registry: MarketRegistry;
   rows: PositionRow[];
   perpStateByPositionId: Map<string, PerpStateRow>;
   fundingByKey: Map<string, number>;
-  tolerateQuoteFailures: boolean;
-  includeMissingAdapterAsUnpriced: boolean;
-}): Promise<EnrichedPositionRow[]> => {
-  const quoteByKey = new Map<string, { price: number | null; timestamp: string | null }>();
+  valuationMode: PortfolioValuationMode;
+}): Promise<{ positions: EnrichedPositionRow[]; issues: PortfolioValuationIssue[] }> => {
+  const quoteByKey = new Map<string, QuoteLookup>();
 
   for (const row of rows) {
     const key = `${row.market}:${row.symbol}`;
@@ -162,40 +208,62 @@ const enrichPositions = async ({
 
     const adapter = registry.get(row.market);
     if (!adapter) {
-      if (includeMissingAdapterAsUnpriced) {
-        quoteByKey.set(key, { price: null, timestamp: null });
-      }
+      quoteByKey.set(key, {
+        kind: "missing_adapter",
+        message: `Market adapter not found for ${row.market}`,
+      });
       continue;
     }
 
     try {
       const quote = await adapter.getQuote(row.symbol);
-      quoteByKey.set(key, { price: quote.price, timestamp: quote.timestamp });
-    } catch {
-      if (!tolerateQuoteFailures) {
-        throw new Error(`Quote lookup failed for ${row.market}:${row.symbol}`);
-      }
-      quoteByKey.set(key, { price: null, timestamp: null });
+      quoteByKey.set(key, {
+        kind: "priced",
+        price: quote.price,
+        timestamp: quote.timestamp ?? null,
+      });
+    } catch (error) {
+      const rawMessage = error instanceof Error && error.message
+        ? error.message
+        : "Unknown quote lookup failure";
+      quoteByKey.set(key, {
+        kind: "quote_failed",
+        message: `Quote lookup failed for ${row.market}:${row.symbol}: ${rawMessage}`,
+      });
     }
   }
 
   const enriched: EnrichedPositionRow[] = [];
+  const issues: PortfolioValuationIssue[] = [];
 
   for (const row of rows) {
+    const key = `${row.market}:${row.symbol}`;
     const adapter = registry.get(row.market);
-    if (!adapter && !includeMissingAdapterAsUnpriced) {
-      continue;
+    const quoteLookup = quoteByKey.get(key);
+
+    if (!quoteLookup) {
+      throw new Error(`Missing quote lookup state for ${row.market}:${row.symbol}`);
     }
 
-    const quote = quoteByKey.get(`${row.market}:${row.symbol}`);
-    if (!quote && !includeMissingAdapterAsUnpriced) {
-      continue;
+    if (valuationMode === "strict" && quoteLookup.kind !== "priced") {
+      throw new Error(quoteLookup.message);
+    }
+
+    if (quoteLookup.kind !== "priced") {
+      issues.push({
+        scope: "position",
+        accountId: row.accountId,
+        market: row.market,
+        symbol: row.symbol,
+        code: quoteLookup.kind === "missing_adapter" ? "MARKET_ADAPTER_NOT_FOUND" : "QUOTE_UNAVAILABLE",
+        message: quoteLookup.message,
+      });
     }
 
     const perpState = perpStateByPositionId.get(row.id);
     const isPerp = Boolean(adapter?.capabilities.includes("funding") && perpState);
-    const currentPrice = quote?.price ?? null;
-    const quoteTimestamp = quote?.timestamp ?? null;
+    const currentPrice = quoteLookup.kind === "priced" ? quoteLookup.price : null;
+    const quoteTimestamp = quoteLookup.kind === "priced" ? quoteLookup.timestamp : null;
     const unrealizedPnl = currentPrice === null
       ? null
       : isPerp
@@ -239,21 +307,19 @@ const enrichPositions = async ({
     });
   }
 
-  return enriched;
+  return { positions: enriched, issues };
 };
 
 export const buildAccountPortfolioModel = async ({
   account,
   registry,
   includeRecentOrders = false,
-  tolerateQuoteFailures = false,
-  includeMissingAdapterAsUnpriced = false,
+  valuationMode = "partial",
 }: {
   account: AccountRow;
   registry: MarketRegistry;
   includeRecentOrders?: boolean;
-  tolerateQuoteFailures?: boolean;
-  includeMissingAdapterAsUnpriced?: boolean;
+  valuationMode?: PortfolioValuationMode;
 }): Promise<AccountPortfolioModel> => {
   const [positionRows, openOrders, recentOrders, perpStateRows, fundingByKey] = await Promise.all([
     db.select().from(positions).where(eq(positions.accountId, account.id)).all(),
@@ -271,17 +337,17 @@ export const buildAccountPortfolioModel = async ({
   ]);
 
   const perpStateByPositionId = new Map(perpStateRows.map((row) => [row.positionId, row]));
-  const positionsView = await enrichPositions({
+  const { positions: positionsView, issues } = await enrichPositions({
     registry,
     rows: positionRows,
     perpStateByPositionId,
     fundingByKey,
-    tolerateQuoteFailures,
-    includeMissingAdapterAsUnpriced,
+    valuationMode,
   });
   return finalizeAccountPortfolioModel({
     account,
     positions: positionsView,
+    issues,
     openOrders,
     recentOrders,
   });
@@ -328,13 +394,11 @@ export const presentAccountPortfolioModel = async ({
 export const buildAccountPortfolioModelsByAccount = async ({
   accounts: accountRows,
   registry,
-  tolerateQuoteFailures = true,
-  includeMissingAdapterAsUnpriced = true,
+  valuationMode = "partial",
 }: {
   accounts: AccountRow[];
   registry: MarketRegistry;
-  tolerateQuoteFailures?: boolean;
-  includeMissingAdapterAsUnpriced?: boolean;
+  valuationMode?: PortfolioValuationMode;
 }): Promise<Map<string, AccountPortfolioModel>> => {
   if (accountRows.length === 0) {
     return new Map();
@@ -348,13 +412,12 @@ export const buildAccountPortfolioModelsByAccount = async ({
   ]);
 
   const perpStateByPositionId = new Map(perpStateRows.map((row) => [row.positionId, row]));
-  const positionsView = await enrichPositions({
+  const { positions: positionsView, issues } = await enrichPositions({
     registry,
     rows: positionRows,
     perpStateByPositionId,
     fundingByKey,
-    tolerateQuoteFailures,
-    includeMissingAdapterAsUnpriced,
+    valuationMode,
   });
 
   const positionsByAccountId = new Map<string, EnrichedPositionRow[]>();
@@ -367,6 +430,16 @@ export const buildAccountPortfolioModelsByAccount = async ({
     }
   }
 
+  const issuesByAccountId = new Map<string, PortfolioValuationIssue[]>();
+  for (const issue of issues) {
+    const current = issuesByAccountId.get(issue.accountId);
+    if (current) {
+      current.push(issue);
+    } else {
+      issuesByAccountId.set(issue.accountId, [issue]);
+    }
+  }
+
   const portfolioByAccountId = new Map<string, AccountPortfolioModel>();
   for (const account of accountRows) {
     portfolioByAccountId.set(
@@ -374,6 +447,7 @@ export const buildAccountPortfolioModelsByAccount = async ({
       finalizeAccountPortfolioModel({
         account,
         positions: positionsByAccountId.get(account.id) ?? [],
+        issues: issuesByAccountId.get(account.id) ?? [],
       }),
     );
   }

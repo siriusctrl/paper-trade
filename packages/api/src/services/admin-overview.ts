@@ -5,7 +5,7 @@ import { db } from "../db/client.js";
 import { accounts, equitySnapshots, positions, users } from "../db/schema.js";
 import { formatResolvedSymbolLabel, resolveSymbolsByMarketWithCache } from "../symbol-metadata.js";
 import { makeId, nowIso } from "../utils.js";
-import { buildAccountPortfolioModelsByAccount } from "./portfolio-read.js";
+import { buildAccountPortfolioModelsByAccount, type AccountPortfolioModel, type PortfolioValuationSummary } from "./portfolio-read.js";
 
 type UserRow = typeof users.$inferSelect;
 type AccountRow = typeof accounts.$inferSelect;
@@ -36,10 +36,13 @@ export type AdminOverviewAgent = {
   totals: {
     positions: number;
     balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
+    marketValue: number | null;
+    knownMarketValue: number;
+    unrealizedPnl: number | null;
+    knownUnrealizedPnl: number;
+    equity: number | null;
   };
+  valuation: PortfolioValuationSummary;
 };
 
 export type AdminOverviewModel = {
@@ -48,9 +51,19 @@ export type AdminOverviewModel = {
     users: number;
     positions: number;
     balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
+    marketValue: number | null;
+    knownMarketValue: number;
+    unrealizedPnl: number | null;
+    knownUnrealizedPnl: number;
+    equity: number | null;
+  };
+  valuation: {
+    status: "complete" | "partial";
+    completeAgents: number;
+    partialAgents: number;
+    issueCount: number;
+    pricedPositions: number;
+    unpricedPositions: number;
   };
   markets: Array<{
     marketId: string;
@@ -58,10 +71,13 @@ export type AdminOverviewModel = {
     users: number;
     positions: number;
     totalQuantity: number;
-    totalMarketValue: number;
-    totalUnrealizedPnl: number;
+    totalMarketValue: number | null;
+    knownMarketValue: number;
+    totalUnrealizedPnl: number | null;
+    knownUnrealizedPnl: number;
     quotedPositions: number;
     unpricedPositions: number;
+    valuationStatus: "complete" | "partial";
   }>;
   agents: AdminOverviewAgent[];
 };
@@ -74,6 +90,29 @@ const getPrimaryAccountByUserId = (accountRows: AccountRow[]): Map<string, Accou
     }
   }
   return primaryAccountByUserId;
+};
+
+const toValuationSummary = (portfolio: AccountPortfolioModel | null | undefined): PortfolioValuationSummary => {
+  if (!portfolio) {
+    return {
+      status: "complete",
+      issueCount: 0,
+      pricedPositions: 0,
+      unpricedPositions: 0,
+      knownMarketValue: 0,
+      knownUnrealizedPnl: 0,
+    };
+  }
+
+  const { issues: _ignoredIssues, ...summary } = portfolio.valuation;
+  return summary;
+};
+
+const sortNullableDescending = (left: number | null, right: number | null): number => {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right - left;
 };
 
 export const buildAdminOverviewModel = async ({
@@ -115,8 +154,8 @@ export const buildAdminOverviewModel = async ({
     users: Set<string>;
     positions: number;
     totalQuantity: number;
-    totalMarketValue: number;
-    totalUnrealizedPnl: number;
+    knownMarketValue: number;
+    knownUnrealizedPnl: number;
     quotedPositions: number;
     unpricedPositions: number;
   }>();
@@ -131,8 +170,8 @@ export const buildAdminOverviewModel = async ({
           users: new Set<string>(),
           positions: 0,
           totalQuantity: 0,
-          totalMarketValue: 0,
-          totalUnrealizedPnl: 0,
+          knownMarketValue: 0,
+          knownUnrealizedPnl: 0,
           quotedPositions: 0,
           unpricedPositions: 0,
         });
@@ -149,8 +188,8 @@ export const buildAdminOverviewModel = async ({
         marketSummary.unpricedPositions += 1;
       } else {
         marketSummary.quotedPositions += 1;
-        marketSummary.totalMarketValue += position.marketValue;
-        marketSummary.totalUnrealizedPnl += position.unrealizedPnl;
+        marketSummary.knownMarketValue += position.marketValue;
+        marketSummary.knownUnrealizedPnl += position.unrealizedPnl;
       }
     }
   }
@@ -159,6 +198,7 @@ export const buildAdminOverviewModel = async ({
     .map<AdminOverviewAgent>((user) => {
       const primaryAccount = primaryAccountByUserId.get(user.id) ?? null;
       const portfolio = primaryAccount ? portfolioByAccountId.get(primaryAccount.id) : null;
+      const valuation = toValuationSummary(portfolio);
       const agentPositions = [...(portfolio?.positions ?? [])]
         .map((position) => {
           const resolution = symbolResolutionByMarket.get(position.market);
@@ -182,9 +222,9 @@ export const buildAdminOverviewModel = async ({
         .sort((a, b) => `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`));
 
       const totalBalance = Number((primaryAccount?.balance ?? 0).toFixed(6));
-      const totalMarketValue = Number(agentPositions.reduce((sum, position) => sum + (position.marketValue ?? 0), 0).toFixed(6));
-      const totalUnrealizedPnl = Number(agentPositions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0).toFixed(6));
-      const totalEquity = Number((totalBalance + totalMarketValue).toFixed(6));
+      const totalMarketValue = valuation.status === "complete" ? valuation.knownMarketValue : null;
+      const totalUnrealizedPnl = valuation.status === "complete" ? valuation.knownUnrealizedPnl : null;
+      const totalEquity = portfolio?.totalValue ?? (valuation.status === "complete" ? totalBalance : null);
 
       return {
         userId: user.id,
@@ -198,12 +238,19 @@ export const buildAdminOverviewModel = async ({
           positions: agentPositions.length,
           balance: totalBalance,
           marketValue: totalMarketValue,
+          knownMarketValue: valuation.knownMarketValue,
           unrealizedPnl: totalUnrealizedPnl,
+          knownUnrealizedPnl: valuation.knownUnrealizedPnl,
           equity: totalEquity,
         },
+        valuation,
       };
     })
-    .sort((a, b) => b.totals.equity - a.totals.equity);
+    .sort((a, b) => {
+      const byEquity = sortNullableDescending(a.totals.equity, b.totals.equity);
+      if (byEquity !== 0) return byEquity;
+      return b.totals.knownMarketValue - a.totals.knownMarketValue;
+    });
 
   const markets = Array.from(marketSummaryById.values())
     .map((market) => ({
@@ -212,16 +259,25 @@ export const buildAdminOverviewModel = async ({
       users: market.users.size,
       positions: market.positions,
       totalQuantity: market.totalQuantity,
-      totalMarketValue: Number(market.totalMarketValue.toFixed(6)),
-      totalUnrealizedPnl: Number(market.totalUnrealizedPnl.toFixed(6)),
+      totalMarketValue: market.unpricedPositions === 0 ? Number(market.knownMarketValue.toFixed(6)) : null,
+      knownMarketValue: Number(market.knownMarketValue.toFixed(6)),
+      totalUnrealizedPnl: market.unpricedPositions === 0 ? Number(market.knownUnrealizedPnl.toFixed(6)) : null,
+      knownUnrealizedPnl: Number(market.knownUnrealizedPnl.toFixed(6)),
       quotedPositions: market.quotedPositions,
       unpricedPositions: market.unpricedPositions,
+      valuationStatus: market.unpricedPositions > 0 ? ("partial" as const) : ("complete" as const),
     }))
-    .sort((a, b) => b.totalMarketValue - a.totalMarketValue);
+    .sort((a, b) => b.knownMarketValue - a.knownMarketValue);
 
   const totalBalance = Number(agents.reduce((sum, agent) => sum + agent.totals.balance, 0).toFixed(6));
-  const totalMarketValue = Number(markets.reduce((sum, market) => sum + market.totalMarketValue, 0).toFixed(6));
-  const totalUnrealizedPnl = Number(markets.reduce((sum, market) => sum + market.totalUnrealizedPnl, 0).toFixed(6));
+  const knownMarketValue = Number(markets.reduce((sum, market) => sum + market.knownMarketValue, 0).toFixed(6));
+  const knownUnrealizedPnl = Number(markets.reduce((sum, market) => sum + market.knownUnrealizedPnl, 0).toFixed(6));
+  const partialAgents = agents.filter((agent) => agent.valuation.status === "partial").length;
+  const completeAgents = agents.length - partialAgents;
+  const issueCount = Array.from(portfolioByAccountId.values()).reduce((sum, portfolio) => sum + portfolio.valuation.issueCount, 0);
+  const pricedPositions = Array.from(portfolioByAccountId.values()).reduce((sum, portfolio) => sum + portfolio.valuation.pricedPositions, 0);
+  const unpricedPositions = Array.from(portfolioByAccountId.values()).reduce((sum, portfolio) => sum + portfolio.valuation.unpricedPositions, 0);
+  const valuationStatus = partialAgents > 0 || unpricedPositions > 0 ? "partial" : "complete";
 
   return {
     generatedAt: nowIso(),
@@ -229,9 +285,19 @@ export const buildAdminOverviewModel = async ({
       users: userRows.length,
       positions: positionRows.length,
       balance: totalBalance,
-      marketValue: totalMarketValue,
-      unrealizedPnl: totalUnrealizedPnl,
-      equity: Number((totalBalance + totalMarketValue).toFixed(6)),
+      marketValue: valuationStatus === "complete" ? knownMarketValue : null,
+      knownMarketValue,
+      unrealizedPnl: valuationStatus === "complete" ? knownUnrealizedPnl : null,
+      knownUnrealizedPnl,
+      equity: valuationStatus === "complete" ? Number((totalBalance + knownMarketValue).toFixed(6)) : null,
+    },
+    valuation: {
+      status: valuationStatus,
+      completeAgents,
+      partialAgents,
+      issueCount,
+      pricedPositions,
+      unpricedPositions,
     },
     markets,
     agents,
@@ -260,13 +326,14 @@ export const recordEquitySnapshotsFromOverview = async ({
 
   const pendingSnapshots = overview.agents
     .filter((agent) => !recentlySnapshottedUserIds.has(agent.userId))
+    .filter((agent) => agent.totals.marketValue !== null && agent.totals.equity !== null && agent.totals.unrealizedPnl !== null)
     .map((agent) => ({
       id: makeId("snap"),
       userId: agent.userId,
       balance: agent.totals.balance,
-      marketValue: agent.totals.marketValue,
-      equity: agent.totals.equity,
-      unrealizedPnl: agent.totals.unrealizedPnl,
+      marketValue: agent.totals.marketValue!,
+      equity: agent.totals.equity!,
+      unrealizedPnl: agent.totals.unrealizedPnl!,
       snapshotAt: overview.generatedAt,
     }));
 

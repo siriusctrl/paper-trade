@@ -45,8 +45,7 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
       const portfolio = await buildAccountPortfolioModel({
         account: accountScope.account,
         registry,
-        tolerateQuoteFailures: false,
-        includeMissingAdapterAsUnpriced: false,
+        valuationMode: "partial",
       });
       const presented = await presentAccountPortfolioModel({ portfolio, registry });
 
@@ -61,21 +60,22 @@ export const createAccountRoutes = (registry: MarketRegistry) => {
           quantity: position.quantity,
           avgCost: position.avgCost,
           currentPrice: position.currentPrice,
-          unrealizedPnl: position.unrealizedPnl ?? 0,
-          marketValue: position.marketValue ?? 0,
+          unrealizedPnl: position.unrealizedPnl,
+          marketValue: position.marketValue,
           accumulatedFunding: position.accumulatedFunding,
-          notional: position.notional ?? undefined,
-          positionEquity: position.positionEquity ?? undefined,
-          leverage: position.leverage ?? undefined,
-          margin: position.margin ?? undefined,
-          maintenanceMargin: position.maintenanceMargin ?? undefined,
-          liquidationPrice: position.liquidationPrice ?? null,
+          notional: position.notional,
+          positionEquity: position.positionEquity,
+          leverage: position.leverage,
+          margin: position.margin,
+          maintenanceMargin: position.maintenanceMargin,
+          liquidationPrice: position.liquidationPrice,
         })),
         openOrders: presented.openOrders,
         recentOrders: presented.recentOrders,
         totalValue: presented.totalValue,
         totalPnl: presented.totalPnl,
         totalFunding: presented.totalFunding,
+        valuation: presented.valuation,
       });
     }),
   );

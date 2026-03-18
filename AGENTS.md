@@ -36,7 +36,12 @@ Build a reliable, market-agnostic paper trading platform that:
 - Prefer composable interfaces and adapters over growing conditionals.
 - Favor simple, observable data flow over clever abstractions.
 - Be strict at system boundaries: validate external input and keep API errors consistent.
+- Prefer KISS: solve the current problem with the simplest correct design, and do not add abstraction or compatibility machinery until it is clearly required.
 - Prefer the simplest current contract; avoid unnecessary shims, aliases, and duplicate paths unless explicitly requested.
+- Default to the best current design, not compatibility with superseded endpoints, payloads, or internal flows.
+- Do not preserve legacy behavior with compatibility branches, dual reads/writes, aliases, silent fallbacks, or automatic degradation unless explicitly requested.
+- When replacing a contract, remove or update the old path cleanly instead of carrying it forward "just in case".
+- If a change reveals migration risk, unclear requirements, or a conflict with these rules, stop and discuss it immediately instead of inventing compatibility behavior.
 - When behavior changes, update tests and docs in the same change.
 
 ## Collaboration Preferences
@@ -54,7 +59,7 @@ Use `codex exec --full-auto '<task>'` for large, well-scoped implementation task
 Rules:
 - Treat Codex as starting with no prior context.
 - Include exact file paths, required behavior, constraints, and non-goals.
-- Preserve the product invariants and current API/error contracts unless the task explicitly says otherwise.
+- Preserve the product invariants and the intended contract for the task, but do not add backward-compatibility shims or preserve superseded endpoints/fields unless explicitly requested.
 - Do not ask Codex to install new dependencies or change unrelated files unless explicitly required.
 - End the prompt with validation steps such as `corepack pnpm test`, `corepack pnpm typecheck`, or narrower package-specific commands.
 - Review Codex output before committing.
@@ -68,6 +73,7 @@ Before merging, confirm:
 - auditability is still preserved,
 - auth and admin boundaries are still preserved,
 - API and error contracts remain consistent,
+- no unnecessary compatibility layer or silent degradation was introduced,
 - tests and docs were updated together when behavior changed.
 
 If any answer is "no" or "unclear", stop and redesign before merging.

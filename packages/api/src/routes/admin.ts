@@ -168,8 +168,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
         account: accountScope.account,
         registry,
         includeRecentOrders: true,
-        tolerateQuoteFailures: true,
-        includeMissingAdapterAsUnpriced: true,
+        valuationMode: "partial",
       });
       const presented = await presentAccountPortfolioModel({ portfolio, registry });
 
@@ -184,6 +183,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
         totalValue: presented.totalValue,
         totalPnl: presented.totalPnl,
         totalFunding: presented.totalFunding,
+        valuation: presented.valuation,
       });
     }),
   );
@@ -238,11 +238,7 @@ export const createAdminRoutes = (registry: MarketRegistry) => {
       let symbolFilter = parsedQuery.data.symbol;
       const marketAdapter = registry.get(parsedQuery.data.market);
       if (marketAdapter?.normalizeReference) {
-        try {
-          symbolFilter = await marketAdapter.normalizeReference(parsedQuery.data.symbol);
-        } catch {
-          // use original symbol if normalization fails
-        }
+        symbolFilter = await marketAdapter.normalizeReference(parsedQuery.data.symbol);
       }
 
       const tradeRows = await db

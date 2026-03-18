@@ -21,6 +21,15 @@ const loadRoutes = async (opts: {
       totalValue: 0,
       totalPnl: 0,
       totalFunding: 0,
+      valuation: {
+        status: "complete",
+        issueCount: 0,
+        issues: [],
+        pricedPositions: 0,
+        unpricedPositions: 0,
+        knownMarketValue: 0,
+        knownUnrealizedPnl: 0,
+      },
     },
   );
   const presentAccountPortfolioModel = vi.fn(async ({ portfolio }: { portfolio: Record<string, unknown> }) => portfolio);
@@ -76,7 +85,7 @@ describe("account routes", () => {
     expect(missingRes.status).toBe(404);
   });
 
-  it("returns account details and normalized portfolio fields", async () => {
+  it("returns account details and explicit portfolio valuation fields", async () => {
     const account = { id: "acct_1", userId: "usr_1", name: "Agent", balance: 100, createdAt: "2026-03-07T00:00:00.000Z" };
     const routes = await loadRoutes({
       userId: "usr_1",
@@ -104,9 +113,27 @@ describe("account routes", () => {
         ],
         openOrders: [{ id: "ord_1" }],
         recentOrders: [{ id: "ord_recent" }],
-        totalValue: 105,
-        totalPnl: 0,
+        totalValue: null,
+        totalPnl: null,
         totalFunding: 1,
+        valuation: {
+          status: "partial",
+          issueCount: 1,
+          issues: [
+            {
+              scope: "position",
+              accountId: account.id,
+              market: "hyperliquid",
+              symbol: "BTC",
+              code: "QUOTE_UNAVAILABLE",
+              message: "Quote lookup failed for hyperliquid:BTC: upstream unavailable",
+            },
+          ],
+          pricedPositions: 0,
+          unpricedPositions: 1,
+          knownMarketValue: 0,
+          knownUnrealizedPnl: 0,
+        },
       },
     });
 
@@ -124,8 +151,8 @@ describe("account routes", () => {
           quantity: 1,
           avgCost: 100,
           currentPrice: 90,
-          unrealizedPnl: 0,
-          marketValue: 0,
+          unrealizedPnl: null,
+          marketValue: null,
           accumulatedFunding: 1,
           notional: 90,
           positionEquity: 5,
@@ -137,11 +164,29 @@ describe("account routes", () => {
       ],
       openOrders: [{ id: "ord_1" }],
       recentOrders: [{ id: "ord_recent" }],
-      totalValue: 105,
-      totalPnl: 0,
+      totalValue: null,
+      totalPnl: null,
       totalFunding: 1,
+      valuation: {
+        status: "partial",
+        issueCount: 1,
+        issues: [
+          {
+            scope: "position",
+            accountId: account.id,
+            market: "hyperliquid",
+            symbol: "BTC",
+            code: "QUOTE_UNAVAILABLE",
+            message: "Quote lookup failed for hyperliquid:BTC: upstream unavailable",
+          },
+        ],
+        pricedPositions: 0,
+        unpricedPositions: 1,
+        knownMarketValue: 0,
+        knownUnrealizedPnl: 0,
+      },
     });
-    expect(routes.buildAccountPortfolioModel).toHaveBeenCalledWith(expect.objectContaining({ tolerateQuoteFailures: false, includeMissingAdapterAsUnpriced: false }));
+    expect(routes.buildAccountPortfolioModel).toHaveBeenCalledWith(expect.objectContaining({ valuationMode: "partial" }));
   });
 
   it("returns query validation failures and timeline payloads", async () => {

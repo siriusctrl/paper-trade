@@ -71,6 +71,18 @@ export const DashboardPage = () => {
       const snapshots = [...(existing?.snapshots ?? [])];
 
       if (overview?.generatedAt) {
+        if (
+          agent.totals.equity === null
+          || agent.totals.marketValue === null
+          || agent.totals.unrealizedPnl === null
+        ) {
+          return {
+            userId: agent.userId,
+            userName: agent.userName,
+            snapshots,
+          };
+        }
+
         const liveSnapshot = {
           snapshotAt: overview.generatedAt,
           equity: agent.totals.equity,
@@ -306,6 +318,15 @@ export const DashboardPage = () => {
         </Card>
       ) : null}
 
+      {overview?.valuation.status === "partial" ? (
+        <Card className="border-amber-500/40 bg-amber-500/10 shadow-none animate-in fade-in-0 duration-200">
+          <CardContent className="flex items-center gap-2 py-4 text-sm text-amber-700 dark:text-amber-300">
+            <CircleAlert className="h-4 w-4" />
+            {overview.valuation.partialAgents} agents have partial valuation. Equity and aggregate PnL stay unknown until every open position has a fresh price.
+          </CardContent>
+        </Card>
+      ) : null}
+
       {overview ? (
         <>
           {/* Equity / Return line chart */}
@@ -505,6 +526,11 @@ export const DashboardPage = () => {
                                   <Badge variant="outline" className="shrink-0">
                                     {formatNumber(agent.totals.positions)} pos
                                   </Badge>
+                                  {agent.valuation.status === "partial" ? (
+                                    <Badge variant="outline" className="shrink-0 border-amber-500/40 text-amber-700 dark:text-amber-300">
+                                      Partial
+                                    </Badge>
+                                  ) : null}
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -532,15 +558,19 @@ export const DashboardPage = () => {
                               </div>
                               <div className="flex items-center justify-between border-t border-border/50 pt-2">
                                 <span className="text-xs text-muted-foreground">Unrealized PnL</span>
-                                <span
-                                  className={
-                                    agent.totals.unrealizedPnl >= 0
-                                      ? "font-medium text-emerald-600 dark:text-emerald-400"
-                                      : "font-medium text-rose-600 dark:text-rose-400"
-                                  }
-                                >
-                                  {formatSignedCurrency(agent.totals.unrealizedPnl)}
-                                </span>
+                                {agent.totals.unrealizedPnl === null ? (
+                                  <span className="font-medium text-muted-foreground">N/A</span>
+                                ) : (
+                                  <span
+                                    className={
+                                      agent.totals.unrealizedPnl >= 0
+                                        ? "font-medium text-emerald-600 dark:text-emerald-400"
+                                        : "font-medium text-rose-600 dark:text-rose-400"
+                                    }
+                                  >
+                                    {formatSignedCurrency(agent.totals.unrealizedPnl)}
+                                  </span>
+                                )}
                               </div>
 
                               {/* Top positions preview */}

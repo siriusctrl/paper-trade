@@ -15,6 +15,29 @@ export type PositionView = {
   quoteTimestamp?: string | null;
 };
 
+export type ValuationStatus = "complete" | "partial";
+
+export type PortfolioValuationIssue = {
+  scope: "position";
+  accountId: string;
+  market: string;
+  symbol: string;
+  code: "MARKET_ADAPTER_NOT_FOUND" | "QUOTE_UNAVAILABLE";
+  message: string;
+};
+
+export type PortfolioValuation = {
+  status: ValuationStatus;
+  issueCount: number;
+  issues: PortfolioValuationIssue[];
+  pricedPositions: number;
+  unpricedPositions: number;
+  knownMarketValue: number;
+  knownUnrealizedPnl: number;
+};
+
+export type PortfolioValuationSummary = Omit<PortfolioValuation, "issues">;
+
 export type AgentView = {
   userId: string;
   userName: string;
@@ -25,10 +48,13 @@ export type AgentView = {
   positions: PositionView[];
   totals: {
     positions: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
+    marketValue: number | null;
+    knownMarketValue: number;
+    unrealizedPnl: number | null;
+    knownUnrealizedPnl: number;
+    equity: number | null;
   };
+  valuation: PortfolioValuationSummary;
 };
 
 export type MarketView = {
@@ -37,10 +63,13 @@ export type MarketView = {
   users: number;
   positions: number;
   totalQuantity: number;
-  totalMarketValue: number;
-  totalUnrealizedPnl: number;
+  totalMarketValue: number | null;
+  knownMarketValue: number;
+  totalUnrealizedPnl: number | null;
+  knownUnrealizedPnl: number;
   quotedPositions: number;
   unpricedPositions: number;
+  valuationStatus: ValuationStatus;
 };
 
 export type OverviewResponse = {
@@ -49,9 +78,19 @@ export type OverviewResponse = {
     users: number;
     positions: number;
     balance: number;
-    marketValue: number;
-    unrealizedPnl: number;
-    equity: number;
+    marketValue: number | null;
+    knownMarketValue: number;
+    unrealizedPnl: number | null;
+    knownUnrealizedPnl: number;
+    equity: number | null;
+  };
+  valuation: {
+    status: ValuationStatus;
+    completeAgents: number;
+    partialAgents: number;
+    issueCount: number;
+    pricedPositions: number;
+    unpricedPositions: number;
   };
   markets: MarketView[];
   agents: AgentView[];
@@ -143,7 +182,7 @@ export type AgentOption = {
   userId: string;
   userName: string;
   balance: number;
-  equity: number;
+  equity: number | null;
 };
 
 export type PortfolioPosition = {
@@ -184,9 +223,10 @@ export type PortfolioData = {
   positions: PortfolioPosition[];
   openOrders: PortfolioOrder[];
   recentOrders: PortfolioOrder[];
-  totalValue: number;
-  totalPnl: number;
+  totalValue: number | null;
+  totalPnl: number | null;
   totalFunding: number;
+  valuation: PortfolioValuation;
 };
 
 export type CreateTraderResponse = {

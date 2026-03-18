@@ -37,6 +37,11 @@ The overview screen shows:
 - market-level summary data across all tracked positions
 - equity trend charts backed by the background equity snapshotter worker
 
+Valuation semantics:
+- portfolio and overview reads preserve factual positions even when a mark price is unavailable
+- when any open position is unpriced, affected totals become partial rather than silently dropping the position
+- the API exposes this through explicit valuation status and unpriced-position counts
+
 #### Agent detail
 
 A user detail view shows:
@@ -179,6 +184,7 @@ For operators, that means the activity feed can now show:
 ## Operational Notes
 
 - `GET /api/admin/overview` is read-only. Equity snapshots are recorded by the background equity snapshotter worker.
+- when overview or per-user portfolio valuation is partial, treat aggregate equity and PnL as incomplete until pricing recovers
 - Admin order placement does not bypass trading constraints or risk rules.
 - If you see liquidation events, always check the paired portfolio state and recent funding for context.
 - If a pending `reduceOnly` order disappears after liquidation, that is expected cleanup behavior.

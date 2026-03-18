@@ -129,7 +129,7 @@ It handles:
 - request validation
 - idempotency
 - shared order-placement and order-cancellation orchestration for routes and workers
-- shared portfolio and overview read-model builders
+- shared portfolio and overview read-model builders with explicit partial-valuation semantics
 - persistence
 - worker scheduling
 - SSE event emission

@@ -24,6 +24,9 @@ Portfolio read-model notes:
 - position rows may include `symbolName` when the market adapter can resolve a human-readable label for `symbol`
 - prediction-market position rows may include `side` with the resolved outcome label such as `Yes` or `No`
 - order rows in `openOrders` and `recentOrders` may include `symbolName` and `outcome` for the same reason
+- responses include a `valuation` summary with `status`, `issues`, priced/unpriced position counts, and known marked-value/PnL totals
+- factual positions are preserved even when a quote is unavailable; in that case per-position derived values remain `null`
+- `totalValue` and `totalPnl` are `null` whenever valuation is partial instead of silently dropping unpriced positions
 
 ### `GET /api/account/timeline`
 
@@ -74,6 +77,7 @@ Rules:
 - quantity is validated against per-reference trading constraints
 - normal market-order execution uses directional executable prices: `buy -> ask`, `sell -> bid`
 - limit orders remain `pending` until the background reconciler fills or cancels them
+- when `market` + `symbol` filters require symbol normalization and normalization fails, `GET /api/orders` returns an explicit error instead of an empty result
 
 ## Positions
 
@@ -325,6 +329,7 @@ The full operator workflow is documented in [Admin Guide](admin-guide.md). The m
 | `POST` | `/api/admin/traders` | Create a dedicated trader user + default account |
 | `GET` | `/api/admin/overview` | Get cross-user portfolio and market summary |
 | `GET` | `/api/admin/users/:id/portfolio` | Get one user's current balance, positions, open orders, and recent orders |
+| `GET` | `/api/admin/users/:id/symbol-trades` | Get one user's recent trades for a specific market symbol |
 | `GET` | `/api/admin/users/:id/timeline` | Get one user's unified audit feed |
 | `POST` | `/api/admin/users/:id/orders` | Place an order on behalf of a user |
 | `GET` | `/api/admin/equity-history` | Get historical equity snapshots by user |
@@ -335,6 +340,8 @@ Admin read-model notes:
 - `GET /api/admin/overview` is read-only and does not write equity snapshots as a side effect
 - `GET /api/admin/equity-history` is backed by the background equity snapshotter worker
 - `GET /api/admin/users/:id/portfolio` mirrors the user portfolio read-model, including optional `symbolName`, prediction-market `side`, and order-level `outcome` labels when adapters can resolve them
+- overview and admin portfolio reads expose explicit partial valuation state instead of silently omitting unpriced positions
+- `GET /api/admin/users/:id/symbol-trades` returns a normalization error when the requested symbol cannot be resolved for that market
 
 Admin order-placement notes:
 - `POST /api/admin/users/:id/orders` accepts the same payload shape as `POST /api/orders`
